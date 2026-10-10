@@ -163,27 +163,38 @@ func resultFields(r result) []zap.Field {
 	}
 }
 
-// readResult reads out/<id>.json, which only the applier writes.
+// readResult reads out/<id>.json as the handler does (readResultFile).
 func (a *Applier) readResult(id string) (*result, error) {
-	b, err := readFile(filepath.Join(a.x("out"), id+".json"), maxResult, false)
+	return readResultFile(filepath.Join(a.root, exchangeDir), id)
+}
+
+// readResultFile reads out/<id>.json, which only root writes, held to
+// the shape root writes: the id it is filed under, and `verified` or a
+// terminal phase. The applier (settled, recovery) and the handler (step
+// 8, the poll, admission's pending check) read it the same way.
+func readResultFile(dir, id string) (*result, error) {
+	path := filepath.Join(dir, "out", id+".json")
+	b, err := readFile(path, maxResult, false)
 	if err != nil {
 		return nil, err
 	}
 	var r result
 	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if r.ID != id || (r.Phase != phaseVerified && !terminal(r.Phase)) {
+		return nil, fmt.Errorf("%s: not a result", path)
 	}
 	return &r, nil
 }
 
 // marker is stage/<id>.auth (DESIGN-box.md, "Record and result fields"),
 // written by the handler's admission after the bundle is in in/: the
-// poll secret's digest and the time of admission. The applier reads it
+// time of admission. The applier reads it
 // for two things only — the order it takes bundles in, by `posted`, and
 // Retention's age — and never trusts it for anything else: the hotserve
 // uid writes stage/, and a marker is that uid's claim.
 type marker struct {
-	SHA256 string    `json:"sha256"`
 	Posted time.Time `json:"posted"`
 }
 
@@ -201,7 +212,7 @@ func readMarker(path string) (*marker, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
-	if !isDigest(m.SHA256) || m.Posted.IsZero() {
+	if m.Posted.IsZero() {
 		return nil, fmt.Errorf("%s: not a marker", path)
 	}
 	return &m, nil
