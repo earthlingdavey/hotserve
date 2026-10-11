@@ -523,10 +523,13 @@ memory under fixed names and caps, binds the bundle's commit to the
 token's `sha` claim, pre-checks the signature, runs `hotserve
 validate` (and `hotserve-backup validate` where installed) as bounded
 children with their output redacted, and drops the bundle as one
-regular file for root. It answers 202 as soon as root has published
-`verified`, which precedes the install; the outcome is polled, because
-a request held across the reload deadlocks on the HTTP server's
-shutdown.
+regular file for root. It answers by the first result it reads within
+a bounded wait: 202 if that is `verified`, which precedes the install,
+or the final result if root has already written it; 504 when it reads
+none (a push of the commit the box already runs is answered
+`no_change` at once). What that answer does not settle is polled,
+because root's part can take minutes, and a proxy in front of the box
+may cut a request held that long.
 
 **The applier** (`hotserve-box-apply.service`, root, one shot, started
 by a path unit watching the drop directory) trusts nothing the
