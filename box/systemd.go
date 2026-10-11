@@ -117,25 +117,14 @@ func runSystemctl(ctx context.Context, timeout time.Duration, args ...string) (s
 	defer cancel()
 	cmd := exec.CommandContext(bounded, "systemctl", args...) //nolint:gosec // fixed verbs on a fixed unit
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "SYSTEMD_PAGER=", "SYSTEMD_COLORS=0"}
-	var out cappedBuffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	out := newCappedBuffer(maxSystemctlOutput)
+	cmd.Stdout, cmd.Stderr = out, out
 	cmd.WaitDelay = childWaitDelay
 	err := cmd.Run()
 	if bounded.Err() != nil && err != nil {
 		err = fmt.Errorf("%w (%w)", bounded.Err(), err)
 	}
 	return string(out.b), err
-}
-
-// cappedBuffer keeps the first maxSystemctlOutput bytes written to it.
-// Not a bytes.Buffer: os/exec would use its ReadFrom and skip Write.
-type cappedBuffer struct{ b []byte }
-
-func (c *cappedBuffer) Write(p []byte) (int, error) {
-	if room := maxSystemctlOutput - len(c.b); room > 0 {
-		c.b = append(c.b, p[:min(len(p), room)]...)
-	}
-	return len(p), nil
 }
 
 // running is step 16's question (DESIGN-box.md, Glossary "active"):
