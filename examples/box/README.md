@@ -17,7 +17,7 @@ and signs.
 | File | What it is |
 |---|---|
 | `deploy.example.com/Caddyfile` | One box's whole config; becomes `/etc/hotserve/Caddyfile` on the box whose deploy host names the directory |
-| `.github/workflows/apply.yml` | `make check` on every push and pull request; on `main`, sends the commit to each box (`bin/apply`) |
+| `.github/workflows/apply.yml` | `make check` on every push and pull request, with the latest stable hotserve (a `HOTSERVE_VERSION` repository variable pins another, such as a prerelease); on `main`, sends the commit to each box (`bin/apply`) |
 | `Makefile` | `make signer`, `make check`, `make wip` |
 | `bin/` | What the Makefile and the workflow run |
 | `sudoers` | Creating and editing the apps' env files on the box, and nothing else |
@@ -54,14 +54,19 @@ which repo and branch, and the commit's signature says which person.
 
 ## Set it up
 
-The box comes from
-[Your first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/first-deploy.md):
-installed, serving an app from a Caddyfile written by hand, still
-administered as root. This repo takes over from there.
+These steps start from a box with hotserve installed and running, and
+root still able to log in: step 2 of
+[Your first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/first-deploy.md),
+whose step 3 walks a fresh box through them. A box that already serves
+a Caddyfile written by hand takes them too; step 3 says how to keep
+what it runs.
 
 1. Make a private repo from this template ("Use this template" on
    [smallhoursorg/hotserve-example-box](https://github.com/smallhoursorg/hotserve-example-box)),
-   and clone it.
+   and clone it. Or copy its files into a new private repo anywhere —
+   another account, or a host that is not GitHub (see
+   [Outside GitHub](#outside-github)) — with `git init -b main` and the
+   new repo as `origin`.
 2. Add your SSH key as the first signer:
 
    ```sh
@@ -76,23 +81,30 @@ administered as root. This repo takes over from there.
    that only signs: if the key you push to GitHub with also signs, the
    two checks a box makes (the push came from `main`, a signer made the
    commit) fall to one stolen key.
-3. Make the Caddyfile your box's. Start from the one the box runs, so
-   nothing edited there is lost:
+3. Make the Caddyfile your box's. On a box that already serves its
+   own Caddyfile, start from that file whole — its global options,
+   sites and apps — so nothing edited there is lost, and keep the
+   template's beside it:
 
    ```sh
-   scp root@box.example.com:/etc/hotserve/Caddyfile deploy.example.com/Caddyfile.live
+   mv deploy.example.com/Caddyfile template.caddy
+   scp root@box.example.com:/etc/hotserve/Caddyfile deploy.example.com/Caddyfile
    ```
 
-   Then bring over its sites and apps into `deploy.example.com/Caddyfile`,
-   keeping the `box` block and the deploy host's `box_webhook`, and
-   delete `Caddyfile.live`. Replace `your-org/boxes`, in the `box`
+   Then copy the template's two box pieces into it: the `box { … }`
+   block, with the signer line `make signer` added, into the global
+   options, and `box_webhook` into the deploy host's site. Inline
+   anything it `import`s, since a box refuses a file that imports, and
+   delete `template.caddy`. On a fresh box there is nothing to bring
+   over. Either way, replace `your-org/boxes`, in the `box`
    block's `claim repository`, with this repo's `owner/name`: the box
    takes pushes from that repository's workflow alone, so a placeholder
-   left there refuses the first one. Replace `example.com`,
-   `deploy.example.com` and `your-org/example` with yours — `your-org`
-   twice more: the `artifact_allowlist` entry pins the organization
-   alone, and the app's `deploy_trust` its repo. The `app example` block is hotserve's
-   examples/node; a Deno app's lines are in its examples/deno.
+   left there refuses the first one. On a fresh box, also replace
+   `example.com`, `deploy.example.com` and `your-org/example`
+   with yours — `your-org` twice more: the `artifact_allowlist` entry
+   pins the organization alone, and the app's `deploy_trust` its repo.
+   The `app example` block is hotserve's examples/node; a Deno app's
+   lines are in its examples/deno.
 4. Name the directory for the box's deploy host, the site that carries
    `box_webhook`:
 
@@ -102,17 +114,13 @@ administered as root. This repo takes over from there.
 
    The box records `<host>/Caddyfile` as its file, and `make check`
    refuses any other layout.
-5. Set `HOTSERVE_VERSION` in `.github/workflows/apply.yml` to the
-   release the box runs: the tag without its `v`. `dpkg -s hotserve`
-   shows it, except that dpkg writes a prerelease as `0.3.0~rc1` where
-   the tag is `0.3.0-rc1`.
-6. Commit. It is signed, and it is the commit the box starts from:
+5. Commit. It is signed, and it is the commit the box starts from:
 
    ```sh
    git add -A && git commit -m "deploy.yourdomain.com: the box's config"
    ```
 
-7. Tell the box which repo it belongs to. Copy the box's directory to
+6. Tell the box which repo it belongs to. Copy the box's directory to
    it, as the commit has it rather than as your checkout does, and run
    `hotserve init` there, as root, with this commit:
 
@@ -124,19 +132,40 @@ administered as root. This repo takes over from there.
    It installs the file, reloads hotserve, and records the commit; the
    box then applies only commits that descend from it. It refuses when
    hotserve is not running, and says how to start it.
-8. Push:
+7. Push:
 
    ```sh
    git push origin main
    ```
 
    The workflow's first run answers that the box already runs this
-   Caddyfile. From here on, config changes are pushes to `main`.
+   Caddyfile. From here on, config changes are pushes to `main`. With
+   nothing deployed yet, a correct box looks like this:
+
+   - `https://example.com` answers 503 with the sentence from the
+     Caddyfile's `handle_errors` block — once the certificate is
+     issued, which takes a few seconds after the reload with 80 and
+     443 open.
+   - `https://deploy.example.com/example` answers 401 with
+     `{"error":"invalid or missing deploy token …"}`, in a browser or
+     with `curl -i`. That is the webhook working: a deploy carries a
+     token, and nothing without one gets further than this.
 
 The secrets of the apps are still a file on the box each, edited over
-SSH by an administrator — see [Secrets](#secrets). Closing root login
-and the rest of the hardening is on
+SSH — see [Secrets](#secrets). Hardening the box — SSH by key only, the
+SSH port shut, an optional administrator who is not root — is on
 [After the first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/after-first-deploy.md).
+
+**A repo from an earlier version of this template** — a top-level
+`Caddyfile` pushed by `make push` — is simplest replaced. Upgrade the
+box to a release that has `hotserve init` first. Then make a new repo
+from this template and take the steps above, starting step 3 from the
+file the box runs; steps 3 and 6 need root on the box over SSH, which
+an earlier version of the hardening steps closed: reopen root's key
+login where you ran the upgrade ([After the first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/after-first-deploy.md),
+step 4, says how). Then put this directory's `sudoers` on the box in
+place of the old one ([Secrets](#secrets)), and archive the old
+repo.
 
 ## Change the config
 
@@ -149,17 +178,6 @@ git switch main && git pull --ff-only
 git merge --ff-only the-branch     # a branch of signed commits, rebased onto main
 git push origin main
 ```
-
-After the first push, with nothing deployed yet, a correct box looks
-like this:
-
-- `https://example.com` answers 503 with the sentence from the
-  Caddyfile's `handle_errors` block — once the certificate is issued,
-  which takes a few seconds after the reload with 80 and 443 open.
-- `https://deploy.example.com/example` answers 401 with
-  `{"error":"invalid or missing deploy token …"}`, in a browser or
-  with `curl -i`. That is the webhook working: a deploy carries a
-  token, and nothing without one gets further than this.
 
 A reload never restarts a running app. A changed `app` block applies
 at the app's next launch: its next deploy, or a relaunch after a crash
@@ -231,12 +249,41 @@ The run prints the box's reason; it changed nothing. The common ones:
 ## At 3am
 
 If a change broke the deploy host itself, the next push cannot reach
-the box. The way back is the provider's console as root: edit
-`/etc/hotserve/Caddyfile` and `systemctl reload hotserve`, or copy the
-box's directory over and `hotserve init` again from it. The next
+the box. The way back is root on the box, over SSH (the provider's
+console only if SSH itself is down): edit `/etc/hotserve/Caddyfile`
+and `systemctl reload hotserve`, or copy the box's directory over as
+step 6 did and `hotserve init` again from it. The next
 signed push overwrites a hand edit — the run warns that it did — which
 is the point: the repo is the truth and the edit is a bridge back to
 it, so a fix that must outlive the night is a commit.
+
+## Outside GitHub
+
+Only the workflow file is GitHub's. `bin/apply` is what talks to the
+boxes, and any CI that gives it what the Actions job does can run it:
+
+- a checkout of the commit being pushed, with its full history;
+- a `hotserve` on `PATH` (`bin/install-hotserve` installs one, with
+  `sudo`; `make check` needs it too);
+- `HOTSERVE_TOKEN`: a token that the `box` block's `deploy_trust`
+  accepts and whose `sha` claim names that commit. `bin/apply` sends
+  that one token with every request, polls included, so it must
+  outlive the run.
+  - From a CI's OIDC: on GitLab, an `id_tokens:` entry with
+    `aud: hotserve`, and a box block trusting
+    `deploy_trust gitlab { audience hotserve; claim project_path your-org/boxes; claim ref_path refs/heads/main }`.
+    Not tested.
+  - From a runner without OIDC: a key the box block trusts as
+    `deploy_trust local { public_key …; audience hotserve }`
+    (`hotserve deploy-keygen` makes the pair), and a token minted each
+    run with `hotserve deploy-token --key … --audience hotserve --claims sha=<commit>`.
+    hotserve's own end-to-end tests run `bin/apply` this way. The
+    private key is then a stored secret, which OIDC avoids; the
+    signatures still bound what it can push.
+
+The rules above hold on any host: a merge button that squashes,
+rebases or writes its own merge commit lands a commit no listed key
+signed.
 
 ## More than one box
 
@@ -250,29 +297,35 @@ directory.
 
 They never go in this repo. Put each app's in a file on the box that
 only root and the `hotserve` user can read, and name it with
-`env_file` in the app's block. The `sudoers` file in this directory
-lets an administrator who is not root create the file and edit it;
-both are its exact lines, so nothing about the mode, the owner or the
-directory is theirs to choose. As root on the box, once (from the
-laptop: `scp sudoers root@box.example.com:/etc/sudoers.d/hotserve-admin`):
+`env_file` in the app's block. As root on the box:
+
+```sh
+install -m 0640 -o root -g hotserve -T /dev/null /etc/hotserve/example.env   # once: empty, root:hotserve
+editor /etc/hotserve/example.env      # DATABASE_URL=postgres://…
+```
+
+The `sudoers` file in this directory lets an administrator who is not
+root do those two things and nothing else; both are its exact lines,
+so nothing about the mode, the owner or the directory is theirs to
+choose. To set one up, put the file and the administrator's SSH public
+key on the box from the laptop (`scp sudoers
+root@box.example.com:/etc/sudoers.d/hotserve-admin`, `scp alice.pub
+root@box.example.com:`), then as root on the box, once:
 
 ```sh
 chmod 0440 /etc/sudoers.d/hotserve-admin && visudo -c
-adduser alice
-install -d -m 0700 -o alice -g alice /home/alice/.ssh && cp ~/.ssh/authorized_keys /home/alice/.ssh/
+adduser --disabled-password --comment "" alice      # no password: SSH keys only, and the sudoers lines ask for none
+install -d -m 0700 -o alice -g alice /home/alice/.ssh
+install -m 0600 -o alice -g alice alice.pub /home/alice/.ssh/authorized_keys
 groupadd hotserve-admin && usermod -aG adm,hotserve-admin alice
 ```
+
+`alice` then runs the two lines above with `sudo` in front of
+`install`, and `sudoedit` in place of `editor`.
 
 A box set up from an earlier version of this template has `bin/push`'s
 lines in that file too, which let an administrator write the Caddyfile
 around the signed pushes: copy this one over it, as above.
-
-Then, as alice:
-
-```sh
-sudo install -m 0640 -o root -g hotserve -T /dev/null /etc/hotserve/example.env   # once: empty, root:hotserve
-sudoedit /etc/hotserve/example.env      # DATABASE_URL=postgres://…
-```
 
 Whoever can get a signed commit onto `main` can read these files
 anyway: one site in the Caddyfile serves any file the `hotserve` user

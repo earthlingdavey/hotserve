@@ -6,10 +6,10 @@ promises. History lives in git (`git log -- box/DESIGN-box.md`); the
 are for decisions still fresh or contested and get folded into the
 body once they settle.
 
-**Status: design, written before the code.** Normative for the PRs
-that build it (proof core, Caddyfile surface, applier, `init`,
-template, docs); a PR that cannot hold a line here changes the line in
-the same PR, with the reason.
+**Status: built, on main and not yet in a release** (History lists
+the PRs); secrets are not built (Non-goals). Normative: a change that
+cannot hold a line here changes the line in the same PR, with the
+reason.
 
 **Two rules of this document.** Every fact lives in exactly one table;
 prose uses it and points to it, and never restates it, so a change
@@ -531,7 +531,12 @@ the console is the way back ("At 3am"), and whether the workflow asks
 call. A `request_body` cap below the bundle's 16 MiB, or a `timeouts`
 read deadline shorter than the upload, ahead of `box_webhook` is not
 caught either: the push reaches the handler and fails its body read
-(400), which names the bundle.
+(400), which names the bundle. Nor is anything that refuses the
+connection before a route runs: the walk reads each server's routes,
+not its TLS connection policies (a required client certificate), its
+listener wrappers (`proxy_protocol`) or its `protocols`, so a signed
+push that sets one the workflow's connection cannot pass strands the
+box until root undoes it ("At 3am").
 
 ## The install transaction
 
@@ -1485,9 +1490,10 @@ Alice commits `c6` (signed) changing a Deno flag and pushes.
 ## At 3am
 
 If a change broke the webhook site itself, the next push cannot reach
-the box. The remedy is the one that was always there: the provider's
-console as root — a bare edit of `/etc/hotserve/Caddyfile` and
-`systemctl reload hotserve`, or `hotserve init` again from the box's
+the box. The remedy is the one that was always there: root on the box,
+over SSH or the provider's console — a bare edit of
+`/etc/hotserve/Caddyfile` and `systemctl reload hotserve`, or
+`hotserve init` again from the box's
 directory copied over. The next signed push overwrites the hand edit, which is
 the point: the repository is the truth and the edit is a bridge back
 to it; so is a replay of `HEAD` by anyone holding a token (see
@@ -1775,3 +1781,11 @@ Dated one-liners; the full text of each is in git.
 - 2026-10-11 — A push's time budget: the workflow waits 30 minutes
   (was 15), past root's worst case, and the pending bound with it; no
   whole-POST deadline, since the workflow resends or polls after a cut.
+- 2026-10-11 — PR 6 (docs): the tutorial sets up the box's repository
+  on day 0 (docs/first-deploy.md, step 3: template, `make signer`,
+  `hotserve init`, first push); page 2 runs the box (config, secrets as
+  root) and then hardens it (SSH by key only, the port, an optional
+  administrator for logs and secrets). Root keeps its key login: root
+  over SSH is the way back at 3am, the provider's console only if SSH
+  is down. The README, the examples' READMEs, the starter Caddyfile and
+  the threat model follow.
