@@ -72,11 +72,11 @@ without the feature it exists for.
 
 **Installing needs root; administering does not.** Checking a config
 (`hotserve validate`) needs no privilege, reading the journal —
-hotserve's and every app's — needs the `adm` group, and changing the
-config and reloading are eight fixed commands, listed in
-[examples/box/sudoers](examples/box/sudoers). That is the `hotserve`
-user's reach (its TLS keys, every app's data), not root's: hotserve
-itself runs unprivileged. One thing reaches wider: `adm` reads the
+hotserve's and every app's — needs the `adm` group, and creating and
+editing the apps' secret files needs two fixed commands, listed in
+[examples/box/sudoers](examples/box/sudoers). The config itself
+changes only by a signed push from the box's repository
+([examples/box](examples/box)); hotserve itself runs unprivileged. One thing reaches wider: `adm` reads the
 whole system journal, not only hotserve's lines, so it is a trust
 grant in its own right. The e2e suite administers its box that way.
 
@@ -98,10 +98,11 @@ deploys on every change, so what they say works:
   the box's Caddyfile, where a compromised build cannot widen them.
   Its template is [hotserve-example-deno](https://github.com/smallhoursorg/hotserve-example-deno).
 - **[examples/box](examples/box)** — the box's config, kept in a
-  private repo of its own: the `Caddyfile` (which app, which repo may
-  deploy it, where the deploy webhook answers), a `make push` that
-  validates it on the box and never leaves an invalid file there, and
-  the sudoers file above.
+  private repo of its own: a Caddyfile per box (which app, which repo
+  may deploy it, where the deploy webhook answers, who may sign a
+  change), applied by the workflow on each signed push to `main`; the
+  box checks the signatures and keeps the file it had if the new one
+  does not load. And the sudoers file above.
 
 Both apps serve on the socket hotserve hands them, answer `/health`,
 migrate before each version starts, stop cleanly, and deploy from
