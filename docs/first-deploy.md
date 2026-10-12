@@ -38,8 +38,8 @@ You need a real virtual machine, not a container. Providers call the
 kind you want **KVM**; at Hetzner, say, the cheapest KVM tier is enough
 for a few small apps. Offers described as LXC or "container VPS" will
 not work: each app runs in its own sandbox, which those hosts cannot
-provide, and hotserve refuses to start rather than run your apps
-without it. If you are unsure what you have, step 2 tells you within a
+provide, and hotserve refuses to run your apps without it. If you are
+unsure what you have, step 2 checks for the common cases within a
 minute. At the provider:
 
 1. Create a server with **Debian 13** as the image and your SSH public
@@ -101,21 +101,33 @@ release candidate is never that.
 upgrade is on the box already; `/tmp` would not survive a reboot.
 `enable --now` prints only `Created symlink …`; that is success.)
 
+On a release older than Debian 13, `apt install` stops with
+`hotserve : Depends: systemd (>= 257)`, and the `systemctl` line after
+it finds no hotserve unit. Each app's sandbox is built on systemd 257,
+so the fix is a Debian 13 image, not a setting. That is the first half
+of the step 1 check.
+
 Check it:
 
 ```sh
 systemctl status hotserve          # active (running); press q to exit
 curl -s localhost                  # "hotserve is running. To serve your apps: hotserve init …"
+systemd-detect-virt --container    # none
 ```
+
+If it is not running, `journalctl -u hotserve -n 50 --no-pager` says
+why.
+
+The block's last line, `systemd-detect-virt`, is the other half of the
+step 1 check, the part apt cannot see. `none` means no container. A
+name such as `lxc` or `openvz` means a container, the kind of host
+step 1 warns about: most cannot give the sandbox, and step 3 is where
+hotserve finds out for sure.
 
 (The deploy side, liveswap, is not running yet: the starter config
 leaves it commented out. It starts, and says so in the journal, in
-step 3, when the box's own config replaces the starter.)
-
-If it is not running, `journalctl -u hotserve -n 50 --no-pager` says
-why. A host that cannot deliver the sandbox is refused here, with the
-missing piece named; that is the step 1 check, and the fix is a
-different host, not a setting.
+step 3, when the box's own config replaces the starter. That start is
+where the sandbox is first tried for real.)
 
 ## 3. The box's config, in git
 
@@ -329,7 +341,12 @@ unreachable by its own channel — and a directory not named for that
 site. Otherwise it installs the file over the starter config and
 reloads hotserve. A file that does not load is put back, the starter
 keeps serving, and `init` says so; `journalctl -u hotserve -n 50
---no-pager` on the box says why. Fix it, commit, and run both lines again.
+--no-pager` on the box says why. Fix it, commit, and run both lines
+again. The reload is also liveswap's first start, which tries the
+sandbox: on a host that cannot give one, the journal names what is
+missing, and the fix is the host's, not the file's
+([liveswap/README.md](../liveswap/README.md#sandbox) has what a host
+has to provide).
 
 **Push:**
 

@@ -341,7 +341,7 @@ deploy gate alike.
 
 Every instance runs inside systemd's own per-unit sandbox. There is
 one sandbox, no setting that turns it off or widens it, and a host
-either delivers it or hotserve does not start:
+either delivers it or hotserve does not start with an app configured:
 
 | What every unit gets |
 |---|
@@ -351,8 +351,9 @@ either delivers it or hotserve does not start:
 | hotserve's keys and sockets, other apps, and every path nothing named — **absent**, not merely unreadable |
 | Private `/tmp`, minimal `/dev`, read-only cgroupfs, no capabilities, `@system-service` syscall filter, `AF_INET`/`AF_INET6`/`AF_UNIX`/`AF_NETLINK` only, no nested namespaces |
 
-`PrivatePIDs=` needs systemd 256; Debian 13 — the supported host —
-ships 257. Where the namespaces cannot be had at all (a container, an
+`PrivatePIDs=` needs systemd 257, which Debian 13 — the supported
+host — ships, and the `.deb` refuses to install on anything older.
+Where the namespaces cannot be had at all (a container, an
 LXC VPS, a kernel built without user namespaces, an LSM that refuses
 them) hotserve refuses to start, naming what the host lacks. It is
 deliberately not a ladder, and there is deliberately no mode that runs
