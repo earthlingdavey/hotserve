@@ -5,8 +5,13 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
+	"filippo.io/age"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
@@ -24,7 +29,7 @@ func init() {
 // answers on exactly the path `/` of its site and passes every other
 // path to the next handler:
 //
-//	GET  /              the baseline: {commit, box_webhook, sha256}
+//	GET  /              the baseline: {commit, box_webhook, sha256, recipient}
 //	GET  /?result=<id>  a push's result (push.go)
 //	POST /              a push (push.go, admission.go, validate.go)
 //
@@ -37,10 +42,12 @@ type Handler struct {
 	logger  *zap.Logger
 	limiter *deploytrust.Limiter
 
-	// Where the handler reads: installedFile and exchangeDir, set in
-	// Provision; a test's temporary files otherwise.
+	// Where the handler reads: installedFile, exchangeDir and
+	// secretsDir, set in Provision; a test's temporary files otherwise.
 	installed string
 	dir       string
+	secrets   string
+	agePub    string
 
 	// A push's seams: the proof's verifier (ssh-keygen as the hotserve
 	// uid, step 5), step 6's children, the clock step 8 waits on, and
@@ -74,7 +81,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 	h.app = app.(*App)
 	h.limiter = deploytrust.Shared()
-	h.installed, h.dir = installedFile, exchangeDir
+	h.installed, h.dir, h.secrets, h.agePub = installedFile, exchangeDir, secretsDir, agePubFile
 	h.verifier = &proof.Verifier{} // RunAs 0: as the hotserve uid, in the service's PrivateTmp
 	h.validator = newChildValidator(h.x("stage"))
 	h.clock = realClock{}
@@ -125,12 +132,15 @@ type statusBody struct {
 	Commit     string `json:"commit"`
 	BoxWebhook string `json:"box_webhook"`
 	SHA256     string `json:"sha256"`
+	// Recipient is the box's key for secrets, which the workflow
+	// compares with the first line of recipients ("The box's key").
+	Recipient string `json:"recipient,omitempty"`
 }
 
 // status is `GET /`: the commit the box runs, from applied.json, and
 // the host and digest of the file it runs, read now — the digest a
 // push's no_change fast path compares (step 4) — so a console edit since the
-// last apply shows.
+// last apply shows; and the box's key for secrets, when it has one.
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) error {
 	if _, ok, err := h.authenticate(w, r, "status"); !ok {
 		return err
@@ -152,8 +162,39 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) error {
 		return respond(w, http.StatusInternalServerError, errorBody(readingInstalled+" "+ref.Reason))
 	}
 	sum := digest(file) // what the fast path compares
-	return respond(w, http.StatusOK, statusBody{Commit: base.SHA, BoxWebhook: shape.Host, SHA256: sum},
-		base.SHA, shape.Host, sum)
+	body := statusBody{Commit: base.SHA, BoxWebhook: shape.Host, SHA256: sum, Recipient: h.recipient()}
+	safe := []string{base.SHA, shape.Host, sum}
+	if body.Recipient != "" { // a bech32 key is what the entropy layer catches
+		safe = append(safe, body.Recipient)
+	}
+	return respond(w, http.StatusOK, body, safe...)
+}
+
+// readingKey is what the journal names when age.pub cannot be read.
+const readingKey = "the box's key for secrets (age.pub)"
+
+// recipient is age.pub's one line, held to an X25519 recipient, or ""
+// when there is none: a box that has not run `hotserve box key`. One
+// that cannot be read, or is not exactly one X25519 recipient, is
+// journaled and omitted all the same, so a damaged key file never
+// blocks `GET /` and with it a push of the Caddyfile; the workflow
+// reads the omission as "this box has no key", whose remedy, `hotserve
+// box key`, rewrites age.pub from the identity.
+func (h *Handler) recipient() string {
+	b, err := readFile(h.agePub, maxAgePub, false)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return ""
+	case err != nil:
+		h.logStateError(readingKey, err)
+		return ""
+	}
+	line, ok := strings.CutSuffix(string(b), "\n")
+	if r, err := age.ParseX25519Recipient(line); ok && err == nil && r.String() == line {
+		return line
+	}
+	h.logStateError(readingKey, errors.New("not one X25519 recipient line"))
+	return ""
 }
 
 // What readState names when a file fails it.
@@ -173,6 +214,36 @@ func (h *Handler) readState() (base *applied, installed []byte, what string, err
 		return nil, nil, readingInstalled, err
 	}
 	return base, installed, "", nil
+}
+
+// envDigest is an installed env file's digest as the fast path compares
+// it (step 4): read as root reads it — no link followed, held to a
+// regular file, to maxEnvRead — by the hotserve group, whose files these
+// are; and only for a file that is still as root wrote it, 0640 and
+// owned as the exchange tree is, so that a file whose mode or owner
+// drifted goes to root, which writes it again ("Values and the env
+// file"), rather than staying readable or writable on every replay. Any
+// error is the caller's "not unchanged".
+func (h *Handler) envDigest(app string) (string, error) {
+	path := filepath.Join(h.secrets, app+".env")
+	base, err := os.Lstat(h.dir)
+	if err != nil {
+		return "", err
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	want, okBase := base.Sys().(*syscall.Stat_t)
+	got, okFile := fi.Sys().(*syscall.Stat_t)
+	if !okBase || !okFile || fi.Mode() != 0o640 || got.Uid != want.Uid || got.Gid != want.Gid {
+		return "", errors.New("not as root writes it")
+	}
+	b, err := readFile(path, maxEnvRead, false)
+	if err != nil {
+		return "", err
+	}
+	return digest(b), nil
 }
 
 // boxError answers a failure that is the box's, never the caller's:

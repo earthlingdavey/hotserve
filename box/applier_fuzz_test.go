@@ -76,11 +76,38 @@ func FuzzRecord(f *testing.F) {
 			for which := uint8(0); which < 3; which++ {
 				f.Add(encodeJSON(rec), which)
 			}
+			if phase == phaseNoChange {
+				continue
+			}
+			// The same record with env files in its set: one the push
+			// changes, one it adds.
+			old := []byte("KEY=old\n")
+			rec.Secrets = []envEntry{
+				{App: "api", NewSHA256: digest([]byte("TOKEN=t\n"))},
+				{App: "example", Prev: old, PrevSHA256: digest(old), NewSHA256: digest([]byte("KEY=new\n"))},
+			}
+			rec.SecretsTree, rec.SecretsInstalled = strings.Repeat("d", 40), map[string]string{"api": digest([]byte("TOKEN=t\n")), "example": digest([]byte("KEY=new\n"))}
+			rec.SecretsAdded, rec.SecretsChanged = []string{"api/TOKEN"}, []string{"example/KEY"}
+			f.Add(encodeJSON(rec), uint8(0))
+		}
+	}
+	// Every record a transaction of each shape writes, and each one-field
+	// mutant of it (relations_test.go): the family of cross-field
+	// relations, not one instance.
+	generatedRecs, _ := generated(f)
+	for _, r := range generatedRecs {
+		f.Add(encodeJSON(r), uint8(0))
+		for _, m := range recordMutations {
+			mutant := cloneRecord(r)
+			if m.apply(&mutant) {
+				f.Add(encodeJSON(mutant), uint8(0))
+			}
 		}
 	}
 	f.Add([]byte("{"), uint8(0))
 	f.Fuzz(func(t *testing.T, data []byte, which uint8) {
 		b := newTestBox(t)
+		b.secretsDirAs(0o750 | os.ModeSetgid) // a record with env files has one
 		files := [][]byte{b.v1, boxFile(2, b.alice), boxFile(9, b.alice)}
 		before := files[int(which)%len(files)]
 		b.writeInstalled(before)
@@ -102,6 +129,13 @@ func FuzzRecord(f *testing.F) {
 		b.settled()
 		if !bytes.Equal(after, before) && !bytes.Equal(after, rec.Prev) {
 			t.Fatal("recovery installed bytes that are neither what stood nor the record's prev")
+		}
+		// No env file stood before, and recovery has no new bytes: each
+		// is absent, or the record's own prev for it.
+		for _, e := range rec.Secrets {
+			if got := b.env(e.App); got != nil && !bytes.Equal(got, e.Prev) {
+				t.Fatalf("recovery wrote %s's env file with bytes not its prev", e.App)
+			}
 		}
 		switch sha := b.applied().SHA; {
 		case sha == b.base:

@@ -17,8 +17,8 @@ import (
 	"github.com/smallhoursorg/hotserve/box/proof"
 )
 
-// `hotserve box …` is one command with subcommands: webhook, apply and
-// baseline.
+// `hotserve box …` is one command with subcommands: webhook, describe,
+// apply, baseline and key.
 func init() {
 	caddycmd.RegisterCommand(caddycmd.Command{
 		Name:  "box",
@@ -59,11 +59,22 @@ signers, each in file order:
     app example
     signer alice@example.com ssh-ed25519 AAAAC3Nz...
 
-It refuses the file for every reason the box's reading of it would;
-what only hotserve validate refuses (a module's own errors) it does
-not check. The box template's make check prints its line for each box from this, and
+With a secrets/ directory beside the file it reads that too, as the
+working tree has it, and adds:
+
+    recipients 2
+    secret example DATABASE_URL 61
+    warning app example has 200 secrets; the cap is 256
+
+each secret's value length from its ciphertext alone (no key), and a
+warning for each cap past 75%.
+
+It refuses the file for every reason the box's reading of it would,
+the secrets for every reason their layout would, and an app whose
+env_file does not read its secrets; what only hotserve validate refuses
+(a module's own errors) it does not check. The box template's make check prints its line for each box from this, and
 compares the signer lists of a repository's boxes. The file may be a
-pipe, as for webhook.`,
+pipe, as for webhook (a pipe has no secrets beside it).`,
 				Args: cobra.ExactArgs(1),
 				RunE: func(c *cobra.Command, args []string) error {
 					return describe(args[0], c.OutOrStdout())
@@ -99,6 +110,26 @@ hotserve init; it waits while the applier holds its lock.`,
 				Args: cobra.ExactArgs(1),
 				RunE: func(c *cobra.Command, args []string) error {
 					return runBaseline(c.Context(), os.Geteuid(), newApplier(consoleLog("box.baseline")), args[0], c.OutOrStdout())
+				},
+			})
+			cmd.AddCommand(&cobra.Command{
+				Use:   "key",
+				Short: "Print this box's key for secrets, making it if there is none (root)",
+				Long: `Prints the box's key for secrets: the age recipient a repository's
+secrets are encrypted to, the first line of <host>/secrets/recipients.
+The box has one key, made by the first run (the package's postinstall
+runs this on a running system, and init after its install), kept in
+/etc/hotserve/age/identity, root's alone; it is never replaced. On
+standard output the key alone, so that from the laptop
+
+    make secret APP=example VAR=DATABASE_URL BOX_KEY=$(ssh root@box.example.com hotserve box key)
+
+passes it; on standard error what it did. An identity that does not
+read is refused and left as it is: move it aside, run this again, then
+make rekey BOX_KEY=<the new key> in the repository.`,
+				Args: cobra.NoArgs,
+				RunE: func(c *cobra.Command, _ []string) error {
+					return runKey(os.Geteuid(), newApplier(consoleLog("box.key")), c.OutOrStdout(), c.ErrOrStderr())
 				},
 			})
 		},
@@ -191,12 +222,26 @@ func webhookURL(path string) (string, error) {
 }
 
 // describe is `hotserve box describe`: the walk's reading of the file at
-// path, one line per fact. Every value is held to a grammar by the walk
-// (a lowercase hostname, liveswap's app names, a principal, a key type,
-// a canonical base64), so none can break a line.
+// path, one line per fact, then the secrets beside it in the working
+// tree (describe_secrets.go, whose header gives those lines). Every
+// value is held to a grammar by the walk (a lowercase hostname,
+// liveswap's app names, a principal, a key type, a canonical base64) or
+// by the layout, so none can break a line. It refuses what root's
+// reading of the file and the layout refuse, and the consistency checks
+// of "Which checks run where".
 func describe(path string, w io.Writer) error {
 	shape, err := readShape(path)
 	if err != nil {
+		return err
+	}
+	ts, err := readTreeSecrets(path)
+	if err != nil {
+		return err
+	}
+	if err := secretsFit(shape, ts.secrets, path); err != nil {
+		return err
+	}
+	if err := ts.measure(); err != nil {
 		return err
 	}
 	var b strings.Builder
@@ -206,6 +251,9 @@ func describe(path string, w io.Writer) error {
 	}
 	for _, s := range shape.Signers {
 		fmt.Fprintf(&b, "signer %s %s %s\n", s.Principal, s.Type, s.B64)
+	}
+	for _, line := range ts.lines() {
+		fmt.Fprintf(&b, "%s\n", line)
 	}
 	_, err = io.WriteString(w, b.String())
 	return err
