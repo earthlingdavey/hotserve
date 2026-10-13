@@ -40,7 +40,7 @@ Windows, and macOS-as-a-server are out of scope by product design.
    each launch warn when the mode admits everyone (`warnEnvFileModeOf`,
    liveswap/app.go). Owner and group are not checked. Where the box's
    config repository carries an app's secrets (box/DESIGN-box.md,
-   "Secrets": designed, not yet built), the env file is
+   "Secrets"), the env file is
    `/etc/hotserve/secrets/<app>.env`, written 0640 by the `box` applier
    into a setgid `root:hotserve` directory, and the values also exist
    encrypted in that repository's history, which the box's key for
@@ -499,8 +499,8 @@ not a plan.
 The second authenticated entry point, and the only one whose outcome
 is a root-owned file. [box/DESIGN-box.md](box/DESIGN-box.md) is
 authoritative for its behaviour; this section places it. Status:
-released in v0.3.0; the secrets it is designed to carry (below) are
-not yet built. On a box set up from the
+released in v0.3.0; the secrets it carries (below) are built, and
+not yet in a release. On a box set up from the
 template (`examples/box`; docs/first-deploy.md, step 3) root writes
 the file once, with `hotserve init`, and the config repository's
 signed pushes write it after that. A box with no `box` block has no
@@ -559,10 +559,11 @@ the template, and with it the only account that could change config
 (a box that installed the earlier file keeps those lines until it is
 replaced, as the template's README says). The `HOTSERVE_SECRETS` half
 (a root `install` that creates `/etc/hotserve/<app>.env` 0640
-root:hotserve, and `sudoedit` of it) stays, for an administrator where
-one is set up, until secrets ride this channel (below); then it leaves
-the template too, and an administrator is an account for the journal
-alone. A leaked PAT, a
+root:hotserve, and `sudoedit` of it) is gone from the template too:
+secrets ride this channel (below), so no account on the box is given a
+way to write one, and an administrator is an account in `adm`, for the
+journal alone (a box that installed the earlier file keeps its lines
+until they are removed). A leaked PAT, a
 stolen GitHub session or an OAuth app with `contents:write` can push
 to `main` and cannot produce the signature, so it cannot change the
 box with anything a signer did not sign: its own commit is refused on
@@ -634,8 +635,8 @@ on the proof, not sha1dc. A signer's laptop is the operator; a
 software-held signing key makes its compromise total for the box,
 which a hardware-held (`sk-`) key reduces to "cannot sign unattended".
 
-**Secrets through the same channel** (designed in box/DESIGN-box.md,
-"Secrets"; not yet built). Each value is an age file in the config
+**Secrets through the same channel** (box/DESIGN-box.md, "Secrets").
+Each value is an age file in the config
 repository, `<host>/secrets/<app>/<VAR>.age`, encrypted on a laptop to
 the box's own X25519 key and to readers — the signers' SSH keys, or an
 age key of a person's own. The bundle carries the ciphertext; the
@@ -1039,8 +1040,8 @@ does not isolate the runtime.
   types, which the `signer` grammar accepts) reduces a laptop
   compromise to "cannot sign without a touch". Stated so operators
   choose knowingly.
-- **Secrets in the config repository are ciphertext for ever** (once
-  built: box/DESIGN-box.md, "Secrets"). A reader's key file and a
+- **Secrets in the config repository are ciphertext for ever**
+  (box/DESIGN-box.md, "Secrets"). A reader's key file and a
   clone decrypt every value ever encrypted to that key, offline and
   unseen; removing a
   reader does not take back what was encrypted to them, so the remedy
@@ -1221,5 +1222,7 @@ Dated one-liners; the full text of each is in git.
   (box/DESIGN-box.md, "Secrets"): age files in the repository, root
   decrypts after every proof; new facts stated — a reader's key and a
   clone decrypt, offline, every value encrypted to it; names and
-  lengths are public to repository readers; no key is post-quantum; the secrets
-  sudoers grant leaves when it is built.
+  lengths are public to repository readers; no key is post-quantum.
+- 2026-10-13 — The template's secrets grant is gone (box PR 7e2):
+  secrets are commits in the config repository, and an administrator
+  is an account in `adm`, for the journal alone.
