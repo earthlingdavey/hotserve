@@ -31,7 +31,12 @@
 #   deploy.example.com/Caddyfile → https://deploy.example.com/ (1 app, 1 signer, 2 secrets)
 #
 # and a warning for what the box takes but is near a cap, or would trip
-# up a checkout on a Mac's case-insensitive disk.
+# up a checkout on a Mac's case-insensitive disk. With GITHUB_ACTIONS
+# set (Actions sets it), each failure and warning is also an annotation
+# on the job page, on one line (for a file validate refuses, all its
+# output): an error titled "make check failed", a warning on its box's
+# file. The log shows the annotation after the line; GitHub shows ten
+# of each kind a step, and check writes no step summary.
 #
 #   HOTSERVE  the hotserve command (default: hotserve)
 set -eu
@@ -42,17 +47,30 @@ actions=${GITHUB_ACTIONS:-}
 tmpd=$(mktemp -d)
 trap 'rm -rf "$tmpd"' EXIT
 status=0
-bad() { printf 'check: %s\n' "$*" >&2; status=1; }
+# The Actions dressing, as bin/apply has it: what a workflow command's
+# message and property may not contain.
+msg() { printf '%s' "$1" | sed 's/%/%25/g' | tr '\r\n' '  '; }
+prop() { msg "$1" | sed 's/:/%3A/g; s/,/%2C/g'; }
+# bad <text>: red, said, and on the job page in Actions. A failure set -e
+# catches (mktemp, or the warnings written to a full disk) stops the run
+# red with that command's own error in the log, and no annotation. The
+# line is the text as it came: a workflow command in hotserve's output
+# would be obeyed (in a pull request's run, which runs that pull
+# request's own workflow file anyway).
+bad() {
+	printf 'check: %s\n' "$*" >&2
+	[ -z "$actions" ] || printf '::error title=make check failed::%s\n' "$(msg "$*")"
+	status=1
+}
 # warn <file> <text>: green, but said, and on the job page in Actions.
 warn() {
 	printf 'check: warning: %s: %s\n' "$1" "$2" >&2
-	[ -z "$actions" ] || printf '::warning file=%s::%s\n' "$1" "$(printf '%s' "$2" | sed 's/%/%25/g')"
+	[ -z "$actions" ] || printf '::warning file=%s::%s\n' "$(prop "$1")" "$(msg "$2")"
 }
 
 # Tracked files and new ones not ignored: a box added but not yet
 # committed is checked too.
 files=$(git ls-files --cached --others --exclude-standard | grep -E '(^|/)Caddyfile$' | LC_ALL=C sort || true)
-[ -n "$files" ] || { echo "check: no box here: a box is <host>/Caddyfile at the top of the repository" >&2; exit 1; }
 # One path a line; a name never splits.
 IFS='
 '
@@ -76,7 +94,10 @@ for f in $files; do
 	if ! "$HOTSERVE" box describe "$f" >"$tmpd/describe" 2>&1; then
 		hint=
 		grep -q 'has no signer' "$tmpd/describe" && hint=" (make signer adds yours)"
-		bad "$(cat "$tmpd/describe")$hint"
+		# Its error; if it said nothing, the file and what failed. (One
+		# killed after printing its records is quoted as it stands.)
+		out=$(cat "$tmpd/describe")
+		bad "${out:-$f: $HOTSERVE box describe failed, and said nothing}$hint"
 		continue
 	fi
 	host=$(sed -n 's/^host //p' "$tmpd/describe")
@@ -85,8 +106,9 @@ for f in $files; do
 		continue
 	fi
 	if ! "$HOTSERVE" validate --adapter caddyfile --config "$f" >"$tmpd/validate" 2>&1; then
-		bad "$f does not validate:"
-		sed 's/^/  /' "$tmpd/validate" >&2
+		# Its output in the message, a line each, so the annotation has it.
+		out=$(awk '{ printf "\n  %s", $0 }' "$tmpd/validate")
+		bad "$f does not validate:${out:- $HOTSERVE validate failed, and said nothing}"
 		continue
 	fi
 	apps=$(grep -c '^app ' "$tmpd/describe" || true)
@@ -128,6 +150,7 @@ for f in $files; do
 	[ "$secrets" = 0 ] || { [ "$secrets" = 1 ] && sec=", 1 secret" || sec=", $secrets secrets"; }
 	printf '%s → https://%s/ (%s %s, %s %s%s)\n' "$f" "$host" "$apps" "$a" "$signers" "$s" "$sec"
 done
-# Every file deleted here, or none of them a box's: nothing was checked.
+# No box file, every one deleted here, or none of them a box's: nothing
+# was checked.
 [ "$checked" -gt 0 ] || bad "no box here: a box is <host>/Caddyfile at the top of the repository"
 exit "$status"

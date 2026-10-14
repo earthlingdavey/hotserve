@@ -323,10 +323,29 @@ func TestBoxSigner(t *testing.T) {
 func TestBoxCheck(t *testing.T) {
 	bin := hotserveBinary(t)
 	r := newBoxRepo(t)
-	check := func() (string, int) { return r.run("check", "HOTSERVE="+bin) }
-	// The template as it ships: no signer yet.
-	if out, code := check(); code != 1 || !strings.Contains(out, "has no signer (make signer adds yours)") {
+	check := func(env ...string) (string, int) {
+		return r.run("check", append([]string{"HOTSERVE=" + bin}, env...)...)
+	}
+	// annotations are out's workflow-command lines: none on a laptop,
+	// one for each failure or warning in Actions.
+	annotations := func(out string) []string {
+		var a []string
+		for l := range strings.Lines(out) {
+			if strings.HasPrefix(l, "::") {
+				a = append(a, l)
+			}
+		}
+		return a
+	}
+	// The template as it ships: no signer yet. In Actions, the job page
+	// says so: the first run of a repository made from the template.
+	if out, code := check(); code != 1 || !strings.Contains(out, "has no signer (make signer adds yours)") || annotations(out) != nil {
 		t.Fatalf("the template as it ships: exit %d\n%s", code, out)
+	}
+	if out, code := check("GITHUB_ACTIONS=true"); code != 1 ||
+		!strings.Contains(out, "check: Error: "+boxFile+": the Caddyfile has no signer (make signer adds yours)\n") ||
+		!slices.Equal(annotations(out), []string{"::error title=make check failed::Error: " + boxFile + ": the Caddyfile has no signer (make signer adds yours)\n"}) {
+		t.Fatalf("the template as it ships, in Actions: exit %d\n%s", code, out)
 	}
 	alice := r.key("id_ed25519")
 	if out, code := r.run("signer"); code != 0 {
@@ -342,7 +361,14 @@ func TestBoxCheck(t *testing.T) {
 	if out, code := check(); code != 1 || !strings.Contains(out, "box1/Caddyfile: its box_webhook host is deploy.example.com, so it belongs at deploy.example.com/Caddyfile (git mv box1 deploy.example.com)") {
 		t.Fatalf("a box under another name: exit %d\n%s", code, out)
 	}
-	r.git("mv", "box1", "deploy.example.com")
+	// The annotation's message is escaped as a workflow command's: a %
+	// in a name is %25.
+	r.git("mv", "box1", "box%1")
+	if out, code := check("GITHUB_ACTIONS=true"); code != 1 ||
+		!slices.Equal(annotations(out), []string{"::error title=make check failed::box%251/Caddyfile: its box_webhook host is deploy.example.com, so it belongs at deploy.example.com/Caddyfile (git mv box%251 deploy.example.com)\n"}) {
+		t.Fatalf("a box under another name, in Actions: exit %d\n%s", code, out)
+	}
+	r.git("mv", "box%1", "deploy.example.com")
 
 	// One level down, nothing shallower or deeper; new files count.
 	for _, f := range []string{"Caddyfile", "archive/old.example.com/Caddyfile"} {
@@ -378,14 +404,70 @@ func TestBoxCheck(t *testing.T) {
 	r.remove("real")
 	r.remove(boxFile)
 	// Every box deleted here: nothing to check is not a pass.
-	if out, code := check(); code != 1 || !strings.Contains(out, "no box here") {
+	noBox := "no box here: a box is <host>/Caddyfile at the top of the repository\n"
+	if out, code := check(); code != 1 || !strings.Contains(out, "check: "+noBox) {
 		t.Fatalf("every box deleted: exit %d\n%s", code, out)
 	}
+	// No box file at all, tracked or not: the same, annotated in Actions.
+	r.git("rm", "-q", "--cached", boxFile)
+	if out, code := check("GITHUB_ACTIONS=true"); code != 1 || !strings.Contains(out, "check: "+noBox) ||
+		!slices.Equal(annotations(out), []string{"::error title=make check failed::" + noBox}) {
+		t.Fatalf("no box file: exit %d\n%s", code, out)
+	}
 
-	// What the box itself would refuse: validate's.
+	// What the box itself would refuse: validate's, its output beneath
+	// the line, and in Actions in the annotation's one line.
 	r.write(boxFile, strings.Replace(good, "\tliveswap_webhook\n", "\tliveswap_webhook\n\tno_such_directive\n", 1))
-	if out, code := check(); code != 1 || !strings.Contains(out, boxFile+" does not validate:") || !strings.Contains(out, "no_such_directive") {
+	if out, code := check(); code != 1 || !strings.Contains(out, "check: "+boxFile+" does not validate:\n  ") || !strings.Contains(out, "no_such_directive") || annotations(out) != nil {
 		t.Fatalf("a file validate refuses: exit %d\n%s", code, out)
+	}
+	out, code := check("GITHUB_ACTIONS=true")
+	ann := regexp.MustCompile(`^::error title=make check failed::` + regexp.QuoteMeta(boxFile) + ` does not validate:   .*no_such_directive.*\n$`)
+	if a := annotations(out); code != 1 || len(a) != 1 || !ann.MatchString(a[0]) {
+		t.Fatalf("a file validate refuses, in Actions: exit %d\n%s", code, out)
+	}
+
+	// A stand-in hotserve ($REAL beneath it). No hostname has a : or a ,,
+	// so its describe names the directory a:b,c as the host, and adds a
+	// warning with a % and a CR; with FAIL, describe or validate fails
+	// and prints nothing.
+	r.remove("deploy.example.com")
+	odd := "a:b,c"
+	r.write(odd+"/Caddyfile", good)
+	stand := filepath.Join(r.home, "stand-in-hotserve")
+	script := `#!/bin/sh
+case "$FAIL $1" in
+"describe box"|"validate validate") exit 1 ;;
+esac
+if [ "$1 $2" = "box describe" ]; then
+	"$REAL" box describe "$3" | sed 's/^host .*/host a:b,c/'
+	printf 'warning 100%% near\r a cap\n'
+	exit 0
+fi
+exec "$REAL" "$@"
+`
+	if err := os.WriteFile(stand, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oddCheck := func(fail string) (string, int) {
+		return r.run("check", "HOTSERVE="+stand, "REAL="+bin, "FAIL="+fail, "GITHUB_ACTIONS=true")
+	}
+	// A warning's annotation is on its box's file, the name escaped as a
+	// property's must be (: and , too) and the text as a message's.
+	out, code = oddCheck("")
+	if code != 0 || !strings.Contains(out, "check: warning: "+odd+"/Caddyfile: 100% near\r a cap\n") ||
+		!slices.Equal(annotations(out), []string{"::warning file=a%3Ab%2Cc/Caddyfile::100%25 near  a cap\n"}) {
+		t.Fatalf("a warning on an odd name, in Actions: exit %d\n%q", code, out)
+	}
+	// A describe or a validate that fails and says nothing: the line and
+	// the annotation still name the file and what failed.
+	for fail, want := range map[string]string{
+		"describe": odd + "/Caddyfile: " + stand + " box describe failed, and said nothing\n",
+		"validate": odd + "/Caddyfile does not validate: " + stand + " validate failed, and said nothing\n",
+	} {
+		if o, c := oddCheck(fail); c != 1 || !strings.Contains(o, "check: "+want) || !slices.Equal(annotations(o), []string{"::error title=make check failed::" + want}) {
+			t.Errorf("%s fails silently, in Actions: exit %d\n%s", fail, c, o)
+		}
 	}
 }
 
