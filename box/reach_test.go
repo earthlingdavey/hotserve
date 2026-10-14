@@ -228,6 +228,87 @@ func TestReachJSON(t *testing.T) {
 	}
 }
 
+// TestReachShapes: what the walk reads of the levels above the routes,
+// apps.http.servers.<name>.routes, and what it makes of a level that is
+// not the shape Caddy prints. A level that is absent, null or of
+// another type is not there, so the walk finds no box_webhook; a server
+// of another type carries nothing; a route list that does not read is
+// the box's error when the walk reaches its server, in name order; a
+// name matches only as spelled, and one given twice means its last
+// value, as in a decode to any; what the walk does not read cannot
+// fail it. The texts are the box's own errors.
+func TestReachShapes(t *testing.T) {
+	const (
+		noParse   = "the adaptation does not parse"
+		noWebhook = "the adaptation has no box_webhook"
+		webhook   = `{"routes":[{"match":[{"host":["deploy.example.com"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"handler":"box_webhook"}]}]}],"terminal":true}]}`
+	)
+	servers := func(s string) string { return `{"apps":{"http":{"servers":{` + s + `}}}}` }
+	for name, c := range map[string]struct {
+		adapted string
+		want    string // "" reachable; else the error's text
+	}{
+		"nothing":                       {"", noParse},
+		"not JSON":                      {"{", noParse},
+		"a second value after it":       {"{} {}", noParse},
+		"null":                          {"null", noWebhook},
+		"an array":                      {"[]", noWebhook},
+		"a string":                      {`"x"`, noWebhook},
+		"no apps":                       {`{"admin":{}}`, noWebhook},
+		"apps null":                     {`{"apps":null}`, noWebhook},
+		"apps of another type":          {`{"apps":1}`, noWebhook},
+		"no http":                       {`{"apps":{"tls":{}}}`, noWebhook},
+		"http of another type":          {`{"apps":{"http":[]}}`, noWebhook},
+		"no servers":                    {`{"apps":{"http":{}}}`, noWebhook},
+		"servers of another type":       {`{"apps":{"http":{"servers":"srv0"}}}`, noWebhook},
+		"servers empty":                 {servers(""), noWebhook},
+		"a server of another type":      {servers(`"a":[1],"b":true,"c":` + webhook), ""},
+		"a server without routes":       {servers(`"a":{"listen":[":80"]},"b":` + webhook), ""},
+		"routes null":                   {servers(`"a":{"routes":null},"b":` + webhook), ""},
+		"routes of another type first":  {servers(`"a":{"routes":{}},"b":` + webhook), noParse},
+		"routes of another type after":  {servers(`"a":` + webhook + `,"b":{"routes":{}}`), ""},
+		"a route of another type first": {servers(`"a":{"routes":[1]},"b":` + webhook), noParse},
+		"only servers without webhook":  {servers(`"a":{"routes":[]},"b":{"routes":[{"handle":[{"handler":"static_response"}]}]}`), noWebhook},
+		// The handler stays "headers" with a request section only if
+		// the number is read as one: a decode that dropped it would let
+		// the request-changing handler pass.
+		"a number past float64's range in a route":   {string(reachJSON(`{"handle":[{"handler":"headers","request":1e999}]},`, "")), noParse},
+		"a route list given twice, the last reads":   {servers(`"a":{"routes":{},"routes":[]},"b":` + webhook), ""},
+		"a route list given twice, the last fails":   {servers(`"a":{"routes":[],"routes":{}},"b":` + webhook), noParse},
+		"a server given twice, the last carries":     {servers(`"a":{"routes":[]},"a":` + webhook), ""},
+		"a server given twice, the last is empty":    {servers(`"a":` + webhook + `,"a":{}`), noWebhook},
+		"apps given twice, the last read":            {`{"apps":{"http":{"servers":{"a":` + webhook + `}}},"apps":{"http":{"servers":{"b":{"routes":[]}}}}}`, noWebhook},
+		"http given twice, the last read":            {`{"apps":{"http":{"servers":{"a":` + webhook + `}},"http":{"servers":{"b":{"routes":[]}}}}}`, noWebhook},
+		"servers given twice, the last read":         {`{"apps":{"http":{"servers":{"a":` + webhook + `},"servers":{"b":{"routes":[]}}}}}`, noWebhook},
+		"apps given twice, the last of another type": {`{"apps":{"http":{"servers":{"a":` + webhook + `}}},"apps":1}`, noWebhook},
+		"Apps":                                  {`{"Apps":{"http":{"servers":{"a":` + webhook + `}}}}`, noWebhook},
+		"HTTP":                                  {`{"apps":{"HTTP":{"servers":{"a":` + webhook + `}}}}`, noWebhook},
+		"Servers":                               {`{"apps":{"http":{"Servers":{"a":` + webhook + `}}}}`, noWebhook},
+		"Routes":                                {servers(`"a":{"Routes":` + webhook[len(`{"routes":`):]), noWebhook},
+		"another spelling beside the right one": {`{"apps":{"Http":{"servers":{"a":` + webhook + `}},"http":{"servers":{"b":{"routes":[]}}}}}`, noWebhook},
+		"members the walk does not read": {`{"admin":{"routes":{}},"logging":{"logs":{"routes":[1]}},"apps":{"tls":{"servers":{"x":{"routes":{}}}},` +
+			`"http":{"http_port":80,"routes":{},"servers":{"srv0":{"listen":[":443"],"tls_connection_policies":{"routes":1},"routes":[{"match":[{"host":["deploy.example.com"]}],` +
+			`"handle":[{"handler":"subroute","routes":[{"handle":[{"handler":"box_webhook"}]}]}],"terminal":true}]}}}}}`, ""},
+		// Where the walk does not read it, a number no float64 holds is
+		// no error, skipped or decoded and dropped (hotserve adapt,
+		// which encodes Go values, never prints one).
+		"a number past float64's range the walk does not read": {`{"admin":{"x":1e999},"apps":{"tls":{"x":1e999},"http":{"servers":{"srv0":` + webhook[:len(webhook)-1] + `,"x":1e999}}}}}`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := reach([]byte(c.adapted), "deploy.example.com")
+			var r *refusal
+			switch {
+			case errors.As(err, &r):
+				t.Fatalf("refused: %v", err)
+			case c.want == "" && err != nil:
+				t.Fatalf("got %v, want reachable", err)
+			case c.want != "" && (err == nil || err.Error() != c.want):
+				t.Fatalf("got %v, want %q", err, c.want)
+			}
+		})
+	}
+}
+
 // TestReachIsCaseInsensitive: the walk lower-cases the host; Caddy's
 // host matcher does too, so a site written in capitals is still the
 // box site, and still shadowed by one with a path.

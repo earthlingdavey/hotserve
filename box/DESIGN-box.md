@@ -589,6 +589,14 @@ listener wrappers (`proxy_protocol`) or its `protocols`, so a signed
 push that sets one the workflow's connection cannot pass strands the
 box until root undoes it ("At 3am").
 
+The walk reads names as a generic JSON decode does: a name matches only
+as spelled, and a name given twice means its last value. Caddy's own
+decode folds the case of a struct field's name (`apps`, `servers`,
+`routes`) and decodes a repeat of one over what the earlier one
+decoded. Only bytes
+`hotserve adapt` cannot print tell the two apart: it is Caddy's encoder
+of Go values, which spells each name as its tag and gives it once.
+
 ## The install transaction
 
 ### Invariants
@@ -811,6 +819,7 @@ can do both by other means.
 | What a console put at an env file's name that is not root's own is not put back as it was by a rollback: a link reads as no file, so the push replaces it and the rollback removes the push's file; a file at another mode or owner gets its bytes back at 0640 `root:hotserve` | "Values and the env file" | 2 | 2 | 3 | 12; two independent faults (a console's own entry in root's directory, then a failed push), and the push is red and named |
 | An app launched (a deploy, a crash's relaunch) while a push's env files stand at `new` — between their swap and the Caddyfile's, or before a rollback puts them back — runs with those values, beside the Caddyfile it had, until its next launch | Transitions, installing → swapped | 2 | 2 | 3 | 12; the values are ones a signer committed, the push is red and named when it rolls back, and the app's next launch reads what is on disk |
 | A push installs an app's first env file, its `applied.json` write fails, and a console edit lands before recovery: `unknown`, and the baseline does not list the file; a later push that drops the app's secrets leaves it on disk, since root removes only listed files | `applied.json`'s `secrets`; Transitions, swapped → applied | 2 | 2 | 5 | 20, kept by rule 4 (the triage skill): a guard is a branch for a two-fault case. The file is where values may live (I9) and nothing names it (an `env_file` there with no secrets is refused); a push that gives the app secrets again lists it. The console removes it |
+| The reachability walk reads a name only as spelled and takes the last of a name given twice, where Caddy folds the case of `apps`, `servers` and `routes` and decodes a repeat of one over the earlier: on such an adaptation it may weigh routes Caddy does not serve, and pass a file that strands the box | Reachability, after "Not caught here" | 4 | 1 | 3 | 12; `hotserve adapt` cannot print such bytes (Caddy's encoder of Go values spells each name as its tag, once), and following Caddy's decoder level by level is a JSON reader of its own |
 
 ## Admission
 
@@ -1009,7 +1018,7 @@ Every numeric bound, in one place, with its reason.
 | request id | 32 lowercase hex, random for each push | 128 bits: two honest runs never collide; one spelling, so one id names one push |
 | validate children (`hotserve validate`, `hotserve-backup validate`) | 120 s each and a 1 s `WaitDelay`; output kept: the last 4 KiB, of which the refusal quotes the `Error:` line (else the last line), redacted, then bounded as quoted input | validate provisions every module; a legitimate run is about a second, and a loaded box or a slow issuer discovery must not refuse a good push |
 | the adapt child (`hotserve adapt`) | 120 s and a 1 s `WaitDelay`, as validate's; run after `hotserve validate` passed, so a non-zero exit is the box's error (500), never a refusal | the adapter validate just ran; a loaded box must not refuse a good push |
-| the adaptation | 16 MiB of stdout kept, bytes past it counted and dropped (never an error to the pipe: a child blocked on a full pipe would run to its deadline), stderr discarded; past the cap the push is refused `the new Caddyfile's adaptation is larger than 16 MiB`; the JSON reaches nothing but the reachability walk, since it holds every expanded `{$VAR}`; the walk decodes it once and converts it in one pass, linear in its size however deep its routes nest | a 1 MiB Caddyfile adapts to a few MiB; the bundle's own figure |
+| the adaptation | 16 MiB of stdout kept, bytes past it counted and dropped (never an error to the pipe: a child blocked on a full pipe would run to its deadline), stderr discarded; past the cap the push is refused `the new Caddyfile's adaptation is larger than 16 MiB`; the JSON reaches nothing but the reachability walk, since it holds every expanded `{$VAR}`; the walk decodes objects only down to a server's members, skipping arrays and scalars above that depth undecoded; each value at that depth is decoded and converted as a route list one at a time, linear in its size however deep it nests, and the walk reads only the servers' `routes` | a 1 MiB Caddyfile adapts to a few MiB; the bundle's own figure |
 | handler poll interval for the first result | 1 s | how long a result root has written can wait before the handler reads it and answers the POST: `verified`, or a final result if root was that quick ("Why 202 and a poll") |
 | workflow poll | 30 minutes, then red naming the journal | past root's worst case at its own deadlines, with room for the `is-active` calls and recovery: a 10-minute chain, the 300 s `activating` wait, and the 300 s deadline on each of the reload and the rollback reload come to 25 minutes |
 | `activating` / `reloading` wait (step 16, recovery, `init`) | 300 s elapsed, one budget per run from its first sight of either state, never reset | hotserve's `TimeoutStartSec=240s` plus `RestartSec`; an elapsed bound, since `Restart=on-failure` can keep a unit activating across attempts; one budget, so a hotserve that flaps cannot hold root's lock for 300 s per bundle |

@@ -39,13 +39,13 @@ func msgUnreachable(what string) string {
 // read: a fixed text, since a decoder's words quote the input.
 var errAdaptation = errors.New("the adaptation does not parse")
 
-// The adaptation is decoded as one JSON value and converted once, in a
+// A route list is decoded as one JSON value and converted once, in a
 // single pass linear in its size, into the shape the walk reads: a
-// route's group, matcher sets, handlers and terminal flag; a handler's
-// module name, whether a headers handler has a request section, and a
-// subroute's routes. Another module's keys are never read, whatever
-// they hold; a value of the wrong shape where a route list, a set or a
-// handler must be is the adaptation's fault.
+// route's group, matcher sets, handlers and terminal flag; a
+// handler's module name, whether a headers handler has a request
+// section, and a subroute's routes. Another module's keys are never
+// read, whatever they hold; a value of the wrong shape where a route
+// list, a set or a handler must be is the adaptation's fault.
 type adaptedRoute struct {
 	group    string
 	match    []map[string]any
@@ -120,6 +120,45 @@ func routeList(v any) ([]adaptedRoute, error) {
 	return routes, nil
 }
 
+// adaptation is the adaptation as the walk decodes it: five maps deep,
+// for apps, http, servers, a server's name and a server's member, each
+// member's value converted as a route list; the walk reads
+// apps.http.servers.<name>.routes alone. Maps, as in a decode to any: a
+// name matches only as spelled, a name given twice means its last
+// value, and a level of another type decodes as empty, a path that is
+// not there. A map decodes all its members, so the others down to that
+// depth are decoded too and dropped, a server's other members ("errors"
+// and "named_routes" among them) one at a time; an array or a scalar
+// above that depth is skipped, never decoded.
+type adaptation map[string]map[string]map[string]map[string]map[string]convertedRoutes
+
+// convertedRoutes is a server member's value, converted as a route list
+// as the server is decoded, so that no more than one member's generic
+// tree is held whole at a time; a converted list keeps of its tree only
+// the matcher sets. A list that does not read is kept as the error, for
+// the walk to return on reaching its server: a server after the one
+// that carries box_webhook is never reached.
+type convertedRoutes struct {
+	routes []adaptedRoute
+	err    error
+}
+
+// UnmarshalJSON converts b, which the decoder has already checked is
+// one JSON value. It returns no error: the decode goes on, and err
+// waits for the walk.
+func (c *convertedRoutes) UnmarshalJSON(b []byte) error {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		// A number no float64 holds, the one JSON a decode to any
+		// refuses.
+		*c = convertedRoutes{err: errAdaptation}
+		return nil
+	}
+	routes, err := routeList(v)
+	*c = convertedRoutes{routes: routes, err: err}
+	return nil
+}
+
 // reach asks the question of adapted for host, the box_webhook host
 // the walk found. nil: both requests meet box_webhook first. A
 // *refusal: the catalogue text naming what stands in the way. Any other
@@ -127,25 +166,29 @@ func routeList(v any) ([]adaptedRoute, error) {
 // with no box_webhook routed for the host, which the walk of the same
 // bytes rules out.
 func reach(adapted []byte, host string) error {
-	var cfg any
-	if json.Unmarshal(adapted, &cfg) != nil {
+	var cfg adaptation
+	// Bytes that are not one JSON value are a *SyntaxError. A level of
+	// another type is an *UnmarshalTypeError, and the decode goes on
+	// past it; convertedRoutes returns no error.
+	var mismatch *json.UnmarshalTypeError
+	if err := json.Unmarshal(adapted, &cfg); err != nil && !errors.As(err, &mismatch) {
 		return errAdaptation
 	}
-	servers, _ := dig(cfg, "apps", "http", "servers").(map[string]any)
+	servers := cfg["apps"]["http"]["servers"]
 	for _, name := range slices.Sorted(maps.Keys(servers)) {
 		// The server that carries box_webhook is the one whose
 		// listener the workflow reaches; another server's routes for
 		// the same host answer on another port.
-		routes, err := routeList(dig(servers[name], "routes"))
-		if err != nil {
-			return err
+		r := servers[name]["routes"]
+		if r.err != nil {
+			return r.err
 		}
-		if !carriesWebhook(routes) {
+		if !carriesWebhook(r.routes) {
 			continue
 		}
 		for _, method := range []string{http.MethodGet, http.MethodPost} {
 			w := &reachWalk{req: reachRequest(method, host), groups: map[string]groupState{}}
-			switch end, b := w.routes(routes, matchVerdict{status: matches}, true); end {
+			switch end, b := w.routes(r.routes, matchVerdict{status: matches}, true); end {
 			case reachedWebhook:
 			case blocked:
 				return &refusal{msg: msgUnreachable(b.text(host))}
@@ -156,19 +199,6 @@ func reach(adapted []byte, host string) error {
 		return nil
 	}
 	return errors.New("the adaptation has no box_webhook")
-}
-
-// dig follows keys through decoded objects; nil when the path is not
-// there or runs through something else.
-func dig(v any, keys ...string) any {
-	for _, k := range keys {
-		m, ok := v.(map[string]any)
-		if !ok {
-			return nil
-		}
-		v = m[k]
-	}
-	return v
 }
 
 // carriesWebhook reports whether a box_webhook handler stands anywhere
