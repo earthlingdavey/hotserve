@@ -35,7 +35,7 @@ func reachOf(t *testing.T, in string) error {
 	if err != nil {
 		t.Fatalf("adapt: %v\n%s", err, in)
 	}
-	return reach(cfg, "deploy.example.com")
+	return reach(cfg, "deploy.example.com", nil)
 }
 
 // wantReach checks a verdict: "" is reachable; otherwise the exact
@@ -147,6 +147,111 @@ func TestReach(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			wantReach(t, reachOf(t, reachFile(c.order, c.before, c.inside, c.after)), c.want)
+		})
+	}
+}
+
+// TestReachDoor is the door (DESIGN-box.md, "The door"): the new file's
+// box server must listen where the loaded server the push arrived
+// through does — `https_port`, `bind` and `default_bind` all move it —
+// compared as Caddy spells the addresses, in any order, each once; a
+// nil door (no Caddy server received the push) is not compared, and the
+// e2e box's own port is kept by a file that names it. A move is the
+// catalogue's fixed text, which names no address.
+func TestReachDoor(t *testing.T) {
+	for name, c := range map[string]struct {
+		door                  []string
+		global, inside, after string
+		moved                 bool
+	}{
+		"the same address":                {door: []string{":443"}},
+		"no door":                         {global: "\thttps_port 8443\n"},
+		"spelt with its network":          {door: []string{"tcp/:443"}},
+		"twice":                           {door: []string{":443", ":443"}},
+		"https_port":                      {door: []string{":443"}, global: "\thttps_port 8443\n", moved: true},
+		"the e2e box's port, kept":        {door: []string{":8443"}, global: "\thttps_port 8443\n"},
+		"a bind":                          {door: []string{":443"}, inside: "\tbind 127.0.0.1\n", moved: true},
+		"the same bind":                   {door: []string{"127.0.0.1:443"}, inside: "\tbind 127.0.0.1\n"},
+		"two binds, in the other order":   {door: []string{"[::1]:443", "127.0.0.1:443"}, inside: "\tbind 127.0.0.1 ::1\n"},
+		"a bind added beside the address": {door: []string{":443"}, inside: "\tbind 0.0.0.0 ::\n", moved: true},
+		"default_bind":                    {door: []string{":443"}, global: "\tdefault_bind 10.0.0.5\n", moved: true},
+		"the box site alone moved":        {door: []string{":443"}, inside: "\tbind 10.0.0.5\n", moved: true},
+		"another site moved":              {door: []string{":443"}, global: "\thttp_port 8080\n"},
+		// A site bound to two addresses adapts into a server per set of
+		// addresses it shares with other sites, each carrying its
+		// routes: the push's own server is the one asked.
+		"two servers carry the webhook, the push through the shared address": {door: []string{"127.0.0.1:443"},
+			inside: "\tbind 127.0.0.1 127.0.0.2\n", after: "other.example.com {\n\tbind 127.0.0.1\n\trespond x\n}\n"},
+		"two servers carry the webhook, the push through the other address": {door: []string{"127.0.0.2:443"},
+			inside: "\tbind 127.0.0.1 127.0.0.2\n", after: "other.example.com {\n\tbind 127.0.0.1\n\trespond x\n}\n"},
+		"two servers carry the webhook, neither at the door": {door: []string{":443"},
+			inside: "\tbind 127.0.0.1 127.0.0.2\n", after: "other.example.com {\n\tbind 127.0.0.1\n\trespond x\n}\n", moved: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := strings.Replace(reachFile(nil, "", c.inside, c.after), "{\n", "{\n"+c.global, 1)
+			cfg, _, err := adapt(t, in)
+			if err != nil {
+				t.Fatalf("adapt: %v\n%s", err, in)
+			}
+			wantDoor(t, reach(cfg, "deploy.example.com", c.door), c.moved)
+		})
+	}
+}
+
+// wantDoor checks a door verdict: kept, or the catalogue's fixed text.
+func wantDoor(t *testing.T, err error, moved bool) {
+	t.Helper()
+	var r *refusal
+	switch {
+	case !moved && err != nil:
+		t.Fatalf("refused: %v", err)
+	case moved && (!errors.As(err, &r) || r.msg != msgListenMoved):
+		t.Fatalf("got  %v\nwant %q", err, msgListenMoved)
+	}
+}
+
+// TestReachDoorJSON is the door on adaptations by hand: a placeholder
+// in an address, replaced as Caddy's App.Provision replaces it before
+// the loaded server keeps it; a listen list the box must not trust
+// blindly; a port range and an address the grammar does not read,
+// compared as written; and the text, which quotes nothing of any of
+// them.
+func TestReachDoorJSON(t *testing.T) {
+	t.Setenv("BOX_TEST_ADDR", ":443")
+	for name, c := range map[string]struct {
+		listen string // the server's listen key with its comma, or ""
+		door   []string
+		want   string // "" kept; "moved" the fixed text; "error" the box's own
+	}{
+		"a placeholder resolving to the door": {listen: `"listen":["{env.BOX_TEST_ADDR}"],`, door: []string{":443"}},
+		"a placeholder resolving elsewhere":   {listen: `"listen":["{env.BOX_TEST_ADDR}"],`, door: []string{":8443"}, want: "moved"},
+		// Provision refuses an unresolved placeholder, and validate ran
+		// it on the same bytes: here it is the box's own.
+		"a placeholder that does not resolve":   {listen: `"listen":["{env.BOX_TEST_NOT_SET}"],`, door: []string{":443"}, want: "error"},
+		"no listen key":                         {door: []string{":443"}, want: "error"},
+		"listen null":                           {listen: `"listen":null,`, door: []string{":443"}, want: "error"},
+		"listen empty":                          {listen: `"listen":[],`, door: []string{":443"}, want: "moved"},
+		"an empty door":                         {listen: `"listen":[":443"],`, door: []string{}, want: "moved"},
+		"no listen key and no door":             {},
+		"an address that does not parse, twice": {listen: `"listen":["x:y","x:y"],`, door: []string{"x:y"}},
+		"an address that does not parse, moved": {listen: `"listen":["x:y"],`, door: []string{":443"}, want: "moved"},
+		"a port range, as written":              {listen: `"listen":[":443-444"],`, door: []string{":443", ":444"}, want: "moved"},
+		"a listen that does not read":           {listen: `"listen":":443",`, door: []string{":443"}, want: "error"},
+		"a listen whose address does not read":  {listen: `"listen":[443],`, door: []string{":443"}, want: "error"},
+		"a listen that does not read, no door":  {listen: `"listen":":443",`},
+		"a control byte in the address":         {listen: `"listen":[":443\n"],`, door: []string{":443"}, want: "moved"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapted := strings.Replace(string(connJSON("")), `"listen":[":443"],`, c.listen, 1)
+			err := reach([]byte(adapted), "deploy.example.com", c.door)
+			if c.want == "error" {
+				var r *refusal
+				if err == nil || errors.As(err, &r) {
+					t.Fatalf("got %v, want the box's own error", err)
+				}
+				return
+			}
+			wantDoor(t, err, c.want == "moved")
 		})
 	}
 }
@@ -294,7 +399,7 @@ func TestReachConnectionJSON(t *testing.T) {
 			if host == "" {
 				host = "deploy.example.com"
 			}
-			err := reach([]byte(strings.ReplaceAll(string(connJSON(c.settings)), "deploy.example.com", host)), host)
+			err := reach([]byte(strings.ReplaceAll(string(connJSON(c.settings)), "deploy.example.com", host)), host, nil)
 			if c.want == "error" {
 				var r *refusal
 				if err == nil || errors.As(err, &r) {
@@ -373,7 +478,7 @@ func TestReachJSON(t *testing.T) {
 		"the webhook on another host": {adapted: []byte(`{"apps":{"http":{"servers":{"srv0":{"routes":[{"match":[{"host":["other.example.com"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"handler":"box_webhook"}]}]}],"terminal":true}]}}}}}`), want: "error"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := reach(c.adapted, "deploy.example.com")
+			err := reach(c.adapted, "deploy.example.com", nil)
 			if c.want == "error" {
 				var r *refusal
 				if err == nil || errors.As(err, &r) {
@@ -410,7 +515,7 @@ func TestReachDeepNesting(t *testing.T) {
 	}
 	b.WriteString(`],"terminal":true}]}}}}}`)
 	start := time.Now()
-	if err := reach([]byte(b.String()), "deploy.example.com"); err != nil {
+	if err := reach([]byte(b.String()), "deploy.example.com", nil); err != nil {
 		t.Fatal(err)
 	}
 	if time.Since(start) > 5*time.Second {
