@@ -276,8 +276,10 @@ lifetime to the binary's.
 What the unit gives us: `KillMode=control-group` makes stop and crash
 cleanup mean the whole process tree (npm → node → workers), the
 journal captures stdout/stderr under `SyslogIdentifier=hotserve-<app>`,
-`Restart=no` keeps the watchdog the sole restart authority, and
-`NoNewPrivileges` is on. `handleState.Unit` (persisted in
+`Restart=no` keeps the watchdog the sole restart authority,
+`NoNewPrivileges` is on, and `LimitCORE=0` on both limits means a
+crash writes no core dump of the app (DESIGN-threat-model.md, "Where
+`env_file` values sit"). `handleState.Unit` (persisted in
 `state.json`) is what `Reattach` looks up after a hotserve restart: a
 running unit is adopted with the socket its recorded nonce names —
 pinned afresh, so a name that no longer holds a socket refuses the
@@ -509,7 +511,8 @@ author's beliefs about systemd, and only the real thing corrects them.
    support matrix, on both arches): Depends resolution (`libpam-systemd`,
    `dbus`), user manager active with lingering, a deploy under the
    shipped unit as a transient unit with its output and `LimitNOFILE`
-   in the journal, `hotserve validate` as root and as hotserve leaving
+   in the journal and `LimitCORE=0` on the unit and inside it,
+   `hotserve validate` as root and as hotserve leaving
    the running app alone, the app keeping its PID across the upgrade
    restart, and removal taking the apps, drop-ins and linger flag.
 
