@@ -2,9 +2,10 @@
 
 [Your first deploy](first-deploy.md) leaves a working box with the
 doors a fresh server has. This page closes them: SSH by key only, the
-SSH port shut to everyone but you, and, if you want one, an
-administrator who is not root. It is recommended, and none of it is
-needed to deploy.
+SSH port shut to everyone but you, and, if you want them, an
+administrator who is not root and Debian's updates for its release —
+security fixes and point releases — installed on their own. It is
+recommended, and none of it is needed to deploy.
 
 Nothing here changes how the box deploys or takes its config: app
 deploys authenticate with the workflow's token, and config with a
@@ -92,3 +93,74 @@ let the administrator create and edit env files under
 ([Move a hand-made env file in](secrets.md#move-a-hand-made-env-file-in)),
 remove it and its group, as root: `rm /etc/sudoers.d/hotserve-admin &&
 groupdel hotserve-admin`.
+
+## 4. Debian's updates on their own, if you want them
+
+Debian's `unattended-upgrades` installs Debian's updates for the box's
+release — security fixes and point releases — by itself, once a day. Like step 3 it is optional, and nothing
+in it stops or restarts an app.
+
+What it does: normally between 06:00 and 07:00 in the box's time zone
+(`systemctl list-timers apt-daily-upgrade.timer` shows the next run;
+a run the box was off for happens after it boots)
+it installs what Debian has published for the release the box runs,
+from Debian's security archive and, at a point release, from the
+release itself — and nothing from anywhere else. A daemon whose
+package restarts it on upgrade runs the fix at once: `sshd` is one,
+and open SSH sessions stay up, since the restart takes only the
+listener. Everything started afterwards runs the fixed code: each app
+at its next launch (a deploy, a rollback, a relaunch after a crash),
+each SSH login, and the `ssh-keygen` a push to the box's repository
+runs.
+
+What it does not do: update hotserve, whose `.deb` comes from no
+repository ([Upgrading](upgrading.md) is how), or an app's runtime
+that did not come from Debian, such as the Deno under
+`/usr/local/bin` or the Node example's own executable
+([Patching the host](upgrading.md#patching-the-host)). Nor does it reach what
+a running app or daemon has already loaded, which waits for a
+relaunch, or the running kernel, which waits for a reboot, both at a
+time you choose; apps run on the box's own `/usr`, so a file an app
+first reads after the upgrade is the new one. An app launched long ago
+can thus be behind what the box has, and
+[Patching the host](upgrading.md#patching-the-host) says how to give
+it a launch. It never reboots the box: `Automatic-Reboot` is off
+unless you turn it on, and this page does not. When a kernel update
+lands it leaves the reboot to you and notes it: `cat
+/run/reboot-required.pkgs` lists the packages waiting for one, and
+the file is absent while none does.
+
+As root on the box, first see whether it is already on, since a
+provider's image may ship it:
+
+```sh
+apt-config dump APT::Periodic::Unattended-Upgrade    # "1": on; "0" or nothing: off
+```
+
+If it is off, install the package — on a box without it, this writes
+`/etc/apt/apt.conf.d/20auto-upgrades`, which turns it on — and run
+the check again:
+
+```sh
+apt install unattended-upgrades
+```
+
+If it still does not print `"1"`, the image installed the package
+turned off, and installing again changes nothing, so write the file
+the package writes when it is on:
+
+```sh
+printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /etc/apt/apt.conf.d/20auto-upgrades
+```
+
+In every case, check that it is on and what it would do:
+
+```sh
+apt-config dump APT::Periodic::Unattended-Upgrade    # "1"; anything else: a later file in /etc/apt/apt.conf.d/ turns it off (grep -r Periodic::Unattended-Upgrade /etc/apt/apt.conf.d/)
+apt-config dump Unattended-Upgrade::Origins-Pattern    # three origin=Debian lines, nothing else
+apt-config dump Unattended-Upgrade::Automatic-Reboot   # prints nothing, or "false": no automatic reboot
+unattended-upgrade --dry-run -v    # what the next run would install; "No packages found" on a box that is up to date
+```
+
+Every run, this dry run included, writes what it did to
+`/var/log/unattended-upgrades/unattended-upgrades.log`.
