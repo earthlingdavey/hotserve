@@ -61,9 +61,11 @@ import (
 // bindPath is one of the app's own directories bound back into its
 // view: dest is where the app sees it (and what WorkingDirectory,
 // HOME and the {release_dir}/{shared_dir} placeholders name), source
-// is what is mounted there. They differ only when the operator has
-// pointed one of those directories somewhere else with a symlink —
-// binding the resolved path at the resolved path would put the
+// is what is mounted there. They differ only when the path to the
+// liveswap root goes through a link (/srv/liveswap -> /mnt/liveswap);
+// a link anywhere below the root is refused at launch
+// (resolveBindSources). Binding the resolved path at the resolved
+// path would put the
 // directory somewhere the app has no reason to look, and its own
 // spelling would be gone with the tmpfs that masks the root.
 type bindPath struct {
@@ -170,21 +172,20 @@ type sandboxSpec struct {
 //
 // The mandatory binds need this, and are the easier target: `shared`
 // and the release dirs live under the shared hotserve UID, and
-// appDirs.ensure's MkdirAll succeeds on a symlink. Nothing runs bare
-// any more, but the app dir is writable by the app it belongs to, and
-// what a sandboxed app writes there it writes as the hotserve uid: it
-// could replace its own `shared` with a link to /run/user/<uid> and
-// have BindPaths= mount the user manager's private socket inside its
-// sandbox on the next launch.
+// appDirs.ensure's MkdirAll succeeds on a symlink. A `shared` that is
+// a link to /run/user/<uid> would have BindPaths= mount the user
+// manager's private socket inside the app's sandbox on the next
+// launch. No app can plant that link from inside its sandbox (see the
+// end of this comment), but nothing on disk says who did.
 //
 // A mandatory bind must therefore resolve to the directory it NAMES.
 // The only difference permitted is one an alias on the liveswap root
 // itself explains; anything else is refused, including targets that
 // look innocent. That is not conservatism, it is the only line that
-// can be drawn: the app's own directory is writable by the app, so a
-// symlink placed there cannot be distinguished from one the operator
-// meant. `shop/shared -> /mnt/shop-data` being a legitimate layout is
-// exactly what would make /mnt/shop-data an acceptable target for a
+// can be drawn: a symlink in the app's own directory cannot be
+// distinguished from one the operator meant. `shop/shared ->
+// /mnt/shop-data` being a legitimate layout is exactly what would
+// make /mnt/shop-data an acceptable target for a
 // `blog` to aim at, and no list of other apps' data and env_file
 // locations can close that — it would be incomplete by construction
 // and would go stale, which is the derived set this model deletes.
