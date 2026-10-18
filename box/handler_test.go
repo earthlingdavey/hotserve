@@ -266,18 +266,10 @@ func TestHandlerStatusBoxErrors(t *testing.T) {
 		setup func(t *testing.T, r *rig)
 		want  string
 	}{
-		"installed missing": {func(t *testing.T, r *rig) { must(t, os.Remove(r.installed)) }, "could not read the Caddyfile this box runs: open "},
-		"installed too big": {func(t *testing.T, r *rig) { r.write(t, r.installed, big) }, "larger than 1048576 bytes"},
-		"installed a FIFO":  {func(t *testing.T, r *rig) { must(t, os.Remove(r.installed)); mkfifo(t, r.installed) }, "not a regular file"},
-		"installed a dir":   {func(t *testing.T, r *rig) { must(t, os.Remove(r.installed)); must(t, os.Mkdir(r.installed, 0o755)) }, "not a regular file"},
-		"installed not a box's": {func(t *testing.T, r *rig) { r.write(t, r.installed, []byte("{\n}\nx.com {\n}\n")) },
-			"the Caddyfile this box runs has no box block"},
-		"installed refused with input": {func(t *testing.T, r *rig) {
-			r.write(t, r.installed, file(strings.Replace(good, "deploy.example.com {", strings.Repeat("a", 2000)+".com {", 1)))
-		}, "has a box_webhook site whose address is not one bare hostname"},
-		"installed refused, the address filtered": {func(t *testing.T, r *rig) {
-			r.write(t, r.installed, file(strings.Replace(good, "deploy.example.com {", "https://"+jwt+" {", 1)))
-		}, "[redacted:jwt]"},
+		"installed missing":     {func(t *testing.T, r *rig) { must(t, os.Remove(r.installed)) }, "could not read the Caddyfile this box runs: open "},
+		"installed too big":     {func(t *testing.T, r *rig) { r.write(t, r.installed, big) }, "larger than 1048576 bytes"},
+		"installed a FIFO":      {func(t *testing.T, r *rig) { must(t, os.Remove(r.installed)); mkfifo(t, r.installed) }, "not a regular file"},
+		"installed a dir":       {func(t *testing.T, r *rig) { must(t, os.Remove(r.installed)); must(t, os.Mkdir(r.installed, 0o755)) }, "not a regular file"},
 		"applied not JSON":      {func(t *testing.T, r *rig) { r.write(t, filepath.Join(r.dir, "applied.json"), []byte("{")) }, "could not read the baseline"},
 		"applied sha not an id": {func(t *testing.T, r *rig) { r.applied(t, "HEAD") }, "sha is not a 40-hex commit id"},
 		"applied too big": {func(t *testing.T, r *rig) {
@@ -307,6 +299,41 @@ func TestHandlerStatusBoxErrors(t *testing.T) {
 			}
 			if r.logs.FilterLevelExact(zap.ErrorLevel).Len() != 1 {
 				t.Errorf("want one error line: %v", r.logs.All())
+			}
+		})
+	}
+}
+
+// A file the box runs that the walk refuses — a console edit that
+// imports, say — is the operator's to mend, not the box failing: 409,
+// as before init, with the refusal's reason, and journaled as a warning.
+func TestHandlerStatusRunsARefusedFile(t *testing.T) {
+	for name, c := range map[string]struct {
+		file string
+		want string
+	}{
+		"an import": {strings.Replace(good, "\tbox_webhook\n", "\tbox_webhook\n\timport /root/backup.caddy\n", 1),
+			"the Caddyfile this box runs imports /root/backup.caddy; inline the snippet"},
+		"not a box's": {"{\n}\nx.com {\n}\n", "the Caddyfile this box runs has no box block"},
+		"with input": {strings.Replace(good, "deploy.example.com {", strings.Repeat("a", 2000)+".com {", 1),
+			"has a box_webhook site whose address is not one bare hostname"},
+		"the address filtered": {strings.Replace(good, "deploy.example.com {", "https://"+jwt+" {", 1), "[redacted:jwt]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.applied(t, sha)
+			r.write(t, r.installed, file(c.file))
+			w := r.do(t, req{target: "/", token: r.token(t)})
+			wantError(t, w, http.StatusConflict, c.want)
+			if strings.Contains(w.Body.String(), jwt) {
+				t.Errorf("a token-shaped address in the answer: %s", w.Body)
+			}
+			if len(w.Body.String()) > 600 {
+				t.Errorf("an unbounded 409: %d bytes", w.Body.Len())
+			}
+			warned := r.logs.FilterMessage("box webhook runs a Caddyfile it cannot speak for").FilterLevelExact(zap.WarnLevel).All()
+			if len(warned) != 1 || r.logs.FilterLevelExact(zap.ErrorLevel).Len() != 0 {
+				t.Errorf("want one warning and no error line: %v", r.logs.All())
 			}
 		})
 	}

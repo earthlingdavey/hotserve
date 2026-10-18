@@ -158,8 +158,11 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) error {
 		if !errors.As(err, &ref) {
 			return h.boxError(w, readingInstalled, err)
 		}
-		h.logStateError(readingInstalled, err)
-		return respond(w, http.StatusInternalServerError, errorBody(readingInstalled+" "+ref.Reason))
+		// The box runs a file the channel cannot speak for (a console
+		// edit that imports, say): the operator's to mend, as before
+		// init, not the box failing.
+		h.logger.Warn("box webhook runs a Caddyfile it cannot speak for", zap.String("error", proof.Bound(err.Error())))
+		return respond(w, http.StatusConflict, errorBody(readingInstalled+" "+ref.Reason))
 	}
 	sum := digest(file) // what the fast path compares
 	body := statusBody{Commit: base.SHA, BoxWebhook: shape.Host, SHA256: sum, Recipient: h.recipient()}
