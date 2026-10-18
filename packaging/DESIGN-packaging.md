@@ -35,8 +35,6 @@ the scales:
 | `apt purge` finds a symlink, or anything but a regular file, at `/etc/hotserve/Caddyfile`: kept, so a reinstall comes up on what it points to | packaging/postremove.sh | 2 | 5 | 1 | 10; an operator's own path (not a fault, so occurrence 5 and detection carries it): named on stderr, and postinstall leaves a symlink alone too, so the box comes up on the file the operator chose |
 | `apt purge` while a run of the box applier holds root's lock for longer than the purge waits (30s; a run is seconds): the config and the exchange tree are both kept, so a reinstall comes up on them | packaging/postremove.sh (the lock) | 2 | 1 | 1 | 2; a run that long is a fault of its own (a disk that will not sync), and the purge names both paths and the journal to read; removing under a run would let it put a Caddyfile back after the purge (Copilot on #255, S3 O2 D5 = 30, fixed by taking the lock) |
 
-| The smoke test's install after stage 5's purge leaves the backup timers enabled beside the credential file the purge keeps: an hourly run that comes due during stages 5b and 6 runs against the starter config, and may write the state those stages then check | packaging/test/smoke.sh (stage 5) | 2 | 3 | 1 | 6; a test run that crosses the hour's mark (the hourly timer, plus its fixed delay); its failure is a red smoke, named. Moving the credential aside until stage 7, or masking the timers for 5b and 6, changes the path both stages walk (size 1, risk 2) |
-
 **Owed** (over the bar, not yet fixed): none.
 
 **Kept on purpose, not scored** — `apt purge` leaves `/etc/hotserve/age/`
