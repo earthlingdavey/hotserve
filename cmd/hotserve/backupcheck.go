@@ -187,8 +187,9 @@ func checkBackups(cmd string, args []string) (warning string, err error) {
 	// applier's step 6 validates a copy it staged 0600 in a directory of
 	// its own. So validate does not ask the given file's own mode, nor
 	// the way to it; the reload asks them of the file installed. What
-	// the candidate imports from other files is asked now.
-	candidate := cmd == "validate"
+	// the candidate imports from other files is asked now. The file a
+	// run reads is no candidate: validated in place, it is asked all.
+	candidate := cmd == "validate" && !sameFile(main, backupCaddyfile)
 	if st, err := os.Stat(main); !candidate && err == nil && st.Mode().Perm()&0o004 == 0 { //nolint:gosec // the Caddyfile the command was given; its mode is what is checked
 		say("the Caddyfile, %s, may not be read by others", main)
 	}

@@ -214,6 +214,15 @@ func TestACandidateIsNotHeldToWhereItStands(t *testing.T) {
 	if w := "blog's backup is read from " + outside + "/shop.caddy, outside " + stage; err == nil || !strings.Contains(err.Error(), w) {
 		t.Fatalf("validate of a candidate importing from outside: want %q in the error, got %v", w, err)
 	}
+	// The file a run reads is no candidate: validated in place, it is
+	// asked all of it.
+	config, _ := dirs(t)
+	write(t, config+"/Caddyfile", global(app), 0o600)
+	installed(t, config+"/Caddyfile")
+	_, err = checkBackups("validate", []string{"--config", config + "/Caddyfile"})
+	if w := "the Caddyfile, " + config + "/Caddyfile, may not be read by others"; err == nil || !strings.Contains(err.Error(), w) {
+		t.Fatalf("validate of the file backups read: want %q in the error, got %v", w, err)
+	}
 }
 
 // Nothing is asked of a Caddyfile that declares no backup, of one Caddy

@@ -1168,6 +1168,16 @@ Pointing the box at **another repository** this way leaves
 naming the old one: remove both with the change, as setup does — an
 id left behind would tie a later record to the wrong repository.
 
+## Accepted residuals
+
+Findings scored by the repository's triage rule
+(`.claude/skills/triage/SKILL.md`) and accepted; the scores are
+severity × occurrence × detection, then the fix's size and risk.
+
+| Failure | Where | S | O | D | Product | Fix | Why accepted |
+|---|---|---|---|---|---|---|---|
+| A candidate validated in a directory others may not enter, which imports a file beside it, is refused at `validate` for that directory ("which others may not enter"), though a run reads the file installed at `/etc/hotserve/Caddyfile`. | `checkBackups` (`cmd/hotserve/backupcheck.go`) | 2 | 5 | 1 | 10 | size 2, risk 1 (stop a candidate's walk at its own directory) | Rule 2 holds (refused, the directory named); under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-18). A box push carries no import, so step 6 never meets it; and a candidate's relative imports resolve beside the candidate, not where it will be installed, so a candidate validated away from `/etc/hotserve` is asked about other files than a run would read anyway. |
+
 ## Development
 
 - `make test` — everything that needs neither systemd nor sqlite3: the

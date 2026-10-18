@@ -121,15 +121,16 @@ As root, or an administrator whose `sudo` is root's:
 
 <!-- smoke: begin -->
 ```sh
-# 1. In the app's block of the Caddyfile, what to back up — in the box
-#    repo, by a signed push, which runs the next line on the box before
-#    it applies (examples/box); on a box without one, in
-#    /etc/hotserve/Caddyfile:
+# 1. In the app's block of the Caddyfile, what to back up:
 #        backup {
 #            sqlite app.db
 #            files  uploads
 #        }
-#    then, before it goes live, whether a run could plan from it:
+#    With a box repo (examples/box), commit and push it: the box asks
+#    hotserve-backup validate before it applies the push, and reloads
+#    itself, so skip the next two lines. Without one, edit
+#    /etc/hotserve/Caddyfile, then, before it goes live, ask whether a
+#    run could plan from it:
 hotserve-backup validate /etc/hotserve/Caddyfile
 sudo systemctl reload hotserve
 # 2. The repository, once: the storage key is asked for at the terminal,

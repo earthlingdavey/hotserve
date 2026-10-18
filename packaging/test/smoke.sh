@@ -1534,6 +1534,10 @@ for u in $TIMERS; do
 	[ ! -e "/var/lib/systemd/timers/stamp-$u" ] || die "purge left the stamp of $u"
 done
 echo "purge kept the credential file and said why, removed the package's own state, the cache, the stamps and a killed run's mounts, kept the account"
+# Installed again, so that stage 5b's first case is an upgrade over an
+# installed package: the install writes the starter and its record, and
+# hotserve stays disabled and stopped, as the purge left it.
+apt-get install -y "$deb" >/tmp/after-purge.out 2>&1 || { cat /tmp/after-purge.out; die "install after the purge failed"; }
 
 stage "stage 5b: the starter across upgrades"
 # Upgrades never ask about $CONFIG: postinstall installs the starter
