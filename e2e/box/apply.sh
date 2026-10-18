@@ -402,10 +402,10 @@ refused "a config hotserve validate rejects" "hotserve validate:"
 
 # A backup declaration is validated as every line is: one that names a
 # sibling's shared dir is refused at step 6. The refusal quotes Caddy's
-# error line within the 300-byte bound, which ends before the path
-# (Caddy's line leads with each module it was provisioning), so the
-# refusal is held to liveswap's provisioning and the reason is checked
-# on the file itself.
+# error line within the 300-byte bound, which ends before the path:
+# Caddy's line leads with each module it was provisioning, in an order
+# that differs from run to run (its servers are a map). So the reason
+# is checked on the file itself.
 sed 's#files  uploads#files  ../../deno-example/shared#' "$work/f2" >"$work/fbackup"
 cmp -s "$work/f2" "$work/fbackup" && fail "the box's file has no \`files  uploads\` line to break"
 # Caddy logs the error as JSON off a terminal, its quotes escaped.
@@ -413,7 +413,7 @@ hotserve validate --adapter caddyfile --config "$work/fbackup" 2>&1 | grep -qE '
 	&& pass "fixture: hotserve validate refuses the file for the backup path" || fail "fixture: hotserve validate does not refuse the file for the backup path"
 BK=$(commit alice "$work/fbackup")
 push "$BK"
-refused "a backup path outside the app's shared dir" "loading upstream source module: loading module 'liveswa"
+refused "a backup path outside the app's shared dir" "hotserve validate:"
 # A root from the environment is one a backup run, which reads the
 # Caddyfile without hotserve's environment, cannot know: hotserve
 # accepts it, and step 6's hotserve-backup validate refuses it, naming
