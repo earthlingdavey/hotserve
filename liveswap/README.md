@@ -370,7 +370,8 @@ error instead. `hotserve validate` of any file but
 the directories on its way: a candidate is not the file a run reads
 (the box applier's step 6 validates a copy it staged `0600` in a
 directory of its own), and the reload asks them of the file installed.
-What a candidate imports is asked, the way to it included.
+What a candidate imports is asked, and so is every directory from the
+candidate's own down to it.
 
 hotserve-backup reads one Caddyfile, `/etc/hotserve/Caddyfile`. Where
 it is installed (`/usr/bin/hotserve-backup`), `hotserve reload` of any

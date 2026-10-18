@@ -223,6 +223,15 @@ func TestACandidateIsNotHeldToWhereItStands(t *testing.T) {
 	if w := "the Caddyfile, " + config + "/Caddyfile, may not be read by others"; err == nil || !strings.Contains(err.Error(), w) {
 		t.Fatalf("validate of the file backups read: want %q in the error, got %v", w, err)
 	}
+	// Its directory is asked too.
+	write(t, config+"/Caddyfile", global(app), 0o644)
+	if err := os.Chmod(config, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err = checkBackups("validate", []string{"--config", config + "/Caddyfile"})
+	if w := "blog's backup is read from under " + config + ", which others may not enter"; err == nil || !strings.Contains(err.Error(), w) {
+		t.Fatalf("validate of the file backups read, in a 0750 directory: want %q in the error, got %v", w, err)
+	}
 }
 
 // Nothing is asked of a Caddyfile that declares no backup, of one Caddy

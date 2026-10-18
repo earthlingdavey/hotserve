@@ -404,7 +404,8 @@ refused "a config hotserve validate rejects" "hotserve validate:"
 # sibling's shared dir is refused at step 6. The refusal quotes Caddy's
 # error line within the 300-byte bound, which ends before the path
 # (Caddy's line leads with each module it was provisioning), so the
-# reason is checked on the file itself.
+# refusal is held to liveswap's provisioning and the reason is checked
+# on the file itself.
 sed 's#files  uploads#files  ../../deno-example/shared#' "$work/f2" >"$work/fbackup"
 cmp -s "$work/f2" "$work/fbackup" && fail "the box's file has no \`files  uploads\` line to break"
 # Caddy logs the error as JSON off a terminal, its quotes escaped.
@@ -412,7 +413,7 @@ hotserve validate --adapter caddyfile --config "$work/fbackup" 2>&1 | grep -qE '
 	&& pass "fixture: hotserve validate refuses the file for the backup path" || fail "fixture: hotserve validate does not refuse the file for the backup path"
 BK=$(commit alice "$work/fbackup")
 push "$BK"
-refused "a backup path outside the app's shared dir" "hotserve validate:"
+refused "a backup path outside the app's shared dir" "loading upstream source module: loading module 'liveswa"
 # A root from the environment is one a backup run, which reads the
 # Caddyfile without hotserve's environment, cannot know: hotserve
 # accepts it, and step 6's hotserve-backup validate refuses it, naming
@@ -857,8 +858,11 @@ echo "=== box apply 9b: where hotserve-backup is not installed, step 6 does not 
 sed -i 's#root /var/lib/liveswap#root {$LIVESWAP_ROOT:/var/lib/liveswap}#' "$repo/$FILE"
 grep -qF '{$LIVESWAP_ROOT:' "$repo/$FILE" || fail "the box's file has no root line to make a variable"
 # A root from the environment is refused only where an app declares a
-# backup: with none, this would apply whatever step 6 asked.
-grep -q 'sqlite demo.db' "$repo/$FILE" || fail "fixture: the box's file declares no backup, so 9b would prove nothing"
+# backup: with none, this would apply whatever step 6 asked. So the
+# file is first held to what step 6 would ask, with the binary there.
+/usr/bin/hotserve-backup validate "$repo/$FILE" >"$work/out" 2>&1 \
+	&& fail "fixture: hotserve-backup validate takes the file, so 9b would prove nothing" \
+	|| { grep -q 'LIVESWAP_ROOT' "$work/out" && pass "fixture: hotserve-backup validate refuses the file, naming the variable" || fail "fixture: hotserve-backup validate refused the file for another reason: $(cat "$work/out")"; }
 NB=$(commit_index alice "root from the environment, on a box without backups")
 mv /usr/bin/hotserve-backup /usr/bin/hotserve-backup.aside
 template_apply "$NB"
