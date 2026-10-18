@@ -1,18 +1,23 @@
 package liveswap
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
+	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
 	"go.uber.org/zap"
 )
 
@@ -26,7 +31,7 @@ type appSpec struct {
 	preStart           []string
 	env                map[string]string
 	envFile            string
-	trust              []trustSource
+	trust              []deploytrust.Source
 	healthPath         string // "" = no HTTP check (health_path off)
 	healthInterval     time.Duration
 	healthTimeout      time.Duration
@@ -112,10 +117,14 @@ type deployRequest struct {
 	url        string
 	version    string
 	authHeader string
-	// sha256 pins the bytes a URL pull must download: lowercase hex, or
-	// empty for no pin (parseDeployPayload normalises it). A push's
-	// bytes are the request itself and a rollback fetches nothing, so
-	// neither carries one.
+	// sha256 is the artifact's digest, lowercase hex, or empty. For a
+	// URL pull it is the pin the bytes must download to
+	// (parseDeployPayload normalises it); for a push it is the digest
+	// of the bytes the caller uploaded (stageUpload hashes them as they
+	// land, so the request is never pinned to anything but itself). A
+	// rollback fetches nothing and carries none. Either digest is
+	// recorded as the version's pin, and is what a deploy of the
+	// running version is matched by (relaunchRefusal).
 	sha256 string
 	// localArchive is the path of an already-staged pushed tarball (an
 	// os.CreateTemp name under the app's own tmp dir, chosen by the
@@ -155,8 +164,16 @@ type deployResult struct {
 	Error      string    `json:"error,omitempty"`
 	Phase      string    `json:"phase,omitempty"`       // phase reached when it failed
 	By         string    `json:"deployed_by,omitempty"` // the trust source that authorized it, and the token's attribution claims
+	SHA256     string    `json:"sha256,omitempty"`      // the pin the deployer asserted, the digest of the bytes a push uploaded, or a rollback's carried from the record it replaces (recordedPin); never a hash of an unpinned download
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at"`
+	// Note says what the deploy did that its outcome words do not: a
+	// deploy or rollback naming the running version relaunched it from
+	// the release already on disk (relaunchNote). Empty otherwise. It
+	// is in last_deploy and the response only — a relaunch writes no
+	// record, so the version's record keeps the deploy that put it
+	// there, its pin and its times.
+	Note string `json:"note,omitempty"`
 	// What the artifact cost against max_artifact_entries and the
 	// decompressed byte cap — the files, directories and links
 	// extraction created, and its bytes — so an app growing toward
@@ -253,7 +270,7 @@ type managedApp struct {
 	// readers take the snapshot accessors, never the fields.
 	specMu    sync.RWMutex
 	spec      *appSpec
-	verifiers []verifier // resolved deploy-auth trust sources; rewired every reload
+	verifiers []deploytrust.Verifier // resolved deploy-auth trust sources; rewired every reload
 	runner    runner
 	prober    prober
 	fetch     fetcher
@@ -340,7 +357,7 @@ func (ma *managedApp) rememberSecrets(path string, kvs []string) {
 // that cannot be read now (a rewrite mid-flight, a mode not yet fixed)
 // is not an error here — the next launch reports that — and the read
 // is retried on the next response until it succeeds.
-func (ma *managedApp) redactorFor(s statusSnapshot, names ...string) *redactor {
+func (ma *managedApp) redactorFor(s statusSnapshot, names ...string) *Redactor {
 	// The spec is read under secretsMu so the "which env_file is
 	// loaded" check and the spec it is checked against are one
 	// snapshot: a reload landing between the two could otherwise pair
@@ -363,23 +380,24 @@ func (ma *managedApp) redactorFor(s statusSnapshot, names ...string) *redactor {
 	ma.secretsMu.Unlock()
 	// Safe strings are names: the app's, every version the status
 	// names — the running one, the last deploy's, the releases on
-	// disk, the recorded ones — the app's dirs, and any the caller's
-	// body names that the status does not (the digests a refused pin
-	// reports, deployOutcome). Whoever named one, it exempts nothing:
-	// a safe string equal to a known value is dropped by newRedactor
+	// disk, the recorded ones — the digests those deploys were pinned
+	// to, the app's dirs, and any the caller's body names that the
+	// status does not (the digests a refused pin reports,
+	// deployOutcome). Whoever named one, it exempts nothing:
+	// a safe string equal to a known value is dropped by NewRedactor
 	// (redact.go, rule 1).
 	safe := append([]string{ma.name, s.CurrentVersion}, s.AvailableVersions...)
 	safe = append(safe, names...)
 	if s.LastDeploy != nil {
-		safe = append(safe, s.LastDeploy.Version)
+		safe = append(safe, s.LastDeploy.Version, s.LastDeploy.SHA256)
 	}
 	for _, d := range s.Deploys {
-		safe = append(safe, d.Version)
+		safe = append(safe, d.Version, d.pin())
 	}
 	if spec != nil {
 		safe = append(safe, spec.dirs.root, spec.dirs.app, spec.dirs.releases, spec.dirs.shared, spec.dirs.run)
 	}
-	r := newRedactor(kvs, safe)
+	r := NewRedactor(kvs, safe)
 	if unread != nil {
 		// The values the running app holds are unknown to the filter,
 		// and the heuristics alone are not the promise: no body until
@@ -415,7 +433,7 @@ func mergeSecrets(have, add []string) []string {
 // a rollback restores.
 type appConfigState struct {
 	spec      *appSpec
-	verifiers []verifier
+	verifiers []deploytrust.Verifier
 	logger    *zap.Logger
 	store     stateStore
 }
@@ -429,7 +447,7 @@ type appConfigState struct {
 // is read only when this managedApp has no runner yet, because a
 // pooled app keeps the runner — and so the connection — it was first
 // started with across every later reload.
-func (ma *managedApp) configure(owner any, spec *appSpec, verifiers []verifier, logger *zap.Logger, clients *fetchClients, manager systemdConn) {
+func (ma *managedApp) configure(owner any, spec *appSpec, verifiers []deploytrust.Verifier, logger *zap.Logger, clients *fetchClients, manager systemdConn) {
 	ma.specMu.Lock()
 	defer ma.specMu.Unlock()
 	changed := ma.spec != nil && !specEqual(ma.spec, spec)
@@ -469,7 +487,7 @@ func specEqual(a, b *appSpec) bool {
 }
 
 // currentVerifiers snapshots the app's deploy-auth trust sources.
-func (ma *managedApp) currentVerifiers() []verifier {
+func (ma *managedApp) currentVerifiers() []deploytrust.Verifier {
 	ma.specMu.RLock()
 	defer ma.specMu.RUnlock()
 	return ma.verifiers
@@ -648,7 +666,10 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	ma.phases = nil
 	ma.mu.Unlock()
 
+	pin := req.sha256 // a rollback's is read once it is accepted, below
+
 	var stats archiveStats
+	relaunch := false        // the running version, launched again from its release on disk: not the version's history
 	accepted := false        // the request passed its checks: from here on, what happens is the version's history
 	var detail *deployDetail // filled by the failure-detail defer below, which runs first
 	launched := false        // a pre_start or Start was attempted: there are units to ask about
@@ -660,11 +681,15 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 			Version:         req.version,
 			Status:          "succeeded",
 			By:              req.by,
+			SHA256:          pin,
 			StartedAt:       started,
 			FinishedAt:      finished,
 			ArtifactEntries: stats.entries,
 			ArtifactBytes:   stats.bytes,
 			Phases:          ma.takePhases(finished),
+		}
+		if relaunch && err == nil {
+			result.Note = relaunchNote(spec, req.version)
 		}
 		if err != nil {
 			result.Status = "failed"
@@ -693,16 +718,33 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		// version there. Past acceptance, a refusal of the request's
 		// own content (an artifact URL the allowlist refuses) is still
 		// the request's; anything else that failed is the version's
-		// history and is recorded.
+		// history and is recorded. A relaunch of the running version
+		// is not: the record stays the deploy that put the version
+		// there, with its pin and its times, whether the relaunch
+		// succeeded (the same release serves, from a new instance) or
+		// failed (the old instance serves on, untouched); last_deploy
+		// and the response say what the relaunch came to.
 		var ve validationError
-		if err == nil || (accepted && !errors.As(err, &ve)) {
+		if !relaunch && (err == nil || (accepted && !errors.As(err, &ve))) {
 			ma.recordDeploy(c, result)
 		}
 	}()
 
 	old := ma.currentInstance()
 	if old != nil && old.version == req.version && c.runner.Alive(old.handle) {
-		return validationError{fmt.Sprintf("version %s is already running; bump the version to redeploy", req.version)}
+		// The version that is running, asked for again: relaunched from
+		// its release on disk — the normal pipeline minus fetch and
+		// extract — when the request is for the same artifact
+		// (relaunchRefusal), so a new env_file value or app definition
+		// reaches it without a new version. Nothing is downloaded,
+		// extracted or written under the release: a relaunch can only
+		// run the bytes already there.
+		recorded := recordedPin(spec.dirs, req.version)
+		if err := relaunchRefusal(spec, req, recorded); err != nil {
+			return err
+		}
+		relaunch, pin = true, recorded // the pin the running release was matched by: its record's, equal to the request's when it carried one
+		logger.Info("version is already running; relaunching it from its release on disk (same artifact)")
 	}
 	if err := spec.dirs.ensure(); err != nil {
 		return err
@@ -710,9 +752,10 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	// Versions are immutable: a deploy (URL or push) never overwrites an
 	// existing on-disk release, so a version you can roll back to can't be
 	// silently replaced with different content. Rollback is exempt — it
-	// relaunches an existing release by design. Deploys are serialized per
-	// app (deployMu), so this check-then-create has no race.
-	if !req.rollback {
+	// relaunches an existing release by design — and so is a relaunch,
+	// which fetches nothing. Deploys are serialized per app (deployMu),
+	// so this check-then-create has no race.
+	if !req.rollback && !relaunch {
 		switch _, statErr := os.Stat(spec.dirs.release(req.version)); {
 		case statErr == nil:
 			return validationError{fmt.Sprintf("version %s already exists — versions are immutable; deploy a new version, or roll back to relaunch this one", req.version)}
@@ -725,25 +768,41 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	}
 
 	accepted = true
+	// A rollback replaces the version's record, so it carries that
+	// record's pin forward (a relaunch's was read above); anything else
+	// names its own (or none).
+	if req.rollback && !relaunch {
+		pin = recordedPin(spec.dirs, req.version)
+	}
 
-	releaseDir, stats, err := c.fetch.fetch(ctx, spec, req, func(phase string) { ma.setPhase(c, phase) })
+	// extracted: this deploy put the release there, so a failure takes
+	// it away again; a rollback and a relaunch launch a release that
+	// was already on disk and must never delete it or re-run its
+	// pre_start. The fetcher's rollback path is the one way an on-disk
+	// release is taken as it is — a stat, nothing written — so a
+	// relaunch is fetched as a rollback of the running version.
+	extracted := !req.rollback && !relaunch
+	fetchReq := req
+	fetchReq.rollback = !extracted
+	releaseDir, stats, err := c.fetch.fetch(ctx, spec, fetchReq, func(phase string) { ma.setPhase(c, phase) })
 	if err != nil {
 		return err
 	}
-	if !req.rollback { // a rollback extracted nothing; there is nothing to measure
+	if extracted { // a rollback or relaunch extracted nothing; there is nothing to measure
 		spec.warnNearCaps(logger, stats)
 	}
 	// If this freshly-extracted release never promotes (pre_start, start
 	// or health-gate failure), remove it: a failed attempt must not
 	// permanently reserve its immutable version or leave disk litter, so
-	// the same version stays retriable. Rollback is excluded — it
-	// relaunches a pre-existing release it must never delete.
+	// the same version stays retriable. Rollback and relaunch are
+	// excluded — each launches a pre-existing release it must never
+	// delete (a relaunch's is the one serving).
 	// newHandle is predeclared so the cleanup defer can confirm the failed
 	// instance is really gone before deleting its release.
 	var newHandle handle
 	promoted := false
 	stopUnconfirmed := false // Stop of the failed instance returned an error
-	if !req.rollback {
+	if extracted {
 		defer func() {
 			if err == nil || promoted {
 				return
@@ -766,7 +825,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		}()
 	}
 
-	l, err := spec.prepareLaunch(req.version)
+	l, err := spec.prepareLaunch(logger, req.version)
 	if err != nil {
 		return err
 	}
@@ -797,7 +856,9 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	// pre_start is deploy-time preparation; its outputs (migrations,
 	// generated config, warmed caches) persist, so a rollback — which
 	// relaunches an already-prepared on-disk release, like crash
-	// recovery — must NOT re-run it. Re-running an old forward migration
+	// recovery — must NOT re-run it, and nor must a relaunch of the
+	// running version (the same release, already prepared and serving).
+	// Re-running an old forward migration
 	// would be wrong, and a flaky migration check must never block an
 	// emergency rollback. The command's pre-flight above does run on a
 	// rollback: it is a path resolution and a header read, nothing
@@ -811,7 +872,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	if err := preflightResult("pre-flight", c.runner.Preflight(l.startSpec(spec, spec.command))); err != nil {
 		return err
 	}
-	if len(spec.preStart) > 0 && !req.rollback {
+	if len(spec.preStart) > 0 && extracted {
 		if err := preflightResult("pre-flight of pre_start", c.runner.Preflight(l.startSpec(spec, spec.preStart))); err != nil {
 			return err
 		}
@@ -821,7 +882,13 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		if !ma.sweep(c, old, l.nonce) {
 			return fmt.Errorf("%w; not running pre_start", errSweepUnconfirmed)
 		}
-		preCtx, cancel := context.WithTimeout(ctx, spec.deadline)
+		// Under deadline, not under the request: a client that hangs
+		// up (a cancelled CI job) must not stop a migration midway,
+		// since a half-applied one harms the app's data while the old
+		// instance serves on. It runs to its end; the health gate
+		// below then reads the request and fails the deploy, as it
+		// does for any deploy whose client left.
+		preCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), spec.deadline)
 		// Under the same sandbox as the app it precedes: a migration
 		// that writes where the app cannot read fails here, not at 3am.
 		launched = true
@@ -912,6 +979,59 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	}
 	gcReleases(spec.dirs.releases, spec.keep, req.version, logger)
 	return nil
+}
+
+// relaunchRefusal decides whether a request naming the version that is
+// running relaunches it: nil to proceed, or the refusal (a
+// validationError, 422). A rollback is the same release by definition
+// and needs no digest. A URL or push deploy relaunches only when it is
+// for the same artifact: its digest (the URL deploy's pin; the push's
+// upload, hashed by stageUpload) equals recorded, the one the
+// version's record holds, so nothing is fetched or hashed here — a
+// request with no digest, or a record without one (a push deployed
+// before pushes were hashed, an unpinned pull), is refused rather than
+// fetched and compared, and so is a different artifact: versions are
+// immutable. Every same-version message says how a new env_file value
+// reaches the app, since that is what the request was reaching for.
+// A URL deploy whose digests match then gets the checks a fetch would
+// give its url (pinArtifactURL), so a URL the allowlist refuses is
+// refused here too rather than passing because nothing was downloaded
+// from it; a request refused on its digest fetches nothing either way,
+// and the digest's message is the one that names its remedy.
+//
+// The comparison is with the record, not the release's bytes (the
+// record's known limit, recordedPin): whatever it decides, a relaunch
+// runs the release on disk and introduces no bytes of its own.
+func relaunchRefusal(spec *appSpec, req deployRequest, recorded string) error {
+	if req.rollback {
+		return nil
+	}
+	remedy := fmt.Sprintf("a rollback to %s relaunches it (that, or a new version, is also how a new secret reaches the app)", req.version)
+	switch {
+	case req.sha256 == "":
+		return validationError{fmt.Sprintf("version %s is already running and the request carries no sha256 to match its artifact by; %s", req.version, remedy)}
+	case recorded == "":
+		return validationError{fmt.Sprintf("version %s is already running and its artifact's digest is not on record, so the request cannot be matched to it; %s", req.version, remedy)}
+	case req.sha256 != recorded:
+		return validationError{fmt.Sprintf("version %s is already running from a different artifact — versions are immutable; deploy a new version (a rollback to %s relaunches what is running, and either is how a new secret reaches the app)", req.version, req.version)}
+	}
+	if req.localArchive == "" {
+		if _, err := pinArtifactURL(req.url, spec.allowInsecure, spec.allowlist); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// relaunchNote is the response's word for a relaunch that succeeded:
+// what ran, and — when the app has one — that the env_file was read
+// again, which is what the request was most likely for.
+func relaunchNote(spec *appSpec, version string) string {
+	note := fmt.Sprintf("relaunched %s (same artifact)", version)
+	if spec.envFile != "" {
+		note += "; it reads its env file now"
+	}
+	return note
 }
 
 // ensureRunning is crash/restart recovery, called from App.Start. If
@@ -1181,7 +1301,7 @@ func (ma *managedApp) launchVersion(c collaborators, version string) (*instance,
 	if _, err := os.Stat(spec.dirs.release(version)); err != nil {
 		return nil, fmt.Errorf("release dir for version %s is missing: %w", version, err)
 	}
-	l, err := spec.prepareLaunch(version)
+	l, err := spec.prepareLaunch(c.logger, version)
 	if err != nil {
 		return nil, err
 	}
@@ -1215,13 +1335,18 @@ type launch struct {
 	// secrets is the env_file subset of env: what the response filter
 	// must never let out (redact.go).
 	secrets []string
+	// envFileMode is the mode of the env_file inode secrets came from,
+	// read off the same descriptor; 0 when the spec names none.
+	envFileMode os.FileMode
 }
 
 // prepareLaunch draws the instance's nonce and renders its environment
 // from the current spec, creating the dirs the unit binds first: the
 // runner resolves every bind source, and run/ holds nothing between
-// instances.
-func (spec *appSpec) prepareLaunch(version string) (launch, error) {
+// instances. logger is the caller's snapshot (collaborators.logger):
+// the one place both launch paths pass through is where the env_file
+// mode warning lives, so neither path can lose it.
+func (spec *appSpec) prepareLaunch(logger *zap.Logger, version string) (launch, error) {
 	if err := spec.dirs.ensure(); err != nil {
 		return launch{}, err
 	}
@@ -1236,9 +1361,12 @@ func (spec *appSpec) prepareLaunch(version string) (launch, error) {
 	}
 	l := launch{version: version, nonce: nonce, socket: spec.dirs.socket(nonce), releaseDir: spec.dirs.release(version)}
 	l.sock = spec.dirs.socketRef(nonce)
-	if l.env, l.secrets, err = buildEnvFull(spec, version, l.socket, l.releaseDir); err != nil {
+	if l.env, l.secrets, l.envFileMode, err = buildEnvFull(spec, version, l.socket, l.releaseDir); err != nil {
 		l.sock.retire()
 		return launch{}, err
+	}
+	if spec.envFile != "" {
+		warnEnvFileModeBits(logger, spec.name, spec.envFile, l.envFileMode)
 	}
 	return l, nil
 }
@@ -1356,13 +1484,9 @@ type statusSnapshot struct {
 
 func (ma *managedApp) status() statusSnapshot {
 	c := ma.snapshot()
-	var wd *watchdogSnapshot
 	var deploys []deploySummary
 	available := []string{} // always an array in the JSON, never null
 	if c.spec != nil {
-		if c.clock != nil {
-			wd = ma.wd.statusSnapshot(c.clock.Now(), c.spec.wdWindow)
-		}
 		// Read releases outside ma.mu — it is disk I/O, and status is polled.
 		if rels := listReleases(c.spec.dirs.releases); rels != nil {
 			available = rels
@@ -1371,7 +1495,7 @@ func (ma *managedApp) status() statusSnapshot {
 	}
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
-	s := statusSnapshot{App: ma.name, Phase: ma.phase, LastDeploy: ma.lastDeploy, Watchdog: wd, AvailableVersions: available, Deploys: deploys}
+	s := statusSnapshot{App: ma.name, Phase: ma.phase, LastDeploy: ma.lastDeploy, AvailableVersions: available, Deploys: deploys}
 	if ma.current != nil {
 		s.CurrentVersion = ma.current.version
 		s.Socket = ma.current.socket
@@ -1380,6 +1504,12 @@ func (ma *managedApp) status() statusSnapshot {
 		s.Command = hs.Command
 		s.Unit = hs.Unit
 		s.Running = c.runner.Alive(ma.current.handle)
+	}
+	// After current: the watchdog records a restart before it installs
+	// the new instance, so a status that shows the instance shows why
+	// it was started.
+	if c.spec != nil && c.clock != nil {
+		s.Watchdog = ma.wd.statusSnapshot(c.clock.Now(), c.spec.wdWindow)
 	}
 	return s
 }
@@ -1540,7 +1670,7 @@ func inheritedEnv() []string {
 // shape a deny-by-default view fails in. Applied before env_file and
 // env, so an operator can still point it elsewhere.
 func buildEnv(spec *appSpec, version, socket, releaseDir string) ([]string, error) {
-	env, _, err := buildEnvFull(spec, version, socket, releaseDir)
+	env, _, _, err := buildEnvFull(spec, version, socket, releaseDir)
 	return env, err
 }
 
@@ -1549,21 +1679,21 @@ func buildEnv(spec *appSpec, version, socket, releaseDir string) ([]string, erro
 // among them — it lives in the Caddyfile, in a repo, and is not secret
 // by policy — and neither are HOME, SOCKET or the inherited PATH,
 // which a diagnostic has to be able to name.
-func buildEnvFull(spec *appSpec, version, socket, releaseDir string) (env, secrets []string, err error) {
+func buildEnvFull(spec *appSpec, version, socket, releaseDir string) (env, secrets []string, envFileMode os.FileMode, err error) {
 	env = append(inheritedEnv(), "HOME="+spec.dirs.shared)
 	if spec.envFile != "" {
-		fileVars, err := parseEnvFile(spec.envFile)
+		fileVars, perm, err := readEnvFile(spec.envFile)
 		if err != nil {
-			return nil, nil, fmt.Errorf("env_file: %w", err)
+			return nil, nil, 0, fmt.Errorf("env_file: %w", err)
 		}
 		env = append(env, fileVars...)
-		secrets = fileVars
+		secrets, envFileMode = fileVars, perm
 	}
 	for k, v := range spec.env {
 		env = append(env, k+"="+expandPlaceholders(v, spec, version, socket, releaseDir))
 	}
 	env = append(env, "SOCKET="+socket)
-	return env, secrets, nil
+	return env, secrets, envFileMode, nil
 }
 
 // envKeyRe is what systemd accepts in Environment=; the exec runner
@@ -1573,14 +1703,111 @@ var envKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func validEnvKey(key string) bool { return envKeyRe.MatchString(key) }
 
+// The env_file mode check. hotserve reads the file as the hotserve
+// user, so its mode is not hotserve's concern; the documented
+// `install -m 0640 -o root -g hotserve` is for everyone else on the
+// box — an account that can read the file holds every secret in it,
+// and one that can write it chooses the app's next environment. Apps
+// are not among those accounts whatever the mode: /etc/hotserve is
+// outside every view, validateEnvFileIsolation refuses an env_file
+// inside the base view or a sibling's dirs, and one inside the app's
+// own dirs is warnEnvFileInView's warning. A warning, never a refusal,
+// in two places: at config load, by a stat of the path (loading the
+// config does not open the file); and at each launch, from the
+// descriptor the environment was just read through, so the mode
+// reported is that of the inode whose values the unit got — a chmod
+// between loads must not take an app down on a 3am relaunch, so a
+// launch warns and goes on, and is not silent until a reload that may
+// never come. Not checked: the owner and group (the service's group
+// cannot be told from a stranger's when `validate` runs as another
+// account, and the documented install line sets both), and the
+// directories above the file, which is why the message says "any
+// account that can reach it".
+
+// warnEnvFileMode is the config-load half: warnEnvFileModeOf for every
+// app that names an env_file.
+func warnEnvFileMode(logger *zap.Logger, specs map[string]*appSpec) {
+	for name, spec := range specs {
+		warnEnvFileModeOf(logger, name, spec.envFile)
+	}
+}
+
+// warnEnvFileModeOf stats one app's env_file at config load. An absent
+// file is silent — the launch that needs it fails and says so. One
+// this account cannot reach is noted, not warned about: `validate`
+// runs unprivileged by design, and the launch checks the file as the
+// user that reads it. Any other stat failure is reported as such — a
+// line that reads "checked, and fine" over an error is worse than
+// none.
+func warnEnvFileModeOf(logger *zap.Logger, app, path string) {
+	if logger == nil || path == "" {
+		return
+	}
+	fi, err := os.Stat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return
+	case errors.Is(err, os.ErrPermission):
+		logger.Info("env_file mode not checked: this account cannot reach the file; the launch, as the user that reads it, checks it",
+			zap.String("app", app), zap.String("env_file", path), zap.Error(err))
+		return
+	case err != nil:
+		logger.Warn("env_file mode could not be checked", zap.String("app", app), zap.String("env_file", path), zap.Error(err))
+		return
+	}
+	warnEnvFileModeBits(logger, app, path, fi.Mode().Perm())
+}
+
+// warnEnvFileModeBits is the check itself, on a mode already in hand:
+// world-readable, world-writable, each its own line.
+func warnEnvFileModeBits(logger *zap.Logger, app, path string, perm os.FileMode) {
+	if logger == nil || perm&0o006 == 0 {
+		return
+	}
+	mode := zap.String("mode", fmt.Sprintf("%04o", perm))
+	fix := zap.String("fix", "chmod 0640 and chown root:hotserve — the documented `install -m 0640 -o root -g hotserve`")
+	if perm&0o004 != 0 {
+		logger.Warn("env_file is world-readable: any account that can reach it holds every value in it",
+			zap.String("app", app), zap.String("env_file", path), mode, fix)
+	}
+	if perm&0o002 != 0 {
+		logger.Warn("env_file is world-writable: any account that can reach it chooses the app's next environment",
+			zap.String("app", app), zap.String("env_file", path), mode, fix)
+	}
+}
+
 // parseEnvFile reads simple KEY=VALUE lines: blank lines and #comments
 // skipped, an optional `export ` prefix tolerated, and single or
 // double quotes around the value stripped. Deliberately not a shell.
 func parseEnvFile(path string) ([]string, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path is the operator's env_file config value, not request input
+	vars, _, err := readEnvFile(path)
+	return vars, err
+}
+
+// readEnvFile is parseEnvFile plus the mode of the inode it read, taken
+// from the open descriptor: a launch warns about the file it rendered,
+// not about whatever the path names a moment later.
+func readEnvFile(path string) (vars []string, perm os.FileMode, err error) {
+	f, err := os.Open(path) //nolint:gosec // path is the operator's env_file config value, not request input
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	defer f.Close() //nolint:errcheck // read-only
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, 0, err
+	}
+	vars, err = parseEnvLines(path, data)
+	return vars, fi.Mode().Perm(), err
+}
+
+// parseEnvLines is parseEnvFile on bytes already read; path is for the
+// error messages.
+func parseEnvLines(path string, data []byte) ([]string, error) {
 	var vars []string
 	for i, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -1606,6 +1833,65 @@ func parseEnvFile(path string) ([]string, error) {
 		vars = append(vars, key+"="+value)
 	}
 	return vars, nil
+}
+
+// ParseEnvLines is parseEnvLines, the reading every launch makes, for a
+// caller that holds the bytes: the box, which reads the env file a push
+// replaces to tell which variables it adds, changes or removes
+// (box/DESIGN-box.md, "Record and result fields"). name is for the
+// messages.
+func ParseEnvLines(name string, data []byte) ([]string, error) {
+	return parseEnvLines(name, data)
+}
+
+// ValidEnvKey reports whether key is a name an env file may carry: what
+// systemd accepts in Environment= (envKeyRe).
+func ValidEnvKey(key string) bool { return validEnvKey(key) }
+
+// RenderEnvFile is the inverse of the reading above, for the files the box
+// writes from a repository's secrets (box/DESIGN-box.md, "Values and the
+// env file"): one `KEY="value"` line per pair, sorted by key, so the
+// bytes depend only on the pairs. parseEnvLines trims the line and the
+// value, then strips one pair of matching quotes and does nothing else —
+// no escapes — so every value inside double quotes reads back exactly:
+// inner quotes, edge spaces, `#` and `=` included. What it cannot carry
+// is refused rather than altered: a value with a line break (the reading
+// is line by line, and a CR at a line's end is trimmed), a NUL, or bytes
+// that are not UTF-8 (the unit's Environment= travels over D-Bus, whose
+// strings are UTF-8); a key systemd would reject; a key given twice.
+func RenderEnvFile(vars []string) ([]byte, error) {
+	type pair struct{ key, value string }
+	pairs := make([]pair, 0, len(vars))
+	for _, kv := range vars {
+		key, value, found := strings.Cut(kv, "=")
+		if !found || !validEnvKey(key) {
+			return nil, fmt.Errorf("%q is not a valid environment variable name (systemd requires %s)", key, envKeyRe)
+		}
+		pairs = append(pairs, pair{key, value})
+	}
+	// By key, not by line: '=' sorts after the digits, so "A9=…" would
+	// come before "A=…" in a sort of the lines.
+	slices.SortFunc(pairs, func(a, b pair) int { return strings.Compare(a.key, b.key) })
+	var b bytes.Buffer
+	for i, p := range pairs {
+		key, value := p.key, p.value
+		if i > 0 && key == pairs[i-1].key {
+			return nil, fmt.Errorf("%s is given twice", key)
+		}
+		switch {
+		case strings.ContainsAny(value, "\n\r"):
+			return nil, fmt.Errorf("the value of %s has a line break, which an env file cannot carry", key)
+		case strings.ContainsRune(value, 0):
+			return nil, fmt.Errorf("the value of %s has a NUL byte, which an environment cannot carry", key)
+		case !utf8.ValidString(value):
+			return nil, fmt.Errorf("the value of %s is not UTF-8", key)
+		}
+		b.WriteString(key)
+		b.WriteString(`="`)
+		b.WriteString(value)
+		b.WriteString("\"\n")
+	}
+	return b.Bytes(), nil
 }
 
 // expandPlaceholders substitutes the deploy-time placeholders that are

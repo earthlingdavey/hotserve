@@ -25,10 +25,11 @@ permissions:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-    # Targets run serially at FUZZTIME each (12 targets x 5m = 60m of
-    # fuzzing alone), plus a per-target instrumented build; the cap
-    # must clear that or the tail targets never get their budget.
-    timeout-minutes: 120
+    # Targets run serially at FUZZTIME each (34 targets x 5m = 170m of
+    # fuzzing alone), plus a per-target instrumented build — box's
+    # includes Caddy, cold; the cap must clear that or the tail targets
+    # never get their budget. `make fuzz-list` prints the current count.
+    timeout-minutes: 200
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -38,10 +39,11 @@ jobs:
           restore-keys: fuzz-${{ runner.os }}-
       - env:
           COMPOSE: docker compose -f docker-compose.yml -f docker-compose.ci.yml
-        run: make fuzz FUZZTIME="${{ inputs.fuzztime || '5m' }}" COMPOSE="$COMPOSE"
+          FUZZTIME: ${{ inputs.fuzztime || '5m' }}
+        run: make fuzz COMPOSE="$COMPOSE"
       - if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-crashers
-          path: "*/testdata/fuzz/"
+          path: "**/testdata/fuzz/" # any package's, since box keeps its proof core in a subpackage
           if-no-files-found: ignore

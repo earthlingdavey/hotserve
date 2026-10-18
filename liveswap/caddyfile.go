@@ -2,7 +2,6 @@ package liveswap
 
 import (
 	"math"
-	"slices"
 	"strconv"
 
 	"github.com/caddyserver/caddy/v2"
@@ -12,6 +11,9 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/dustin/go-humanize"
 	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+
+	"github.com/smallhoursorg/hotserve/liveswap/internal/dispenser"
 )
 
 func init() {
@@ -41,7 +43,10 @@ func parseWebhookDirective(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler,
 
 // UnmarshalCaddyfile parses the global options block. No defaults are
 // applied here — Provision owns every default — so an empty block is
-// valid and zero values pass through.
+// valid. Provision reads a zero field as unset, so an explicit value
+// below an option's minimum, 0 included, is refused here, naming both
+// (parseDurationArg, parseCountArg); soak and deploy_log_lines, whose 0
+// is a setting, are pointers.
 //
 //	liveswap {
 //	    root                   <path>
@@ -86,7 +91,7 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	rootFile := ""
 	seen := map[string]bool{}
 	for d.NextBlock(0) {
-		if err := refuseRepeat(d, seen, "deploy_trust", "artifact_allowlist", "app"); err != nil {
+		if err := dispenser.RefuseRepeat(d, seen, "deploy_trust", "artifact_allowlist", "app"); err != nil {
 			return err
 		}
 		switch d.Val() {
@@ -97,7 +102,7 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			a.Root = d.Val()
 		case "deploy_trust":
-			tc, err := parseDeployTrust(d)
+			tc, err := deploytrust.Parse(d)
 			if err != nil {
 				return err
 			}
@@ -156,7 +161,7 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser, backupFiles *[]stri
 	seen := map[string]bool{}
 	for d.NextBlock(1) {
 		// backup refuses its own repeat, in its own words (case "backup").
-		if err := refuseRepeat(d, seen, "env", "deploy_trust", "artifact_allowlist", "backup"); err != nil {
+		if err := dispenser.RefuseRepeat(d, seen, "env", "deploy_trust", "artifact_allowlist", "backup"); err != nil {
 			return err
 		}
 		switch d.Val() {
@@ -182,6 +187,16 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser, backupFiles *[]stri
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
+			// Checked here as well as in Validate, because Caddy strips
+			// every "@id" key from the JSON before decoding it
+			// (caddy.RemoveMetaFields): Validate never sees that one, and
+			// the app would start without it. A config written as JSON
+			// loses the key before any hotserve code runs, which is why
+			// a JSON config is unsupported (README.md, "What hotserve is
+			// (and isn't)"; #251).
+			if !validEnvKey(key) {
+				return d.Errf("env key %q is not a valid environment variable name (must match %s)", key, envKeyRe)
+			}
 			if cfg.Env == nil {
 				cfg.Env = make(map[string]string)
 			}
@@ -195,7 +210,7 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser, backupFiles *[]stri
 			}
 			cfg.EnvFile = d.Val()
 		case "deploy_trust":
-			tc, err := parseDeployTrust(d)
+			tc, err := deploytrust.Parse(d)
 			if err != nil {
 				return err
 			}
@@ -214,27 +229,29 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser, backupFiles *[]stri
 			}
 			cfg.HealthPath = d.Val()
 		case "health_interval":
-			if err := parseDurationArg(d, &cfg.HealthInterval); err != nil {
+			if err := parseDurationArg(d, &cfg.HealthInterval, false); err != nil {
 				return err
 			}
 		case "health_timeout":
-			if err := parseDurationArg(d, &cfg.HealthTimeout); err != nil {
+			if err := parseDurationArg(d, &cfg.HealthTimeout, false); err != nil {
 				return err
 			}
 		case "soak":
-			if err := parseDurationArg(d, &cfg.Soak); err != nil {
+			var soak caddy.Duration
+			if err := parseDurationArg(d, &soak, true); err != nil {
 				return err
 			}
+			cfg.Soak = &soak
 		case "deadline":
-			if err := parseDurationArg(d, &cfg.Deadline); err != nil {
+			if err := parseDurationArg(d, &cfg.Deadline, false); err != nil {
 				return err
 			}
 		case "drain":
-			if err := parseDurationArg(d, &cfg.Drain); err != nil {
+			if err := parseDurationArg(d, &cfg.Drain, false); err != nil {
 				return err
 			}
 		case "grace":
-			if err := parseDurationArg(d, &cfg.Grace); err != nil {
+			if err := parseDurationArg(d, &cfg.Grace, false); err != nil {
 				return err
 			}
 		case "watchdog":
@@ -243,36 +260,31 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser, backupFiles *[]stri
 			}
 			cfg.Watchdog = d.Val()
 		case "watchdog_failures":
-			if err := parseCountArg(d, &cfg.WatchdogFailures); err != nil {
+			if err := parseCountArg(d, &cfg.WatchdogFailures, 1); err != nil {
 				return err
 			}
 		case "watchdog_grace":
-			if err := parseDurationArg(d, &cfg.WatchdogGrace); err != nil {
+			if err := parseDurationArg(d, &cfg.WatchdogGrace, false); err != nil {
 				return err
 			}
 		case "watchdog_restarts":
-			if err := parseCountArg(d, &cfg.WatchdogRestarts); err != nil {
+			if err := parseCountArg(d, &cfg.WatchdogRestarts, 1); err != nil {
 				return err
 			}
 		case "watchdog_window":
-			if err := parseDurationArg(d, &cfg.WatchdogWindow); err != nil {
+			if err := parseDurationArg(d, &cfg.WatchdogWindow, false); err != nil {
 				return err
 			}
 		case "deploy_log_lines":
 			var n int
-			if err := parseCountArg(d, &n); err != nil {
+			if err := parseCountArg(d, &n, 0); err != nil {
 				return err
 			}
 			cfg.DeployLogLines = &n
 		case "keep":
-			if !d.NextArg() {
-				return d.ArgErr()
+			if err := parseCountArg(d, &cfg.Keep, 1); err != nil {
+				return err
 			}
-			n, err := strconv.Atoi(d.Val())
-			if err != nil {
-				return d.Errf("invalid keep %q: %v", d.Val(), err)
-			}
-			cfg.Keep = n
 		case "max_artifact_size":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -284,9 +296,12 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser, backupFiles *[]stri
 			if size > math.MaxInt64 {
 				return d.Errf("max_artifact_size %q overflows", d.Val())
 			}
+			if size == 0 {
+				return d.Errf("max_artifact_size must be at least 1 byte, got %s; leave it out for the default", d.Val())
+			}
 			cfg.MaxArtifactSize = int64(size)
 		case "max_artifact_entries":
-			if err := parseCountArg(d, &cfg.MaxArtifactEntries); err != nil {
+			if err := parseCountArg(d, &cfg.MaxArtifactEntries, 1); err != nil {
 				return err
 			}
 		case "backup":
@@ -310,26 +325,11 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser, backupFiles *[]stri
 	return nil
 }
 
-// refuseRepeat records the subdirective the dispenser is on and
-// refuses it if the block already had one — every subdirective sets a
-// single value, so a repeat would silently override the earlier line
-// (a stale env_file left under a new one keeps loading; the second of
-// two command lines wins with no diagnostic). additive names the
-// subdirectives that add an entry per line instead and may repeat;
-// env refuses a repeated KEY itself.
-func refuseRepeat(d *caddyfile.Dispenser, seen map[string]bool, additive ...string) error {
-	key := d.Val()
-	if slices.Contains(additive, key) {
-		return nil
-	}
-	if seen[key] {
-		return d.Errf("duplicate %s: the earlier line would be silently overridden", key)
-	}
-	seen[key] = true
-	return nil
-}
-
-func parseCountArg(d *caddyfile.Dispenser, out *int) error {
+// parseCountArg reads one integer and refuses one below least, naming
+// the option and its minimum. least is 1 wherever Provision reads 0 as
+// unset, since an explicit 0 there would become the default without a
+// word; it is 0 for deploy_log_lines, whose 0 is a setting.
+func parseCountArg(d *caddyfile.Dispenser, out *int, least int) error {
 	name := d.Val()
 	if !d.NextArg() {
 		return d.ArgErr()
@@ -338,11 +338,19 @@ func parseCountArg(d *caddyfile.Dispenser, out *int) error {
 	if err != nil {
 		return d.Errf("invalid %s %q: %v", name, d.Val(), err)
 	}
+	if n < least {
+		return d.Errf("%s must be at least %d, got %d; leave it out for the default", name, least, n)
+	}
 	*out = n
 	return nil
 }
 
-func parseDurationArg(d *caddyfile.Dispenser, out *caddy.Duration) error {
+// parseDurationArg reads one duration and refuses one below the
+// option's minimum, naming both: more than 0, since Provision reads a
+// zero duration as unset and an explicit 0 would become the default
+// without a word, or 0 itself where 0 is a setting (zeroIsSetting:
+// soak's "no soak").
+func parseDurationArg(d *caddyfile.Dispenser, out *caddy.Duration, zeroIsSetting bool) error {
 	name := d.Val()
 	if !d.NextArg() {
 		return d.ArgErr()
@@ -350,6 +358,12 @@ func parseDurationArg(d *caddyfile.Dispenser, out *caddy.Duration) error {
 	dur, err := caddy.ParseDuration(d.Val())
 	if err != nil {
 		return d.Errf("invalid %s %q: %v", name, d.Val(), err)
+	}
+	switch {
+	case zeroIsSetting && dur < 0:
+		return d.Errf("%s must be 0 or more, got %s", name, d.Val())
+	case !zeroIsSetting && dur <= 0:
+		return d.Errf("%s must be more than 0, got %s; leave it out for the default", name, d.Val())
 	}
 	*out = caddy.Duration(dur)
 	return nil
@@ -388,85 +402,6 @@ func parseBackup(d *caddyfile.Dispenser, files *[]string) (*backupdecl.Config, e
 		*into = append(*into, paths...)
 	}
 	return b, nil
-}
-
-// parseDeployTrust parses one `deploy_trust <preset> { ... }` block,
-// at either the global or the per-app nesting level:
-//
-//	deploy_trust github {          # preset names the token issuer
-//	    audience   <aud>           # required for OIDC presets
-//	    claim      <name> <value>  # exact-match constraint, repeatable
-//	    subject    <sub>           # sugar for `claim sub <sub>`
-//	}
-//	deploy_trust local {           # non-CI / manual / test fallback
-//	    public_key <path>
-//	}
-//	deploy_trust oidc  { issuer <url>; audience <aud>; ... }
-func parseDeployTrust(d *caddyfile.Dispenser) (TrustConfig, error) {
-	tc := TrustConfig{}
-	if !d.NextArg() {
-		return tc, d.Err("deploy_trust needs a preset: github, gitlab, oidc or local")
-	}
-	tc.Kind = d.Val()
-	if d.NextArg() {
-		return tc, d.ArgErr() // only the preset name, then a block
-	}
-	seen := map[string]bool{}
-	for nesting := d.Nesting(); d.NextBlock(nesting); {
-		if err := refuseRepeat(d, seen, "claim"); err != nil {
-			return tc, err
-		}
-		switch d.Val() {
-		case "issuer":
-			if !d.NextArg() {
-				return tc, d.ArgErr()
-			}
-			tc.Issuer = d.Val()
-		case "audience":
-			if !d.NextArg() {
-				return tc, d.ArgErr()
-			}
-			tc.Audience = d.Val()
-		case "public_key":
-			if !d.NextArg() {
-				return tc, d.ArgErr()
-			}
-			tc.PublicKey = d.Val()
-		case "subject":
-			if !d.NextArg() {
-				return tc, d.ArgErr()
-			}
-			// Route to a `sub` claim rather than the Subject sugar field:
-			// if the value is a placeholder that resolves empty, it then
-			// stays a (fail-closed) sub="" constraint instead of silently
-			// dropping — dropping would broaden the trust source.
-			if tc.Claims == nil {
-				tc.Claims = make(map[string]string)
-			}
-			if _, dup := tc.Claims["sub"]; dup {
-				return tc, d.Err("subject and `claim sub` are both set")
-			}
-			tc.Claims["sub"] = d.Val()
-		case "claim":
-			if !d.NextArg() {
-				return tc, d.ArgErr()
-			}
-			key := d.Val()
-			if !d.NextArg() {
-				return tc, d.ArgErr()
-			}
-			if tc.Claims == nil {
-				tc.Claims = make(map[string]string)
-			}
-			if _, dup := tc.Claims[key]; dup {
-				return tc, d.Errf("duplicate claim %q", key)
-			}
-			tc.Claims[key] = d.Val()
-		default:
-			return tc, d.Errf("unknown deploy_trust subdirective %q", d.Val())
-		}
-	}
-	return tc, nil
 }
 
 // UnmarshalCaddyfile parses the webhook directive, which takes no

@@ -3,6 +3,7 @@ go 1.26.1
 use (
 	.
 	./backups
+	./box
 	./liveswap
 	./penaltybox
 )

@@ -2,16 +2,18 @@
 // Limiting and HAProxy stick-table consumption recipes for the CMS
 // rate-limit hint header (X-Rate-Limit-Level: 1|2|3, absence = 1).
 //
-// Response phase: each origin response's hint level is added, weighted,
-// to a per-client sliding-window budget, and the header is stripped
-// before reaching the client. Crossing the budget puts the client in a
-// penalty box. Request phase: boxed clients get 429 + Retry-After
-// before the request reaches the origin.
+// Response phase: each origin response at or above min_level counts
+// against a per-client sliding-window budget (weighted by level on the
+// default budget, 1 per response in a tier), and the header is
+// stripped before reaching the client. Crossing the budget puts the
+// client in a penalty box. Request phase: boxed clients get 429 +
+// Retry-After before the request reaches the origin.
 package penaltybox
 
 import (
 	"fmt"
 	"net/http"
+	"net/netip"
 	"net/textproto"
 	"strconv"
 	"time"
@@ -33,7 +35,15 @@ type Handler struct {
 
 	// Key identifies the client. Default "{client_ip}", which respects
 	// the server's trusted_proxies configuration — XFF trust is the
-	// server config's job, not this module's.
+	// server config's job, not this module's. "{client_ip}" is only a
+	// Caddyfile shorthand; in JSON it is an unknown placeholder. A key
+	// that resolves to "" fails open: the request passes to the next
+	// handler uncounted and never boxed, though its hint header is
+	// still stripped when Strip is on (see ServeHTTP). A key whose
+	// whole value resolves to a single IP address is masked (see
+	// maskKey): IPv4, IPv4-mapped IPv6 and NAT64 well-known
+	// (64:ff9b::/96) addresses count per IPv4 address, any other IPv6
+	// address under its /64. Any other value is used verbatim.
 	Key string `json:"key,omitempty"`
 
 	// MinLevel is the lowest hint level that counts toward the budget.
@@ -53,25 +63,29 @@ type Handler struct {
 	// during the box does not extend it. Default 5m.
 	PenaltyTTL caddy.Duration `json:"penalty_ttl,omitempty"`
 
-	// Strip removes the hint header before the response reaches the
-	// client. Default true.
+	// Strip removes the hint header from the final response's headers
+	// before they reach the client. A hint sent as a trailer or on a 1xx
+	// interim response is not stripped (or counted). Default true.
 	Strip *bool `json:"strip,omitempty"`
 
 	// Status is the response code for boxed clients. Default 429.
 	Status int `json:"status,omitempty"`
 
-	// MaxKeys caps tracked clients; beyond it, oldest-idle entries are
-	// evicted. Default 100000.
+	// MaxKeys is the target number of tracked clients. Default 100000.
+	// It is split evenly across the store's 64 shards, rounded down, at
+	// least one each (see perShardKeys), so the hard cap is
+	// 64*max(floor(MaxKeys/64), 1) clients; beyond it, oldest-idle
+	// entries are evicted. Values that leave one slot per shard (below 128) load,
+	// with a warning (warnSmallMaxKeys).
 	MaxKeys int `json:"max_keys,omitempty"`
 
 	// Tiers gives a level its own budget, separate from the default
 	// window/limit/penalty_ttl. Keyed by hint level ("2", "3"). Within a
-	// tier each response costs 1 (not `level` units — weighting only
-	// matters when levels share a budget), so `limit` is a plain
-	// response count. A counted level without its own tier uses the
-	// nearest configured tier below it, else the default budget (which
-	// keeps the original weighted semantics). Omitted tier fields
-	// inherit the top-level window/limit/penalty_ttl.
+	// tier each response costs 1, not `level` units, so `limit` is a
+	// plain response count. A counted level without its own tier uses
+	// the nearest configured tier below it, at 1 per response too, else
+	// the default budget (which keeps the original weighted semantics).
+	// Omitted tier fields inherit the top-level window/limit/penalty_ttl.
 	Tiers map[int]TierConfig `json:"tiers,omitempty"`
 
 	store       boxStore
@@ -147,6 +161,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.stripOn = h.Strip == nil || *h.Strip
 	h.headerCanon = textproto.CanonicalMIMEHeaderKey(h.Header)
 	h.logger = ctx.Logger()
+	warnSmallMaxKeys(h.logger, h.MaxKeys)
 
 	tiers := make(map[int]tierSpec, len(h.Tiers))
 	for level, t := range h.Tiers {
@@ -166,6 +181,28 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	st.startSweeper()
 	h.store = st
 	return nil
+}
+
+// warnSmallMaxKeys logs one warning when max_keys leaves one slot per
+// shard (below 2*numShards). Such a value loads — refusing it would
+// make Caddy refuse a config that works today — but it does not do
+// what it reads as. Every shard keeps at least one client, so below
+// numShards the store tracks more clients than asked; and with one
+// slot per shard a client's first counted response evicts whichever
+// client its shard holds, boxed or not (makeRoomLocked). Unrelated
+// clients that land in one shard then reset each other's counts, so an
+// abuser among them may never reach limit, and a box lasts only until
+// another client is counted in its shard. Non-positive values are
+// Validate's to refuse, so they are skipped.
+func warnSmallMaxKeys(logger *zap.Logger, maxKeys int) {
+	if logger == nil || maxKeys <= 0 || perShardKeys(maxKeys) >= 2 {
+		return
+	}
+	logger.Warn("max_keys leaves one slot per shard: unrelated clients in one shard evict each other, resetting counts and lifting boxes early",
+		zap.Int("max_keys", maxKeys),
+		zap.Int("effective_max_keys", numShards*perShardKeys(maxKeys)),
+		zap.Int("shards", numShards),
+		zap.String("fix", fmt.Sprintf("set max_keys to at least %d, and well above the number of clients that produce counted responses within one window (default 100000)", 2*numShards)))
 }
 
 // Validate enforces semantic invariants (runs for JSON and Caddyfile
@@ -226,9 +263,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
 	key := repl.ReplaceAll(h.Key, "")
 	if key == "" {
-		// No resolvable key — fail open rather than box the world.
-		return next.ServeHTTP(w, r)
+		// No resolvable key — fail open rather than box the world: skip
+		// the box check and count nothing (the interceptor never counts
+		// an empty key), but still strip the hint when strip is on.
+		return h.serveNext(w, r, next, "")
 	}
+	key = maskKey(key)
 
 	if remaining, boxed := h.store.boxedRemaining(key); boxed {
 		// Strip here too: earlier middleware may already have set the
@@ -244,6 +284,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		return nil
 	}
 
+	return h.serveNext(w, r, next, key)
+}
+
+// serveNext runs the next handler behind a hintInterceptor for key, then
+// finalizes it so that a handler which wrote nothing still has its hint
+// read and stripped before Caddy writes the response.
+func (h *Handler) serveNext(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, key string) error {
 	rw := &hintInterceptor{ResponseWriter: w, handler: h, key: key}
 	err := next.ServeHTTP(rw, r)
 	rw.finalize()
@@ -259,6 +306,55 @@ func retryAfterSeconds(remaining time.Duration) int {
 		secs = 1
 	}
 	return secs
+}
+
+// nat64WellKnown is the RFC 6052 well-known NAT64 prefix: an address in
+// it is an IPv4 client seen through a translator, with the IPv4 address
+// in the last four bytes.
+var nat64WellKnown = netip.MustParsePrefix("64:ff9b::/96")
+
+// maskKey is the store key for a resolved key value. It looks only at
+// the whole resolved value, whatever placeholder produced it
+// ({client_ip}, or a header such as CF-Connecting-IP): if that value
+// parses as exactly one IP address it is masked, and anything else — a
+// composite such as "{client_ip}|{host}", a host:port such as {remote}
+// gives — is returned unchanged, since only the operator knows its
+// shape.
+//
+// An IPv6 address becomes its /64 prefix ("2001:db8:1:2::/64"): one
+// host is routinely handed a whole /64, so per-address budgets would let
+// an IPv6 client walk past the box by changing its low 64 bits. A
+// link-local address's zone goes with the host bits. IPv4 is keyed per
+// address, and so are the IPv6 forms that carry one IPv4 client:
+// IPv4-mapped (::ffff:a.b.c.d) and the well-known NAT64 prefix
+// (64:ff9b::a.b.c.d) both key as the embedded IPv4 address, so a client
+// gets the same key native or translated, and a translator's clients
+// are not all folded into one /64. A network-specific NAT64 prefix and
+// Teredo cannot be recognised and do fold their IPv4 clients together.
+//
+// The liveswap deploy throttle (deploytrust's clientKey) applies the
+// same /64 rule; this is a copy, not an import, so penaltybox stays an
+// independent module.
+func maskKey(key string) string {
+	ip, err := netip.ParseAddr(key)
+	if err != nil {
+		return key
+	}
+	if ip.Is4() {
+		// ParseAddr accepts only canonical dotted-quad IPv4, so key
+		// already equals ip.String() — skip the allocation.
+		return key
+	}
+	ip = ip.Unmap()
+	if ip.Is4() {
+		return ip.String()
+	}
+	if nat64WellKnown.Contains(ip.WithZone("")) {
+		b := ip.As16()
+		return netip.AddrFrom4([4]byte(b[12:])).String()
+	}
+	prefix, _ := ip.Prefix(64) // cannot fail: a valid IPv6 address, 64 ≤ 128
+	return prefix.String()
 }
 
 // Interface guards.

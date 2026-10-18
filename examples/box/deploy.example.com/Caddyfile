@@ -1,0 +1,80 @@
+# One box's whole config: becomes /etc/hotserve/Caddyfile on the box
+# whose deploy host names this directory (README.md). No secret values
+# in it: those are under secrets/ beside it, encrypted (README.md,
+# Secrets).
+{
+	# Keep: the admin API off TCP (every app can reach localhost), and
+	# `systemctl reload` finds the socket here.
+	admin unix//run/hotserve/admin.sock
+
+	# Who may change this file. A push reaches the box only with a token
+	# from this repo's workflow on main, and the box applies it only if
+	# every commit since the one it runs is signed by a key listed here.
+	# `make signer` adds yours under the marker; keep the marker.
+	box {
+		deploy_trust github {
+			audience hotserve
+			claim repository your-org/boxes
+			claim ref refs/heads/main
+		}
+		# signers
+	}
+
+	liveswap {
+		# Required: where a deploy that sends a URL may fetch from. The
+		# examples' workflows send their release asset's API URL, which
+		# works for a private repo too (the box fetches it with the
+		# job's own token); this entry admits it. Hosts match exactly,
+		# so `github.com/your-org/` would not. Only a tarball pushed in
+		# the request body skips the allowlist.
+		artifact_allowlist api.github.com/repos/your-org/
+
+		app example {
+			# From hotserve's examples/node/hotserve.caddy: a Node single
+			# executable, so nothing is installed on the box. A Deno
+			# app's lines are in examples/deno/hotserve.caddy; its flags
+			# are its permissions, widened here before the code that
+			# needs them deploys.
+			command ./server
+			pre_start ./migrate
+			env APP_VERSION {version}
+			env DATA_DIR {shared_dir}
+
+			# Secrets, when the app has some: `make secret APP=example
+			# VAR=…` encrypts each under secrets/example/, and the box
+			# writes them to this file (README.md, Secrets).
+			# env_file /etc/hotserve/secrets/example.env
+
+			# Who may deploy it: this repo's main branch, by the OIDC
+			# token its workflow mints. Nothing secret is stored here.
+			deploy_trust github {
+				audience hotserve
+				claim repository your-org/example
+				claim ref refs/heads/main
+			}
+		}
+	}
+}
+
+example.com {
+	reverse_proxy {
+		dynamic liveswap example
+	}
+	# Before the first deploy, and while the app is down, the proxy has
+	# no upstream and answers 503. Keep that status — monitors and CI
+	# should see it — but give a person a sentence instead of a blank
+	# page. `journalctl -u hotserve` says which of the two it is.
+	# The template's sentence is quoted, as a new box's answer, in
+	# README.md and hotserve's docs/first-deploy.md (step 3): a change
+	# to it in the template goes there too.
+	handle_errors 502 503 {
+		respond "example is not running: nothing has been deployed yet, or it is down and being restarted." {http.error.status_code}
+	}
+}
+
+# The box's deploy host: the apps' deploys, and this file's own pushes.
+# Its name is this directory's name.
+deploy.example.com {
+	liveswap_webhook
+	box_webhook
+}

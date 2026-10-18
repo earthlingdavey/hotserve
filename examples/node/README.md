@@ -37,10 +37,9 @@ pointing at it. [Your first deploy](https://github.com/smallhoursorg/hotserve/bl
 whole path from a fresh server, with this app as its example; the
 three steps below are its second half.
 
-**1. On an arm64 box, install `libatomic1`** — as root, while you
-still have it: the administrator the box repo creates later cannot
-install packages. The tarball carries its own Node, and Node's arm64
-build links one library a stock Debian 13 does not ship; without it
+**1. On an arm64 box, install `libatomic1`**, as root. The tarball
+carries its own Node, and Node's arm64 build links one library a
+stock Debian 13 does not ship; without it
 the app fails to start with exit status 127 (`error while loading
 shared libraries: libatomic.so.1`). amd64 needs nothing.
 
@@ -49,13 +48,14 @@ apt install libatomic1
 ```
 
 **2. Add the app to the box's Caddyfile**, with the lines from
-`hotserve.caddy` inside its `app` block. As root that is
-`/etc/hotserve/Caddyfile`: edit, `hotserve validate --config` it,
-`systemctl reload hotserve`. Once the box has a
-[box repo](https://github.com/smallhoursorg/hotserve/tree/main/examples/box#change-the-config), it is that repo's `Caddyfile`
-and `make push`. The box example ships the Deno app's block; this
-app's `command`, `pre_start` and `env` lines replace those. Either
-way, the file is:
+`hotserve.caddy` inside its `app` block. In the box's
+[repo](https://github.com/smallhoursorg/hotserve/tree/main/examples/box#change-the-config)
+that is `<host>/Caddyfile`, committed signed and pushed to `main`; the
+box template ships this app's block already. On a box without one, it
+is `/etc/hotserve/Caddyfile`, as root: edit, `hotserve validate
+--config` it, `systemctl reload hotserve`. Either way the app's part is the
+same, and a box repo's file keeps its `box` block and the deploy
+host's `box_webhook` line as they are. Without those two, the file is:
 
 ```caddyfile
 {
@@ -101,7 +101,10 @@ The workflow builds on an arm64 runner, since the executable is the
 runner's own Node binary; for an amd64 box, also add
 `HOTSERVE_RUNS_ON` set to `ubuntu-24.04`. Then push to `main`. A run
 without `HOTSERVE_URL` stops at its first step, saying so, and
-publishes nothing. The workflow publishes the tarball as a GitHub
+publishes nothing. The URL must be `https://`: the request carries
+the run's token, so `scripts/deploy.sh` refuses any other scheme
+before it mints one (`HOTSERVE_ALLOW_HTTP=1` lifts that, for a local
+test box only). The workflow publishes the tarball as a GitHub
 release and the box fetches it — so every deployed version stays on
 GitHub. The box fetches the asset by its API URL with the job's own
 token, so a private repo deploys the same way as a public one, and the
@@ -117,11 +120,12 @@ names an app the box does not know, which answers the same 401. The
 step prints the values this run minted its token with; the box's
 journal (`journalctl -u hotserve`) names the app asked for and the
 check that refused it, within the box's budget for failed
-authentications: ten a minute from one address (past that, 429) and a
-hundred a minute in all (past that, 401), neither written until the
-minute passes — except that the box failing to consult the token's
-issuer is named once a minute whatever the budget, and a re-run once
-the issuer is back goes through.
+authentications: ten a minute from one address and a hundred a
+minute in all; past either, a failure is not written until the
+minute passes, and the answer stays the same 401 — except that the
+box failing to consult the token's issuer is named once a minute
+whatever the budget, and a re-run once the issuer is back goes
+through.
 
 What a first deploy that worked looks like, from the laptop:
 
@@ -133,9 +137,13 @@ What a first deploy that worked looks like, from the laptop:
   app's own output — the migration's line, then whatever `server.js`
   prints. The `adm` group the box README grants is what reads it.
 
-A re-run of the same workflow run is refused with a 422: versions are
-immutable on the box, and that commit's version is already there. Push
-a new commit to deploy again.
+A re-run of the same workflow run rebuilds the tarball, and the box
+refuses it with a 422: versions are immutable on the box, that
+commit's version is already there, and the rebuilt bytes are not the
+ones it runs (the box relaunches a running version only for the very
+same artifact). Push a new commit to deploy again, or **Run workflow**
+with the running version as the rollback target to relaunch it as it
+is.
 
 ## What the executable is, and isn't
 
@@ -183,5 +191,9 @@ npm run deploy
 ```
 
 The version defaults to the commit, and versions are immutable on the
-box, so that deploys once per commit; for an uncommitted build set one
-(`VERSION=wip-3 npm run deploy`).
+box, so that deploys once per commit. While tracked files have
+uncommitted changes the script refuses the default rather than label
+them with the commit (it checks the checkout when it runs, not the
+build); set a version for an uncommitted build
+(`VERSION=wip-3 npm run deploy`). A version is 1 to 64 letters,
+digits, `.`, `_` and `-`, not starting with `.`.

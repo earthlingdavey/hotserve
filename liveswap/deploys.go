@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -33,7 +31,13 @@ import (
 //     from disk: it may be served only through the filter, and it is
 //     trusted for nothing else — not as a name, not as a retention
 //     slot — unless it proves itself a record: a regular file, under
-//     a valid version name, whose object names that version.
+//     a valid version name, whose object names that version. One
+//     value of a record is read back as a value: the pin, which a
+//     rollback carries into the record that replaces it
+//     (recordedPin) — only a digest-shaped string. It lands in the
+//     new record, which goes through the filter again, and in
+//     last_deploy, where like every pin it is a safe string
+//     (redactorFor) until the next deploy replaces it.
 //  2. Nothing from disk reaches a response except through the filter
 //     as body text. A recorded version is a safe string like any
 //     other name, and no safe string equals a known value (redact.go,
@@ -42,7 +46,9 @@ import (
 //     it adds nothing else).
 //  3. Whatever the filter does to a body, the record on disk names
 //     its version and outcome, from values that cannot carry source
-//     data: the version the deployer named, vocabulary, timestamps.
+//     data: the version the deployer named and the digest it was
+//     pinned to (unless the filter would change it, or the values
+//     are not all known), vocabulary, timestamps.
 //     The vocabulary (status, phase) stands outside the filter in
 //     every body (redact.go, rule 3), so a value equal to a word of
 //     it rewrites nothing; a record the filter leaves unreadable as
@@ -68,14 +74,30 @@ import (
 // times are carried as the record has them, not parsed: a record is
 // the filter's output, and a filter that replaced a value the shape
 // of a timestamp must not make the record vanish from the list. The
-// list is ordered by the record's write time instead.
+// list is ordered by the record's write time instead. The pin is
+// carried the same way, for the same reason: a digest equal to an
+// env_file value is redacted in the record like any other.
 type deploySummary struct {
 	Version    string          `json:"version"`
 	Status     string          `json:"status"`
 	Phase      string          `json:"phase,omitempty"` // where it failed
 	By         string          `json:"deployed_by,omitempty"`
+	SHA256     json.RawMessage `json:"sha256,omitempty"` // the pin; absent when there was none
 	StartedAt  json.RawMessage `json:"started_at,omitempty"`
 	FinishedAt json.RawMessage `json:"finished_at,omitempty"`
+}
+
+// pin is the summary's digest when it has the shape the writer records
+// (lowercase hex); "" otherwise. A record is read off disk, so a
+// string in the field names nothing until it is a digest, as a
+// version names nothing until it is valid (recordHead) — and the safe
+// string is the text the body carries, never a respelling of it.
+func (s deploySummary) pin() string {
+	var d string
+	if json.Unmarshal(s.SHA256, &d) != nil || !sha256Re.MatchString(d) || d != strings.ToLower(d) {
+		return ""
+	}
+	return d
 }
 
 // recordDeploy writes result's filtered form as the record of its
@@ -100,7 +122,8 @@ func (ma *managedApp) recordDeploy(c collaborators, result deployResult) {
 	// version, or an outcome the filter reached); and a record larger
 	// than a reader accepts would be written only to be refused.
 	// Either way the record is the version the deployer named, the
-	// outcome vocabulary, the times, and why the rest is missing —
+	// digest they pinned it to, the outcome vocabulary, the times,
+	// and why the rest is missing —
 	// nothing that could carry source data, so nothing the filter
 	// would have had to see.
 	why := ""
@@ -126,6 +149,15 @@ func (ma *managedApp) recordDeploy(c collaborators, result deployResult) {
 		}
 		if result.Phase != "" { // absent, as a marshalled result has it, not ""
 			envelope["phase"] = result.Phase
+		}
+		// The pin is digest-shaped (validated, or read back by
+		// recordedPin); kept only as the filter would leave it whole —
+		// not equal to a known value, and none inside it (rule 1
+		// redacts a known value within a safe string too) — and only
+		// when every value is known: with the env_file unread past a
+		// bad line, that cannot be decided.
+		if filteredPin, _ := rd.Redact(result.SHA256); unknown == "" && result.SHA256 != "" && filteredPin == result.SHA256 {
+			envelope["sha256"] = result.SHA256
 		}
 		env, err := json.Marshal(envelope)
 		if err != nil {
@@ -178,9 +210,9 @@ func releaseNames(releasesDir string) ([]string, error) {
 // in the very error that says so — the second result names that, and
 // the record is the envelope (rule 3). A file that is absent holds no
 // values to know. Its safe strings are the names the response filter
-// exempts: the version, the app's dirs, the releases on disk — and
-// none equal to a known value (redact.go, rule 1).
-func (ma *managedApp) recordRedactor(c collaborators, result deployResult) (*redactor, string) {
+// exempts: the version and its pin, the app's dirs, the releases on
+// disk — and none equal to a known value (redact.go, rule 1).
+func (ma *managedApp) recordRedactor(c collaborators, result deployResult) (*Redactor, string) {
 	ma.secretsMu.Lock()
 	kvs := append([]string(nil), ma.secrets...)
 	ma.secretsMu.Unlock()
@@ -198,12 +230,12 @@ func (ma *managedApp) recordRedactor(c collaborators, result deployResult) (*red
 			unknown = "the deploy's env_file could not be read whole, so its values are unknown to the filter"
 		}
 	}
-	safe := []string{ma.name, result.Version}
+	safe := []string{ma.name, result.Version, result.SHA256}
 	if c.spec != nil {
 		safe = append(safe, c.spec.dirs.root, c.spec.dirs.app, c.spec.dirs.releases, c.spec.dirs.shared, c.spec.dirs.run)
 		safe = append(safe, listReleases(c.spec.dirs.releases)...)
 	}
-	return newRedactor(kvs, safe), unknown
+	return NewRedactor(kvs, safe), unknown
 }
 
 // recordsDir is the records directory as the directory it names
@@ -259,10 +291,11 @@ func recordHead(b []byte, name string) (deploySummary, bool) {
 	if !outcomeStatuses[s.Status] || (s.Phase != "" && (s.Status != "failed" || !outcomePhases[s.Phase])) {
 		return deploySummary{}, false
 	}
-	// And its times strings, as the writer marshals them: the summary
-	// carries them as they are into the status body, and a string is
-	// the one value that re-encodes as text rather than structure.
-	for _, raw := range []json.RawMessage{s.StartedAt, s.FinishedAt} {
+	// And its times and pin strings, as the writer marshals them: the
+	// summary carries them as they are into the status body, and a
+	// string is the one value that re-encodes as text rather than
+	// structure.
+	for _, raw := range []json.RawMessage{s.StartedAt, s.FinishedAt, s.SHA256} {
 		var str string
 		if len(raw) != 0 && (string(raw) == "null" || json.Unmarshal(raw, &str) != nil) {
 			return deploySummary{}, false
@@ -271,74 +304,64 @@ func recordHead(b []byte, name string) (deploySummary, bool) {
 	return s, true
 }
 
-// writeDeployRecord writes the record atomically: a fresh temp file
+// writeDeployRecord writes the record atomically, under the write rule
+// every store in the app dir shares (writeOwnFile): a fresh temp file
 // under a random name (O_EXCL, never a path something could have
 // planted), then a rename over the record's name. Mode 0600 like
 // state.json: a record carries the app's own lines, filtered but
 // still the app's, and nothing but hotserve reads records — the
 // webhook is the interface.
-func writeDeployRecord(d appDirs, version string, filtered []byte) (err error) {
+func writeDeployRecord(d appDirs, version string, filtered []byte) error {
 	dir, err := recordsDir(d, true)
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".record-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer func() {
-		if err != nil {
-			_ = os.Remove(tmp)
-		}
-	}()
-	if _, err = f.Write(append(filtered, '\n')); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, deployRecordPath(dir, version))
+	return writeOwnFile(deployRecordPath(dir, version), ".record-*.tmp", append(filtered, '\n'))
 }
 
 // deployRecordMaxBytes bounds a record read: one holds a bounded
 // result (an 8 KiB tail at most); anything larger is not one.
 const deployRecordMaxBytes = 1 << 20
 
-// openRecord opens a record without following a link (rule 4) and
-// reads it whole, refusing anything that is not a regular file of a
-// record's size; the modification time comes from the same open file
-// as the bytes, so a record replaced between two lookups cannot pair
-// one outcome with another's time.
+// openRecord reads a record under the read rule every store in the app
+// dir shares (readOwnFile): no link followed (rule 4), no FIFO held,
+// nothing but a regular file of a record's size; the modification time
+// comes from the same open file as the bytes, so a record replaced
+// between two lookups cannot pair one outcome with another's time.
 func openRecord(path string) ([]byte, time.Time, error) {
-	// O_NONBLOCK as elf.go opens the command: a FIFO where a record
-	// should be would otherwise hold the open — and the status, and
-	// the deploy lock — for good.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // a path under the app's own deploys dir, built here
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	defer f.Close() //nolint:errcheck // read-only
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, time.Time{}, fmt.Errorf("%s is not a regular file", path)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, deployRecordMaxBytes+1))
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	if len(b) > deployRecordMaxBytes {
-		return nil, time.Time{}, fmt.Errorf("%s is larger than a record can be", path)
-	}
-	return b, fi.ModTime(), nil
+	return readOwnFile(path, deployRecordMaxBytes, "a record")
 }
 
 func deployRecordPath(dir, version string) string {
 	return filepath.Join(dir, versionPathComponent(version)+".json")
+}
+
+// recordedPin is the digest the version's record says it was pinned
+// to, or "" when there is no record, it does not prove
+// itself one (rule 1), or its pin is absent or not a digest — a pin
+// the filter redacted (equal to an env_file value) included, which a
+// rollback then records as unpinned.
+//
+// Known limit: nothing ties the record to the release's bytes. A
+// version whose release GC pruned can be deployed again; if that
+// deploy leaves its bytes on disk without rewriting the record — the
+// record write fails (logged, not fatal), or a refusal's cleanup of
+// the release fails (a refusal writes no record) — the old record and
+// its pin stay, and a rollback carries that pin onto bytes it never
+// checked; a deploy of the running version is matched against the
+// same pin (relaunchRefusal, app.go) and relaunches the bytes on
+// disk, introducing none. Closing it means keeping the pin with the
+// release instead.
+func recordedPin(d appDirs, version string) string {
+	b, err := readDeployRecord(d, version)
+	if err != nil {
+		return ""
+	}
+	s, ok := recordHead(b, version+".json")
+	if !ok {
+		return ""
+	}
+	return s.pin()
 }
 
 // errNoDeployRecord is a version no deploy has been recorded for.

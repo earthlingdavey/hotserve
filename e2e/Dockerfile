@@ -23,10 +23,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # libpam-systemd: pam_systemd gives user@<uid>.service its runtime dir;
 # dbus: logind; procps + curl: the in-container systemd suite;
 # libatomic1: what a Node single executable needs on arm64 (the one
-# package examples/node asks the box for).
+# package examples/node asks the box for); openssh-client: ssh-keygen,
+# which the box applier verifies signatures with (the package Depends
+# on it); git: the box suite makes and signs its commits on the box;
+# age and make: the box template's secrets commands, which the suite
+# runs as a laptop would.
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
-		systemd systemd-sysv dbus libpam-systemd procps curl ca-certificates libatomic1 sudo \
+		systemd systemd-sysv dbus libpam-systemd procps curl ca-certificates libatomic1 \
+		openssh-client git age make \
 	&& rm -rf /var/lib/apt/lists/*
 RUN systemctl mask \
 	systemd-udevd.service \
@@ -65,13 +70,23 @@ RUN hotserve list-modules | grep -qx liveswap \
 # systemd is not running at build time; postinstall tolerates that
 # (linger-file fallback, daemon-reload/try-restart ignored).
 COPY packaging/hotserve.service /etc/systemd/system/hotserve.service
+# The box applier's units and exchange tree, where the package puts
+# them (packaging/nfpm.yaml); postinstall makes the tree.
+COPY packaging/hotserve-box-apply.path packaging/hotserve-box-apply.service /lib/systemd/system/
+COPY packaging/hotserve-box.tmpfiles /usr/lib/tmpfiles.d/hotserve-box.conf
+# The starter and the directories the package ships for it; postinstall
+# installs it and its record (e2e/Caddyfile replaces it below).
+COPY packaging/Caddyfile /usr/share/hotserve/Caddyfile
 COPY packaging/postinstall.sh /tmp/postinstall.sh
-RUN mkdir -p /var/lib/hotserve /var/lib/liveswap \
+RUN mkdir -p /var/lib/hotserve /var/lib/liveswap /etc/hotserve /var/lib/hotserve-package \
 	&& chmod 750 /var/lib/hotserve /var/lib/liveswap \
+	&& chmod 755 /etc/hotserve && chmod 700 /var/lib/hotserve-package \
 	&& sh /tmp/postinstall.sh && rm /tmp/postinstall.sh
 COPY e2e/systemd/e2e.conf /etc/systemd/system/hotserve.service.d/e2e.conf
 COPY e2e/systemd/e2e-token.service /etc/systemd/system/e2e-token.service
-RUN systemctl enable hotserve.service e2e-token.service
+# postinstall enables the path unit only through deb-systemd-helper,
+# which needs a dpkg install to remember; enabled here as it would be.
+RUN systemctl enable hotserve.service e2e-token.service hotserve-box-apply.path
 COPY e2e/Caddyfile /etc/hotserve/Caddyfile
 # The demo app's env file, as the box README says to make one: root
 # and the hotserve user can read it, nothing else. The crash scenario
@@ -85,14 +100,10 @@ COPY examples/node/hotserve.caddy /etc/hotserve/node-example.caddy
 COPY e2e/mint-token.sh /usr/local/bin/mint-token.sh
 RUN chmod +x /usr/local/bin/mint-token.sh
 
-# An administrator who is not root: the box suite runs examples/box's
-# bin/push as this user, with exactly the sudoers file the example
-# ships and the adm group for the journal — the README's claim that
-# administering needs no root, tested.
-COPY examples/box/sudoers /etc/sudoers.d/hotserve-admin
-RUN chmod 0440 /etc/sudoers.d/hotserve-admin && visudo -c -q \
-	&& groupadd hotserve-admin \
-	&& useradd -m -G adm,hotserve-admin admin
+# An administrator who is not root, in the adm group alone, for the
+# journal. The box suite checks that this user reads the logs, and no
+# env file and not the box's key.
+RUN useradd -m -G adm admin
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

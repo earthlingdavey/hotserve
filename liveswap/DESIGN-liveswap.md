@@ -43,13 +43,71 @@ Concept map from the Nomad-era stack:
 - The webhook MUST authenticate every request by verifying an
   `Authorization: Bearer <JWT>` against the app's `deploy_trust`
   sources (OIDC against an issuer's public JWKS, or a local public
-  key), and MUST NOT reveal whether an app exists to unauthenticated
-  callers (unknown apps verify against the global trust sources, then
-  404). No shared secret is stored on the box.
+  key), and its answer MUST NOT reveal whether an app exists to
+  unauthenticated callers (unknown apps verify against the global trust
+  sources, then 404; a refused token gets the same 401 either way). Its
+  timing can, within a bound (DESIGN-threat-model.md, "Webhook
+  endpoint", the residual; owed: #306): a token is checked against
+  each source a name resolves to in turn, the signature before the
+  issuer, so an OIDC source refuses a forged token after a local
+  signature check when it holds the token's kid, and, when it does
+  not, after a fetch of its issuer's keys that it makes at most once a
+  minute, whatever issuer the token names. A name that does not exist
+  goes to the global sources: it is refused at once when they hold no
+  OIDC source, and otherwise pays the same on their own key sets.
+  The fetch window is per app, not shared across apps that trust the
+  same issuer. No shared secret is stored on the box.
 - Config load MUST fail if any app resolves to zero `deploy_trust`
   sources.
+- Config load and every launch MUST warn when an app's `env_file` is
+  world-readable or world-writable (the documented mode is 0640
+  root:hotserve; owner and group are not checked), and MUST NOT refuse
+  on it: a mode changed between loads is not a reason to fail a
+  relaunch. The launch reads the mode from the descriptor it rendered
+  the environment through, so it reports the file the unit got. At
+  load, an absent file is silent (the launch that needs it fails and
+  says so), one the loading account cannot reach is noted at info
+  level (`validate` runs unprivileged by design), and any other
+  failure to check is warned about as such — never reported as fine.
+- Config load MUST warn, once per block, when a `github` or `gitlab`
+  `deploy_trust` that some app inherits or names pins an identity but
+  no branch (`ref` — on GitLab only beside `ref_type` — `ref_path`,
+  `sha`, `workflow_ref`, a `ref_protected` not pinned false, or a
+  default-form `subject`), and when a `local` one has no audience.
+  Both load — each is the documented minimum — and each is wider than
+  it reads: any ref of the identity deploys; a token minted for any
+  box trusting the key is accepted. An `environment` as the only
+  binding is noted at info level, since it binds only as far as the
+  provider's deployment-branch rule for it. A claim that resolved
+  empty admits no token and MUST be warned about as that, not as
+  width. The generic `oidc` preset is not read: it requires `sub`,
+  whose shape is the issuer's.
 - The deploy MUST be rejected (409) if one is already running for that
   app; other apps' deploys proceed independently.
+- A deploy or rollback naming the version that is running MUST
+  relaunch it from its release on disk through the deploy pipeline
+  minus fetch and extract (`preparing` runs no `pre_start`): a second
+  instance of the installed release under a fresh nonce, soaked,
+  promoted, the first drained and stopped — so a changed `env_file`
+  value or app definition reaches the app without a new version. A URL
+  or push deploy relaunches only for the same artifact: its digest
+  (the URL deploy's `sha256` pin; a push's upload, hashed as it is
+  staged and recorded as its pin) MUST equal the version's recorded
+  pin (`recordedPin`). A request without a digest, a version whose
+  record has none (an unpinned pull; a push made before pushes were
+  hashed), or a different digest MUST be refused (422) without fetching
+  anything to compare, in a message that says how a new value reaches
+  the app; a URL deploy whose digest matches MUST still pass the url
+  checks a fetch gives it (scheme, `artifact_allowlist`), so a URL
+  that could not deploy cannot relaunch either. A rollback to the
+  running version needs no digest: it is the same release by
+  definition. A relaunch MUST write no deploy
+  record — the version's record stays the deploy that put it there,
+  with its pin and its times, whether the relaunch succeeded or failed
+  — and MUST say what it did in `last_deploy` and the response
+  (`note`: `relaunched <version> (same artifact); it reads its env
+  file now`). A relaunch never writes under the release: it can only
+  run the bytes already there.
 - Artifact downloads MUST enforce `max_artifact_size` both via
   Content-Length and the streamed byte count, MUST default to https
   only (enforced on every redirect hop), and MUST match the required
@@ -77,26 +135,39 @@ Concept map from the Nomad-era stack:
   ahead. Extraction goes to a staging dir renamed into place on
   success.
 - Failed webhook authentications MUST be throttled in the journal:
-  per client address (10 failures per minute, then 429 for further
-  bad tokens) and process-wide (100 failures logged per minute, every
-  line included), so an
+  per client address (10 failures logged per minute) and process-wide
+  (100 failures logged per minute, every line included), so an
   unauthenticated flood has a bounded journal cost from any number of
-  sources. A valid token MUST still be admitted from a throttled
-  address — the throttle bounds lines, never deploys. A source the box
-  cannot consult (discovery, key fetch) is charged like any failure
-  (whether a failure spends the budget is measurable from outside and
-  MUST NOT depend on which sources an app names) but MUST be named in
+  sources. The throttle MUST NOT change the answer: every refusal is
+  the same flat 401 whatever the budgets say. A valid token MUST still
+  be admitted from a throttled address — the throttle bounds lines,
+  never deploys. A source the box cannot consult (discovery, key
+  fetch) is charged like any failure but MUST be named in
   the journal once per window per source however spent the budgets
   are and whether or not another source then accepted the token, so
   an issuer outage never leaves the journal quiet.
 - `pre_start` (if configured) MUST run to completion in the release dir
-  before the new instance starts; non-zero exit aborts the deploy.
+  before the new instance starts; non-zero exit aborts the deploy. It
+  runs under `deadline`, not under the request: a client that hangs up
+  MUST NOT stop it midway (a half-applied migration harms the app's
+  data); the health gate then fails the deploy on the cancelled
+  request, before any traffic moves.
 - The new instance MUST be continuously healthy for `soak` before any
-  traffic moves, and MUST be stopped and the deploy failed if not
-  healthy within `deadline`. A flapping health check resets the soak.
+  traffic moves (`soak 0`: the first healthy probe), and MUST be
+  stopped and the deploy failed if not healthy within `deadline`. A
+  flapping health check resets the soak. The gate is judged once per
+  `health_interval`, so it ends within `deadline` plus one
+  `health_interval` and two `health_timeout`s; a soak that falls due
+  on the first tick past `deadline` still passes if that tick's probe
+  does.
 - Any failure before the promote step MUST leave the old version
   serving, untouched. The webhook response MUST be synchronous and MUST
-  be a 5xx on failure (CI turns red; `curl --fail-with-body`).
+  carry a 5xx on failure: as its status (CI turns red; `curl
+  --fail-with-body`), or, for a client that sent `Accept:
+  application/x-ndjson`, as the last line's `http_status`. That client
+  gets the deploy streamed — a line per phase, then the single
+  response's body with its code as `http_status` — and the status line
+  is 200 once the first line has gone out.
 - The cutover MUST NOT trigger a config reload; it is an atomic value
   swap read per-request by the upstream source.
 - After cutover the pipeline MUST wait `drain`, then SIGTERM the old
@@ -105,8 +176,9 @@ Concept map from the Nomad-era stack:
 - Release GC MUST run only after successful deploys, keep the newest
   `keep` dirs by mtime, and never delete the currently-serving version.
   A failed URL or push deploy's freshly extracted release dir is
-  removed (a rollback relaunches an existing release and never deletes
-  it), so its version stays retriable — unless the failed instance
+  removed (a rollback, or a relaunch of the running version, launches
+  an existing release and never deletes it), so its version stays
+  retriable — unless the failed instance
   may still be running (the
   dir is kept rather than pulled from under a live process; the next
   launch's sweep stops the stray unit) or the removal itself fails;
@@ -229,8 +301,12 @@ lifetime to the binary's.
 What the unit gives us: `KillMode=control-group` makes stop and crash
 cleanup mean the whole process tree (npm → node → workers), the
 journal captures stdout/stderr under `SyslogIdentifier=hotserve-<app>`,
-`Restart=no` keeps the watchdog the sole restart authority, and
-`NoNewPrivileges` is on. `handleState.Unit` (persisted in
+`Restart=no` keeps the watchdog the sole restart authority, the
+command is set as `ExecStartEx` with `no-env-expand` so its argv execs
+byte for byte (systemd substitutes no `$VAR` into it, and no shell is
+in the way either), `NoNewPrivileges` is on, and `LimitCORE=0` on both limits means a
+crash writes no core dump of the app (DESIGN-threat-model.md, "Where
+`env_file` values sit"). `handleState.Unit` (persisted in
 `state.json`) is what `Reattach` looks up after a hotserve restart: a
 running unit is adopted with the socket its recorded nonce names —
 pinned afresh, so a name that no longer holds a socket refuses the
@@ -304,7 +380,7 @@ reason they were found at all was somebody building this map by hand.
 | Layer | Files |
 |---|---|
 | 0 | `clock.go`, `names.go` |
-| 1 | `appdirs.go`, `socket.go` (+`_linux`/`_other`), `extract.go`, `allowlist.go`, `authlimit.go`, `deploytrust.go`, `health.go` |
+| 1 | `appdirs.go`, `ownfile.go`, `socket.go` (+`_linux`/`_other`), `extract.go`, `allowlist.go`, `health.go` |
 | 2 | `runner.go`, `sandbox.go`, `download.go`, `state.go` |
 | 3 | `runner_systemd.go`, `systemd_dbus.go` |
 | 4 | `app.go`, `watchdog.go`, `sweep.go` |
@@ -344,9 +420,11 @@ backwards edges reappearing *despite* this table.
 | `names.go` | the app-name and version alphabets, and the two helpers over them; shared by every layer |
 | `app.go` | `managedApp` state machine, Deploy pipeline, recovery, env building |
 | `appdirs.go` | `appDirs`: the on-disk layout for one app. Pure path arithmetic — no state, no lock |
-| `caddyfile.go` | all Caddyfile parsing (global option, directive, upstreams); NO defaults here — Provision owns them |
-| `handler.go` | webhook auth, payload validation, status endpoint |
-| `authlimit.go` | what a failed webhook auth costs the journal: per-address and process-wide budgets, on the injected clock |
+| `ownfile.go` | how a file hotserve keeps in an app dir is written and read — temp file + rename; no link followed at the name, no FIFO held, size-bounded — shared by the deploy records and `state.json` |
+| `caddyfile.go` | all Caddyfile parsing (global option, directive, upstreams) but the `deploy_trust` block, which is `deploytrust.Parse`; NO defaults here — Provision owns them, reading a zero field as unset, so a value below an option's minimum (0 included) is refused here, named; `soak` and `deploy_log_lines`, whose 0 is a setting, are pointers |
+| `handler.go` | the webhook: payload validation, deploy dispatch, the status endpoint, and every body's filter (`RespondJSON`); authentication is `deploytrust`'s |
+| `deploytrust/` | leaf package: deploy auth — the `deploy_trust` grammar (`Parse`), its sources and verifiers (OIDC + local-key JWT verification), the webhook preamble (`Limiter.Authenticate`) and what a failed attempt costs the journal (`Limiter`, on an injected clock). Imports nothing of liveswap's; the box webhook authenticates through it too. `trusttest/` beside it mints tokens and runs an issuer for tests |
+| `internal/dispenser/` | leaf package: the one Caddyfile rule the parsers here and `deploytrust.Parse` apply alike — a repeated subdirective is refused — in one place so the two cannot drift |
 | `upstreams.go` | dynamic upstream source (the cutover read side) |
 | `runner.go` / `runner_systemd.go` / `systemd_dbus.go` | runner interface + the systemd transient-unit implementation + its D-Bus client |
 | `sweep.go` | `App.Start`'s reconciliation against the manager: stop the units, and prune the dirs, of apps no loaded config names. Module-layer (the pool is the ledger), driving the runner |
@@ -359,7 +437,7 @@ backwards edges reappearing *despite* this table.
 | `health.go` | prober with soak/deadline arithmetic on an injected clock |
 | `watchdog.go` | continuous crash/health supervision: per-app loop, restart budget, backoff |
 | `state.go` | `state.json` atomic persistence, keep-N GC |
-| `deploytrust.go` / `deploytoken_cmd.go` | deploy-auth: OIDC + local-key JWT verification; the `hotserve deploy-keygen` / `deploy-token` subcommands |
+| `deploytoken_cmd.go` | the `hotserve deploy-keygen` / `deploy-token` subcommands |
 | `clock.go` | `Now()`/`Sleep()` clock seam |
 
 ## Security posture
@@ -386,8 +464,11 @@ backwards edges reappearing *despite* this table.
   socket when it stops (`ExecStopPost=`); a confirmed sweep prunes any
   left behind. The health probe is `GET <health_path>` with
   `Host: localhost`.
-- `Authorization` is dropped by Go's HTTP client on cross-host
-  redirects — exactly right for GitHub's asset→S3 redirect.
+- `Authorization` (`auth_header`) follows a redirect only while the
+  hop's host is the first hop's or a subdomain of it, and is dropped
+  for good at the first hop outside that domain (Go's
+  `shouldCopyHeaderOnRedirect`) — exactly right for GitHub's asset→S3
+  redirect, which leaves github.com's domain.
 - `artifact_allowlist` is required — there is no "deploy from
   anywhere" mode. Host+path entries pin the tenant on shared hosts
   (a bare `github.com` would admit anyone's artifacts), and the
@@ -407,7 +488,11 @@ author's beliefs about systemd, and only the real thing corrects them.
 
 1. Unit (`make test`, race, goleak): the deploy state machine (happy
    path; pre_start abort; health abort keeps old serving; 409;
-   same-version rejection; GC gated on a confirmed sweep); recovery
+   same-version relaunch — a matching pin, a push of the same bytes, a
+   rollback onto the running version — and its refusals — no digest
+   on either side, a different digest — with the version's record
+   untouched either way and a failed relaunch leaving the old
+   instance serving; GC gated on a confirmed sweep); recovery
    (reattach, relaunch, no-state sweep, transient vs permanent
    classification, retry loop on the fake clock, refusal of a foreign
    unit name in state.json, Cleanup joining recovery); Destruct's
@@ -456,7 +541,8 @@ author's beliefs about systemd, and only the real thing corrects them.
    support matrix, on both arches): Depends resolution (`libpam-systemd`,
    `dbus`), user manager active with lingering, a deploy under the
    shipped unit as a transient unit with its output and `LimitNOFILE`
-   in the journal, `hotserve validate` as root and as hotserve leaving
+   in the journal and `LimitCORE=0` on the unit and inside it,
+   `hotserve validate` as root and as hotserve leaving
    the running app alone, the app keeping its PID across the upgrade
    restart, and removal taking the apps, drop-ins and linger flag.
 
@@ -508,6 +594,21 @@ Design summary (full operator docs in README.md "Watchdog"):
   runner creates every unit with `Restart=no`, or systemd and
   liveswap would fight over the same failure.
 
+## Accepted residuals
+
+Findings scored by the repository's triage rule
+(`.claude/skills/triage/SKILL.md`) and accepted; the scores are
+severity × occurrence × detection, then the fix's size and risk.
+
+| Failure | Where | S | O | D | Product | Fix | Why accepted |
+|---|---|---|---|---|---|---|---|
+| A relaunch of the running version starts a second instance of the same release in the same release dir, bound read-write (`sandbox.go`), for the overlap — `soak`, then `drain` and the old instance's stop. An app that keeps mutable state in its release dir rather than under `HOME` (its shared dir) may see its two instances contend there. | `deployLocked`, relaunch | 3 | 5 | 3 | 45 | size 3, risk 2 (a copy per instance, or a stop-then-start branch) | Scores to fix; accepted by decision (#234, 2026-10-16). Both fixes cost what the feature exists to avoid: stop-then-start drops every request for the launch time, which the watchdog's restart already does and a deploy never does; a copy per instance doubles the disk of each relaunch and makes two paths to one release (`{release_dir}`, status, GC). The shared dir is already shared by both versions in every deploy, so an app's state there meets the same overlap today; the release dir is the app's code, and nothing of hotserve's writes under it during a relaunch. An app that conflicts fails the health gate or crashes in the watchdog's view, red and named; the silent case needs state the app chose to keep where every deploy already discards it. |
+| A relaunch matches the request's digest against the version's record, not the release's bytes (`recordedPin`'s known limit: a version release GC pruned, deployed again, whose record write then failed). A request carrying the old digest then relaunches the bytes on disk. | `relaunchRefusal` | 3 | 1 | 3 | 9 | size 3 (a pin kept with the release) | The relaunch introduces no bytes: whatever the match decides, what runs is the release that was already serving. Closing it is the same fix the known limit names for rollbacks. |
+| A request cancelled before or during `pre_start` does not stop it: the migration runs to its end, then the deploy starts the new instance and the health gate fails it on the cancelled request (phase `soaking`, `deploy canceled while waiting for health`). The new instance runs its startup for that moment, the release is removed, and a retry runs `pre_start` again, as it does after any gate failure that follows a `pre_start`. | `deployLocked`, after `pre_start` | 3 | 3 | 1 | 9 | size 2, risk 1 (a request check before the start); size 3, risk 3 (run the rest of the deploy detached) | Rule 2 holds (it ends red, the cause named); under rule 3 the product is under 20 and neither fix is size 1, risk 1. The shape is the owner's decision (#295, 2026-10-17): the gate aborts the deploy as it does for any client that left. The old instance serves throughout, and a migration that cannot run twice already meets the same retry after any gate failure. |
+| A `pre_start` that exits within milliseconds of `deadline` can still read as timed out: `jobResult` prefers a job result already received when the context ends, but not one whose signal is still in flight. The deploy fails red naming the deadline, and the release of a migration that ran is removed. | `jobResult` | 2 | 3 | 1 | 6 | size 3 (a second completion source: a oneshot's transient unit is unloaded on success, so no `Result` is left to ask for) | Rule 2 holds (red, named); under rule 3 the product is under 20. A migration that ends on its deadline has used its whole budget; raising `deadline` is the remedy. |
+| A Debian 13 host that passes the tutorial's step 2 (apt's `systemd (>= 257)` floor, `systemd-detect-virt --container`) but whose kernel or container refuses the sandbox's namespaces installs and serves the starter config, and first fails at step 3: `hotserve init`'s reload is liveswap's first start. That reload is refused, the probe's error names the cause, and the starter keeps serving; the box's repository, signer and workflow carry over to a fixed or new host. | `probeSandboxCapability`, from `App.Start` | 2 | 5 | 1 | 10 | size 3, risk 1 (a sandbox-check subcommand that step 2 runs as the hotserve user) | Rule 2 holds (it ends red and named); under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#274, 2026-10-17; #225 scored the same case at occurrence 3, but a host is the operator's choice, so it scores as input). The probe needs the hotserve user and its lingering manager, which the package's postinst creates, so the earliest any check could run is the end of `apt install`, minutes before step 3, with the same refusal and the same fix. A check in postinst could only warn, since a failed postinst leaves the package half-configured: one line in apt's output, after up to two 30-second probe budgets inside dpkg. And liveswap with no apps runs no probe (`len(a.managed) > 0` in `App.Start`), so the starter config cannot carry one. |
+| `max_token_ttl {env.NAME}` in a `deploy_trust local` block is refused at config load (`invalid max_token_ttl "{env.NAME}"`), though the README says `{env.*}` placeholders are resolved at config load: the duration is parsed when the Caddyfile is, before placeholders are. | `deploytrust.Parse` | 2 | 5 | 1 | 10 | size 2, risk 2 (a string field, resolved in `ResolvePlaceholders` and parsed in `Build`) | Rule 2 holds (refused and named, before anything runs); under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#296, 2026-10-17). Every liveswap duration directive (`health_interval`, `deadline`, …) parses the same way, so this one matches them; the Caddyfile's own `{$NAME}`, substituted when the file is read, works for all of them. |
+
 ## Non-goals
 
 - Post-promote *auto*-revert. Rollback is an explicit operation —
@@ -520,8 +621,6 @@ Design summary (full operator docs in README.md "Watchdog"):
 - Prometheus metrics (deploys_total, duration).
 - Deploy queueing; 409 + CI retry is the queue.
 - Windows.
-- Streaming (NDJSON) deploy progress; the response is buffered JSON so
-  `curl --fail-with-body` semantics stay honest.
 
 ## Open questions (with leans)
 
@@ -531,8 +630,10 @@ Design summary (full operator docs in README.md "Watchdog"):
    webhook. Lean: later; the webhook + status JSON covers CI and cron.
 3. **Metrics.** Lean: add with events.
 4. **Config-change restarts** — an explicit "apply now" admin action
-   instead of waiting for the next launch. Lean: keep next-launch
-   semantics; add an admin endpoint if users ask.
+   instead of waiting for the next launch. A rollback to the running
+   version, or a deploy of it with the same artifact, is that action
+   through the webhook (Behavior specification); the lean is to add
+   no admin endpoint beside it.
 
 ## History
 
@@ -553,3 +654,17 @@ Dated one-liners; the full text of each is in git.
   down as the rule rather than the record growing a launch
   disposition, and status now reports the unit's own `ExecStart` so
   the drift is visible. `pid` left `state.json` with it.
+- 2026-10-10 (#188) — Deploy auth became the leaf package
+  `deploytrust/`: the `deploy_trust` grammar, sources, verifiers, the
+  limiter and the webhook preamble, which now returns who the token is
+  (`Identity`, the claims included) or a `Refusal` the caller writes
+  through its own filter. The box webhook authenticates through it on
+  the same limiter. `NewRedactor` and `RespondJSON` give it the
+  response filter. One visible change: an app name carrying a control
+  byte or invalid UTF-8 is Go-quoted in the two auth journal lines, as
+  a refusal already was. Nothing else changed.
+- 2026-10-16 (#234) — A deploy or rollback to the running version
+  relaunches it from its release on disk (same artifact only, by
+  digest; a push's upload is hashed and recorded as its pin from here
+  on) instead of being refused; the two instances share the release
+  dir for the overlap, recorded as an accepted residual.

@@ -10,6 +10,8 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // serveReq runs one request through h.ServeHTTP with a Caddy replacer in
@@ -145,14 +147,163 @@ func TestServeHTTPLevel1NeverAllocates(t *testing.T) {
 	}
 }
 
+// An unresolvable key fails open: never counted, never boxed. Its hint
+// header is handled exactly as on the counted path, though: stripped
+// with strip on, passed through with strip off.
 func TestServeHTTPEmptyKeyFailsOpen(t *testing.T) {
-	h, _ := newTestHandler(newFakeClock(), storeConfig{})
+	for _, strip := range []bool{true, false} {
+		t.Run("strip="+strconv.FormatBool(strip), func(t *testing.T) {
+			h, st := newTestHandler(newFakeClock(), storeConfig{limit: 5, penaltyTTL: time.Minute})
+			h.Key = "{test.missing}" // resolves to empty
+			h.stripOn = strip
+
+			// Three level-3 responses are 9 units: past limit 5, had
+			// they counted.
+			for i := 0; i < 3; i++ {
+				rec := serveReq(t, h, "unused", levelNext("3"))
+				if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+					t.Fatalf("request %d: unresolvable key must fail open, got %d %q", i, rec.Code, rec.Body.String())
+				}
+				got := rec.Result().Header.Values("X-Rate-Limit-Level")
+				if strip && len(got) != 0 {
+					t.Fatalf("request %d: with strip on the hint must be stripped on the empty-key path, got %v", i, got)
+				}
+				if !strip && (len(got) != 1 || got[0] != "3") {
+					t.Fatalf("request %d: with strip off the hint must pass through, got %v", i, got)
+				}
+			}
+			if got := st.size(); got != 0 {
+				t.Fatalf("an empty key must never be counted, got %d store entries", got)
+			}
+
+			// A keyed client starts from zero: its one level-3 response
+			// (3 units) stays under limit 5.
+			h.Key = "{test.client}"
+			if rec := serveReq(t, h, "client-a", levelNext("3")); rec.Code != http.StatusOK {
+				t.Fatalf("keyed client must pass, got %d", rec.Code)
+			}
+			if rec := serveReq(t, h, "client-a", levelNext("1")); rec.Code != http.StatusOK {
+				t.Fatalf("keyed client under its budget must not be boxed, got %d", rec.Code)
+			}
+		})
+	}
+}
+
+// The empty-key path keeps the interceptor's streaming guarantees: the
+// hint is stripped when the first Write flushes an implicit 200, and a
+// streaming handler can still flush through http.ResponseController.
+// (httptest.ResponseRecorder takes a 1xx for the final status, so the
+// 1xx case is TestInterceptEmptyKey1xxPassthrough.)
+func TestServeHTTPEmptyKeyStreams(t *testing.T) {
+	h, st := newTestHandler(newFakeClock(), storeConfig{})
 	h.Key = "{test.missing}" // resolves to empty
 
-	rec := serveReq(t, h, "unused", levelNext("3"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unresolvable key must fail open, got %d", rec.Code)
+	var flushErr error
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("X-Rate-Limit-Level", "3")
+		if _, err := w.Write([]byte("chunk")); err != nil {
+			return err
+		}
+		flushErr = http.NewResponseController(w).Flush()
+		_, err := w.Write([]byte(" more"))
+		return err
+	})
+	rec := serveReq(t, h, "unused", next)
+
+	if flushErr != nil {
+		t.Fatalf("Flush through the empty-key path failed: %v", flushErr)
 	}
+	if !rec.Flushed {
+		t.Fatal("Flush did not reach the underlying writer")
+	}
+	if rec.Code != http.StatusOK || rec.Body.String() != "chunk more" {
+		t.Fatalf("final response must be the implicit 200 with the whole body, got %d %q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Result().Header.Values("X-Rate-Limit-Level"); len(got) != 0 {
+		t.Fatalf("hint must be stripped from the final response, got %v", got)
+	}
+	if got := st.size(); got != 0 {
+		t.Fatalf("an empty key must never be counted, got %d store entries", got)
+	}
+}
+
+func TestMaskKey(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"ipv4 per address", "192.0.2.1", "192.0.2.1"},
+		{"ipv4 other address", "192.0.2.2", "192.0.2.2"},
+		{"ipv6 to its /64", "2001:db8:1:2:3:4:5:6", "2001:db8:1:2::/64"},
+		{"ipv6 other host same /64", "2001:db8:1:2:ffff:ffff:ffff:ffff", "2001:db8:1:2::/64"},
+		{"ipv6 uppercase canonicalised", "2001:DB8:1:2::1", "2001:db8:1:2::/64"},
+		{"ipv6 loopback", "::1", "::/64"},
+		{"ipv4-mapped ipv6 unmapped, per address", "::ffff:192.0.2.1", "192.0.2.1"},
+		{"ipv4-mapped hex form", "::ffff:c000:201", "192.0.2.1"},
+		{"ipv4-mapped with zone", "::ffff:192.0.2.1%eth0", "192.0.2.1"},
+		{"nat64 well-known prefix keys the embedded ipv4", "64:ff9b::192.0.2.1", "192.0.2.1"},
+		{"nat64 well-known hex form", "64:ff9b::c000:201", "192.0.2.1"},
+		{"nat64 well-known uppercase with zone", "64:FF9B::192.0.2.1%eth0", "192.0.2.1"},
+		{"nat64 /64 but outside the /96", "64:ff9b::1:c000:201", "64:ff9b::/64"},
+		{"nat64 local-use prefix is not recognised", "64:ff9b:1::c000:201", "64:ff9b:1::/64"},
+		{"teredo is not recognised", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001:0:4136:e378::/64"},
+		{"zoned link-local drops the zone", "fe80::1%eth0", "fe80::/64"},
+		{"zoned link-local other zone, same key", "fe80::2%eth1", "fe80::/64"},
+		{"empty", "", ""},
+		{"header value", "Bearer abc", "Bearer abc"},
+		{"composite key stays per address", "2001:db8:1:2::1|example.com", "2001:db8:1:2::1|example.com"},
+		{"host:port is not an address", "192.0.2.1:8080", "192.0.2.1:8080"},
+		{"bracketed ipv6 is not an address", "[2001:db8::1]", "[2001:db8::1]"},
+		{"prefix string is not an address", "2001:db8:1:2::/64", "2001:db8:1:2::/64"},
+		{"leading zeros rejected", "192.000.2.1", "192.000.2.1"},
+		{"padded", " 2001:db8::1", " 2001:db8::1"},
+		{"garbage", "not-an-ip", "not-an-ip"},
+		{"nul byte", "\x00", "\x00"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := maskKey(c.in); got != c.want {
+				t.Errorf("maskKey(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// An IPv6 client owns its whole /64, so the budget is the prefix's:
+// a second address in the same /64 is boxed by the first one's
+// offences. A neighbouring /64, and IPv4 addresses, keep their own.
+func TestServeHTTPIPv6SharesPrefixBudget(t *testing.T) {
+	clk := newFakeClock()
+	h, _ := newTestHandler(clk, storeConfig{limit: 5, penaltyTTL: time.Minute})
+	h.Key = "{test.client}"
+	h.Status = http.StatusTooManyRequests
+
+	box := func(client string) {
+		t.Helper()
+		serveReq(t, h, client, levelNext("3"))
+		serveReq(t, h, client, levelNext("3")) // 6 units > limit 5
+	}
+	expect := func(client string, want int) {
+		t.Helper()
+		if rec := serveReq(t, h, client, levelNext("1")); rec.Code != want {
+			t.Fatalf("%s: got %d, want %d", client, rec.Code, want)
+		}
+	}
+
+	// Budget spread across a /64 still adds up: one level-3 response
+	// from each of two addresses is the same client's 6 units.
+	serveReq(t, h, "2001:db8:1:2::a", levelNext("3"))
+	serveReq(t, h, "2001:db8:1:2::b", levelNext("3"))
+	expect("2001:db8:1:2::a", http.StatusTooManyRequests)
+	expect("2001:db8:1:2:dead:beef:0:1", http.StatusTooManyRequests)
+	expect("2001:db8:1:3::a", http.StatusOK)
+
+	box("192.0.2.1")
+	expect("192.0.2.1", http.StatusTooManyRequests)
+	expect("::ffff:192.0.2.1", http.StatusTooManyRequests)   // the same IPv4 client, mapped
+	expect("64:ff9b::192.0.2.1", http.StatusTooManyRequests) // ... and through a NAT64 translator
+	expect("192.0.2.2", http.StatusOK)
+	expect("::ffff:192.0.2.2", http.StatusOK)
+	expect("64:ff9b::192.0.2.2", http.StatusOK)
 }
 
 func TestValidate(t *testing.T) {
@@ -192,6 +343,69 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A max_keys below the shard count loads (a refusal would make Caddy
+// refuse a config that works today) and tracks one client per shard.
+func TestProvisionSmallMaxKeysLoads(t *testing.T) {
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: t.Context()})
+	defer cancel()
+
+	h := Handler{MaxKeys: 50}
+	if err := h.Provision(ctx); err != nil {
+		t.Fatalf("max_keys 50 must provision: %v", err)
+	}
+	defer func() {
+		if err := h.Cleanup(); err != nil {
+			t.Errorf("Cleanup: %v", err)
+		}
+	}()
+	if err := h.Validate(); err != nil {
+		t.Fatalf("max_keys 50 must validate: %v", err)
+	}
+	if got := h.store.(*store).maxPerShard; got != 1 {
+		t.Errorf("max_keys 50: %d keys per shard, want 1", got)
+	}
+}
+
+func TestWarnSmallMaxKeys(t *testing.T) {
+	cases := []struct {
+		maxKeys   int
+		effective int // 0 = no warning
+	}{
+		{1, numShards},
+		{50, numShards},
+		{numShards - 1, numShards},
+		{numShards, numShards},
+		{100, numShards},
+		{2*numShards - 1, numShards},
+		{2 * numShards, 0},
+		{1000, 0},
+		{100_000, 0},
+		{0, 0},  // Validate refuses it; no warning on top
+		{-5, 0}, // likewise
+	}
+	for _, tc := range cases {
+		core, logs := observer.New(zap.WarnLevel)
+		warnSmallMaxKeys(zap.New(core), tc.maxKeys)
+		got := logs.All()
+		if tc.effective == 0 {
+			if len(got) != 0 {
+				t.Errorf("max_keys %d: want no warning, got %v", tc.maxKeys, got)
+			}
+			continue
+		}
+		if len(got) != 1 {
+			t.Fatalf("max_keys %d: want one warning, got %v", tc.maxKeys, got)
+		}
+		fields := got[0].ContextMap()
+		if got[0].Level != zap.WarnLevel || fields["max_keys"] != int64(tc.maxKeys) ||
+			fields["effective_max_keys"] != int64(tc.effective) || fields["shards"] != int64(numShards) {
+			t.Errorf("max_keys %d: warning = %q %v, want level warn, max_keys %d, effective_max_keys %d, shards %d",
+				tc.maxKeys, got[0].Message, fields, tc.maxKeys, tc.effective, numShards)
+		}
+	}
+	warnSmallMaxKeys(nil, 50) // a nil logger is skipped, not dereferenced
 }
 
 // BenchmarkUnboxedRequestPhase measures the hot path: an unboxed key's

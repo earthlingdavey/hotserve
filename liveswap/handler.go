@@ -2,6 +2,8 @@ package liveswap
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,32 +20,12 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
 	"go.uber.org/zap"
 )
 
 func init() {
 	caddy.RegisterModule(Handler{})
-}
-
-// unauthorized is the flat 401: the same sentence whatever the reason,
-// so a caller learns neither which apps exist nor what a source pins.
-func unauthorized(w http.ResponseWriter) error {
-	return respondJSON(w, http.StatusUnauthorized, map[string]string{
-		"error": "invalid or missing deploy token (Authorization: Bearer <jwt>)",
-	}, nil)
-}
-
-// bearerToken extracts the deploy JWT from `Authorization: Bearer
-// <jwt>`. Bearer is the only accepted transport: Caddy redacts the
-// Authorization header from access logs automatically (the retired
-// X-Liveswap-Secret custom header did not, which leaked it).
-func bearerToken(r *http.Request) string {
-	const prefix = "Bearer "
-	if auth := r.Header.Get("Authorization"); len(auth) > len(prefix) &&
-		strings.EqualFold(auth[:len(prefix)], prefix) {
-		return auth[len(prefix):]
-	}
-	return ""
 }
 
 // maxPayloadBytes bounds the webhook JSON body.
@@ -56,7 +38,10 @@ func loggedAppName(name string) string {
 	if len(name) <= appNameMaxLen {
 		return name
 	}
-	return name[:appNameMaxLen] + "..."
+	// At a rune boundary, as every bound of the preamble's cuts: a cut
+	// inside one would leave invalid UTF-8 for that bound to quote, and
+	// the journal would carry the cut's artefact rather than the name.
+	return deploytrust.CutRunes(name, appNameMaxLen) + "..."
 }
 
 // Handler implements the liveswap webhook endpoint. Mount it in its own
@@ -68,11 +53,14 @@ func loggedAppName(name string) string {
 // Responses are synchronous — the POST returns when the deploy has
 // fully succeeded (200) or failed (5xx with the old version, if there
 // was one, still serving), so `curl --fail-with-body` makes CI red exactly when it
-// should be, with the reason in the body.
+// should be, with the reason in the body. A POST that asks for the
+// stream (Accept: application/x-ndjson) is the exception: once its
+// first phase line is out the status is 200 whatever the outcome, and
+// the last line's http_status carries the 5xx (deployStream).
 type Handler struct {
 	app     *App
 	logger  *zap.Logger
-	limiter *authLimiter
+	limiter *deploytrust.Limiter
 }
 
 // CaddyModule returns the Caddy module information.
@@ -94,7 +82,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if len(h.app.Apps) == 0 {
 		return fmt.Errorf("liveswap_webhook is configured but no apps are defined in the liveswap global options")
 	}
-	h.limiter = webhookAuthLimiter
+	h.limiter = deploytrust.Shared()
 	return nil
 }
 
@@ -105,59 +93,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.
 
 	// Authenticate before revealing whether the app exists. For an
 	// unknown app the token is verified against the global trust
-	// sources, so timing and status never leak valid app names to
+	// sources, so the status never leaks valid app names to
 	// unauthenticated callers (with no global trust configured, an
-	// unknown app is simply unauthenticable → 401, still no leak).
+	// unknown app is simply unauthenticable → 401). The time to the
+	// 401 still can, within the bound DESIGN-threat-model.md states
+	// ("Webhook endpoint", the residual; owed: #306).
 	verifiers := h.app.globalVerifiers
 	if ma != nil {
 		verifiers = ma.currentVerifiers()
 	}
-	who, down, refused := authorize(r.Context(), verifiers, bearerToken(r))
-	key := clientKey(r)
-	// A source the box could not consult is named here once per window
-	// per source, whatever the budgets and whether or not another
-	// source then accepted the token; a refusal is still charged below
-	// like any other — see unavailable for why both.
-	for _, u := range down {
-		if h.limiter.outage(u.label) {
-			h.logger.Warn("webhook auth could not consult a trust source",
-				zap.String("source", u.label), zap.String("app", loggedAppName(name)),
-				zap.String("remote", key), zap.String("reason", boundRefusal(u.Error())))
-		}
+	who, refusal := h.limiter.Authenticate(r, verifiers, h.logger, "app", loggedAppName(name))
+	if refusal != nil {
+		return refusal.Write(func(code int, body any) error { return RespondJSON(w, code, body, nil) })
 	}
-	if refused != nil {
-		// What a failure costs in the journal is the limiter's call
-		// (see authLimiter): the count of lines, and — the name and
-		// the refusal being request input, both logged bounded — the
-		// size of each. The refusal is for this journal only: the
-		// response below stays the same flat 401 for every reason, so
-		// a caller learns neither which apps exist nor what a source
-		// pins.
-		v := h.limiter.fail(key)
-		if v.log {
-			h.logger.Warn("webhook auth failed",
-				zap.String("app", loggedAppName(name)), zap.String("remote", key),
-				zap.String("refused", refused.Error()))
-		}
-		if v.trippedKey {
-			h.logger.Warn("webhook auth failures from this address throttled: further ones are answered 429 and not logged",
-				zap.String("remote", key), zap.Int("failures", authFailBudget), zap.Duration("window", authFailWindow))
-		}
-		if v.trippedGlobal {
-			h.logger.Warn("webhook auth failures throttled process-wide: further ones are not logged",
-				zap.Int("failures", authFailGlobalBudget), zap.Duration("window", authFailWindow))
-		}
-		if v.throttled {
-			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(v.retryAfter.Seconds()))))
-			return respondJSON(w, http.StatusTooManyRequests, map[string]string{
-				"error": "too many failed deploy authentications from this address; retry later",
-			}, nil)
-		}
-		return unauthorized(w)
-	}
-	h.limiter.clear(key)
 	if ma == nil {
-		return respondJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("unknown app %q", name)}, nil)
+		return RespondJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("unknown app %q", name)}, nil)
 	}
 
 	switch r.Method {
@@ -166,18 +116,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.
 		// a malformed `?deploy=%ZZ` would fall through to the status.
 		q, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
-			return respondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "malformed query: " + err.Error()}, ma.redactorFor(statusSnapshot{}))
+			return RespondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "malformed query: " + err.Error()}, ma.redactorFor(statusSnapshot{}))
 		}
 		if q.Has("deploy") {
 			return h.deployRecord(w, ma, q.Get("deploy"))
 		}
 		s := ma.status()
-		return respondJSON(w, http.StatusOK, s, ma.redactorFor(s))
+		return RespondJSON(w, http.StatusOK, s, ma.redactorFor(s))
 	case http.MethodPost:
-		return h.deploy(w, r, ma, who)
+		return h.deploy(w, r, ma, who.By)
 	default:
 		w.Header().Set("Allow", "GET, POST")
-		return respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"}, ma.redactorFor(statusSnapshot{}))
 	}
 }
 
@@ -204,15 +154,15 @@ func (h *Handler) deployURL(w http.ResponseWriter, r *http.Request, ma *managedA
 	// would surface as a misleading "invalid JSON" 400.
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxPayloadBytes+1))
 	if err != nil {
-		return respondJSON(w, http.StatusBadRequest, map[string]string{"error": "reading body: " + err.Error()}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, http.StatusBadRequest, map[string]string{"error": "reading body: " + err.Error()}, ma.redactorFor(statusSnapshot{}))
 	}
 	if len(body) > maxPayloadBytes {
-		return respondJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+		return RespondJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
 			"error": fmt.Sprintf("payload exceeds %d bytes", maxPayloadBytes)}, ma.redactorFor(statusSnapshot{}))
 	}
 	p, status, msg := parseDeployPayload(body)
 	if status != 0 {
-		return respondJSON(w, status, map[string]string{"error": msg}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, status, map[string]string{"error": msg}, ma.redactorFor(statusSnapshot{}))
 	}
 	return h.runDeploy(w, r, ma, p.request(), by)
 }
@@ -257,7 +207,7 @@ func parseDeployPayload(body []byte) (p deployPayload, status int, msg string) {
 func (h *Handler) deployPush(w http.ResponseWriter, r *http.Request, ma *managedApp, by string) error {
 	version := r.URL.Query().Get("version")
 	if !validVersion(version) {
-		return respondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": fmt.Sprintf("version query param must match %s", versionRe)}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": fmt.Sprintf("version query param must match %s", versionRe)}, ma.redactorFor(statusSnapshot{}))
 	}
 	// Acquire the per-app deploy lock BEFORE staging the upload: a
 	// concurrent push then gets an immediate 409 instead of streaming a
@@ -272,24 +222,28 @@ func (h *Handler) deployPush(w http.ResponseWriter, r *http.Request, ma *managed
 	// the upload can't stage under one spec and extract under another.
 	c := ma.snapshot()
 	spec := c.spec
-	archive, err := stageUpload(r.Body, spec.dirs.tmp, spec.maxArtifactSize)
+	archive, digest, err := stageUpload(r.Body, spec.dirs.tmp, spec.maxArtifactSize)
 	var stgErr *stagingError
 	switch {
 	case errors.Is(err, errArtifactTooLarge):
-		return respondJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+		return RespondJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
 			"error": fmt.Sprintf("uploaded artifact exceeds max_artifact_size (%d bytes)", spec.maxArtifactSize)}, ma.redactorFor(statusSnapshot{}))
 	case errors.As(err, &stgErr):
 		// A local filesystem failure (mkdir/create/write/close, e.g. a
 		// full disk) is a server error, like a failed URL download.
-		return respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "staging upload: " + err.Error()}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, http.StatusInternalServerError, map[string]string{"error": "staging upload: " + err.Error()}, ma.redactorFor(statusSnapshot{}))
 	case err != nil:
 		// Otherwise the body read itself failed — a bad request.
-		return respondJSON(w, http.StatusBadRequest, map[string]string{"error": "reading upload: " + err.Error()}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, http.StatusBadRequest, map[string]string{"error": "reading upload: " + err.Error()}, ma.redactorFor(statusSnapshot{}))
 	}
 	// Backstop cleanup: fetch removes the archive once it extracts it,
 	// but if the pipeline returns before fetch it would leak.
 	defer func() { _ = os.Remove(archive) }()
-	req := deployRequest{version: version, localArchive: archive, by: by}
+	// The upload's digest is the push's pin: recorded with the version,
+	// and what a later push of the same version is matched by
+	// (relaunchRefusal). The bytes are the caller's own, so there is
+	// nothing to check it against here.
+	req := deployRequest{version: version, localArchive: archive, sha256: digest, by: by}
 	h.logDeployAuthorized(r, ma, req)
 	return h.finishDeploy(w, r, ma, func(onPhase func(string)) error {
 		req.onPhase, c.onPhase = onPhase, onPhase
@@ -301,7 +255,7 @@ func (h *Handler) deployPush(w http.ResponseWriter, r *http.Request, ma *managed
 func (h *Handler) deployRollback(w http.ResponseWriter, r *http.Request, ma *managedApp, by string) error {
 	version := r.URL.Query().Get("rollback")
 	if !validVersion(version) {
-		return respondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": fmt.Sprintf("rollback version must match %s", versionRe)}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": fmt.Sprintf("rollback version must match %s", versionRe)}, ma.redactorFor(statusSnapshot{}))
 	}
 	return h.runDeploy(w, r, ma, deployRequest{version: version, rollback: true}, by)
 }
@@ -310,27 +264,29 @@ func (h *Handler) deployRollback(w http.ResponseWriter, r *http.Request, ma *man
 // outcome of that version's latest deploy (deploys.go).
 func (h *Handler) deployRecord(w http.ResponseWriter, ma *managedApp, version string) error {
 	if !validVersion(version) {
-		return respondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": fmt.Sprintf("deploy query param must match %s", versionRe)}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": fmt.Sprintf("deploy query param must match %s", versionRe)}, ma.redactorFor(statusSnapshot{}))
 	}
 	c := ma.snapshot()
 	if c.spec == nil {
 		// An app the pool still holds but no loaded config describes
 		// (status() makes the same allowance): nowhere to read from.
-		return respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "app has no configuration loaded"}, ma.redactorFor(statusSnapshot{}))
+		return RespondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "app has no configuration loaded"}, ma.redactorFor(statusSnapshot{}))
 	}
 	rec, err := readDeployRecord(c.spec.dirs, version)
-	// The requested version is a name the filter should let through,
-	// whether or not the status still lists it by the time it is
-	// built (a prune, a reload between the read and the response): a
-	// safe string like the versions the status names, under the same
-	// rule (redactorFor).
+	// The requested version, and the record's own pin, are names the
+	// filter should let through whether or not the status still lists
+	// them by the time it is built (a prune, a reload between the read
+	// and the response): safe strings like the versions the status
+	// names, under the same rule (redactorFor).
 	s := ma.status()
-	s.Deploys = append(s.Deploys, deploySummary{Version: version})
+	head, _ := recordHead(rec, version+".json")
+	head.Version = version
+	s.Deploys = append(s.Deploys, head)
 	switch {
 	case errors.Is(err, errNoDeployRecord):
-		return respondJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("no deploy recorded for version %s", version)}, ma.redactorFor(s))
+		return RespondJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("no deploy recorded for version %s", version)}, ma.redactorFor(s))
 	case err != nil:
-		return respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "reading deploy record: " + err.Error()}, ma.redactorFor(s))
+		return RespondJSON(w, http.StatusInternalServerError, map[string]string{"error": "reading deploy record: " + err.Error()}, ma.redactorFor(s))
 	}
 	// Through the live filter like every body; its outcome words
 	// stand outside the filter there (redact.go, rule 3).
@@ -368,8 +324,9 @@ func (h *Handler) logDeployAuthorized(r *http.Request, ma *managedApp, req deplo
 		zap.String("source", req.source()), zap.String("remote", r.RemoteAddr),
 	}
 	if req.sha256 != "" {
-		// What the pull is bound to, for the operator reading back what
-		// a deploy fetched: a digest, never a secret.
+		// What the pull is bound to, or what the push uploaded, for the
+		// operator reading back what a deploy ran: a digest, never a
+		// secret.
 		fields = append(fields, zap.String("sha256", req.sha256))
 	}
 	h.logger.Info("deploy authorized", fields...)
@@ -382,19 +339,19 @@ func (h *Handler) mapDeployResult(w http.ResponseWriter, ma *managedApp, err err
 		// The client hung up mid-deploy; nobody is reading this.
 		return nil
 	}
-	return respondJSON(w, code, body, rd)
+	return RespondJSON(w, code, body, rd)
 }
 
 // deployOutcome is the status code and body a pipeline outcome maps
 // to, with the app's filter for it; a nil body is a client that hung
 // up, which nothing is written for.
-func deployOutcome(ma *managedApp, err error) (int, any, *redactor) {
+func deployOutcome(ma *managedApp, err error) (int, any, *Redactor) {
 	status := ma.status()
 	// A refused pin names two digests, and a digest is the shape of a
 	// token the filter masks: told they are names — the deployer's own
 	// pin, and what the host served — the 422 can say which is which.
 	// Not a mismatch: no names (the zero value's are empty, and
-	// newRedactor skips those).
+	// NewRedactor skips those).
 	var dm digestMismatch
 	_ = errors.As(err, &dm)
 	rd := ma.redactorFor(status, dm.names()...)
@@ -502,9 +459,9 @@ func (s *deployStream) finish(ma *managedApp, err error) error {
 		return nil
 	}
 	if !s.begun {
-		return respondJSON(s.w, code, body, rd)
+		return RespondJSON(s.w, code, body, rd)
 	}
-	// The single response's bytes, filtered as respondJSON filters
+	// The single response's bytes, filtered as RespondJSON filters
 	// them, with two fields appended after the filter: appended, not
 	// re-marshalled, so the line has the single response's order, which
 	// is whatever the filter left (a redaction re-marshals the top
@@ -568,47 +525,52 @@ func (t *writeTracker) Write(p []byte) (int, error) {
 }
 
 // stageUpload streams the request body to a temp file, capped at
-// maxBytes. Returns the path; the caller owns cleanup. Local filesystem
-// failures come back wrapped in *stagingError (→ 5xx); a body-read
-// failure comes back bare (→ 400); an over-cap body → errArtifactTooLarge.
-func stageUpload(body io.Reader, tmpDir string, maxBytes int64) (string, error) {
+// maxBytes, hashing it on the same pass. Returns the path and the
+// sha256 of the staged bytes as lowercase hex; the caller owns cleanup.
+// Local filesystem failures come back wrapped in *stagingError (→
+// 5xx); a body-read failure comes back bare (→ 400); an over-cap body →
+// errArtifactTooLarge.
+func stageUpload(body io.Reader, tmpDir string, maxBytes int64) (string, string, error) {
 	if err := os.MkdirAll(tmpDir, 0o750); err != nil {
-		return "", &stagingError{err}
+		return "", "", &stagingError{err}
 	}
 	f, err := os.CreateTemp(tmpDir, "push-*.tar.gz")
 	if err != nil {
-		return "", &stagingError{err}
+		return "", "", &stagingError{err}
 	}
 	path := f.Name()
 	// One byte past the cap proves it is oversized.
 	wt := &writeTracker{w: f}
-	n, copyErr := io.Copy(wt, io.LimitReader(body, maxBytes+1))
+	h := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(wt, h), io.LimitReader(body, maxBytes+1))
 	closeErr := f.Close()
 	if copyErr != nil {
 		_ = os.Remove(path)
 		if wt.failed {
-			return "", &stagingError{copyErr} // disk write failed
+			return "", "", &stagingError{copyErr} // disk write failed
 		}
-		return "", copyErr // request body read failed
+		return "", "", copyErr // request body read failed
 	}
 	if closeErr != nil {
 		_ = os.Remove(path)
-		return "", &stagingError{closeErr}
+		return "", "", &stagingError{closeErr}
 	}
 	if n > maxBytes {
 		_ = os.Remove(path)
-		return "", errArtifactTooLarge
+		return "", "", errArtifactTooLarge
 	}
-	return path, nil
+	return path, hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// respondJSON writes every body the webhook sends, through the
+// RespondJSON writes every body the webhook sends, through the
 // response filter (redact.go). r is the app's filter — every site
 // with the app in scope passes ma.redactorFor, the 405 included —
 // and nil only for the bodies written before an app is known (401,
-// 429, 404), where the shape and entropy layers still apply. When a known secret was found
-// the object gains a `redacted_env` field naming the keys.
-func respondJSON(w http.ResponseWriter, code int, v any, r *redactor) error {
+// 404), where the shape and entropy layers still apply. When a
+// known secret was found the object gains a `redacted_env` field
+// naming the keys. The box webhook writes its bodies through it too,
+// with a filter from NewRedactor.
+func RespondJSON(w http.ResponseWriter, code int, v any, r *Redactor) error {
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return err

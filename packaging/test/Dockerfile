@@ -37,6 +37,12 @@ COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 # is part of what the smoke test proves.
 RUN rm -f /usr/sbin/policy-rc.d
 
+# The Debian image forbids maintainer scripts to start services
+# (/usr/sbin/policy-rc.d exits 101, which deb-systemd-invoke obeys). A
+# real box has no such file, and postinstall starting the box applier's
+# path unit is part of what the smoke test proves.
+RUN rm -f /usr/sbin/policy-rc.d
+
 # Units that cannot work in a container and would otherwise leave the
 # boot stuck or the system needlessly degraded.
 RUN systemctl mask \

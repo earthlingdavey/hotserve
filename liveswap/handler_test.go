@@ -5,13 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
@@ -32,9 +34,9 @@ func newTestHandler(t *testing.T) (*Handler, *testRig) {
 	rig := newTestRig(t)
 	app := &App{
 		managed:         map[string]*managedApp{"demo": rig.ma},
-		globalVerifiers: resolveVerifiers([]trustSource{localTrust(globalTestPub, "global")}, nil),
+		globalVerifiers: deploytrust.Verifiers([]deploytrust.Source{localSource(t, globalTestPub, "global")}, nil),
 	}
-	h := &Handler{app: app, logger: zap.NewNop(), limiter: newAuthLimiter(rig.clock)}
+	h := &Handler{app: app, logger: zap.NewNop(), limiter: deploytrust.NewLimiter(rig.clock)}
 	return h, rig
 }
 
@@ -116,7 +118,7 @@ func TestWebhookUnknownAppIs404OnlyWhenAuthenticated(t *testing.T) {
 
 func TestWebhookDeployHappyPath(t *testing.T) {
 	h, rig := newTestHandler(t)
-	tok := mintTestToken(t, appTestPriv, "demo", map[string]string{"sub": "alice"})
+	tok := trusttest.Mint(t, appTestPriv, "demo", map[string]string{"sub": "alice"})
 	w := do(t, h, http.MethodPost, "/demo", tok, `{"url":"https://x/a.tgz","version":"v1"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
@@ -131,13 +133,16 @@ func TestWebhookDeployHappyPath(t *testing.T) {
 	}
 	// The status records who authorized the deploy: the trust source,
 	// and the subject its token names.
-	const want = "local:test-key sub=alice"
-	if status.LastDeploy == nil || status.LastDeploy.By != want {
-		t.Fatalf("deployed_by = %+v, want %q", status.LastDeploy, want)
+	// The source's label is the test key's path.
+	by := func(got string) bool {
+		return strings.HasPrefix(got, "local:") && strings.HasSuffix(got, "/deploy.pub sub=alice")
+	}
+	if status.LastDeploy == nil || !by(status.LastDeploy.By) {
+		t.Fatalf("deployed_by = %+v, want the local source and sub=alice", status.LastDeploy)
 	}
 	// So does the version's record.
-	if len(status.Deploys) == 0 || status.Deploys[0].By != want {
-		t.Fatalf("recorded deployed_by = %+v, want %q", status.Deploys, want)
+	if len(status.Deploys) == 0 || !by(status.Deploys[0].By) {
+		t.Fatalf("recorded deployed_by = %+v, want the local source and sub=alice", status.Deploys)
 	}
 }
 
@@ -235,6 +240,91 @@ func TestWebhookDeployAuthorizedNamesThePin(t *testing.T) {
 	}
 }
 
+// A pinned deploy's digest is on record wherever the record is: the
+// response's last_deploy, the status's deploys list, the record read
+// back, and the done line of a stream — whole, though a real digest is
+// what the filter's entropy layer masks. An unpinned deploy has no
+// field, and a rollback carries the pin of the record it replaces.
+func TestWebhookDeployRecordNamesThePin(t *testing.T) {
+	h, _ := newTestHandler(t)
+	digest := func(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
+	pin := digest("what CI built")
+	if body := NewRedactor(nil, nil).redactJSON([]byte(`{"sha256":"` + pin + `"}`)); strings.Contains(body, pin) {
+		t.Fatalf("control: an unnamed digest must be masked, or this test proves nothing: %s", body)
+	}
+	pinOf := func(raw []byte) (any, bool) {
+		var m map[string]any
+		must(t, json.Unmarshal(raw, &m))
+		v, has := m["sha256"]
+		return v, has
+	}
+	lastDeploy := func(w *httptest.ResponseRecorder) json.RawMessage {
+		var m struct {
+			LastDeploy json.RawMessage `json:"last_deploy"`
+		}
+		must(t, json.Unmarshal(w.Body.Bytes(), &m))
+		return m.LastDeploy
+	}
+
+	// The upper-case pin is recorded as parseDeployPayload normalised it.
+	w := do(t, h, http.MethodPost, "/demo", appToken(t), `{"url":"https://x/a.tgz","version":"v1","sha256":"`+strings.ToUpper(pin)+`"}`)
+	if got, _ := pinOf(lastDeploy(w)); w.Code != 200 || got != pin {
+		t.Fatalf("pinned deploy: %d last_deploy.sha256 = %v, want %s: %s", w.Code, got, pin, w.Body.String())
+	}
+	w = do(t, h, http.MethodGet, "/demo", appToken(t), "")
+	var st struct {
+		Deploys []json.RawMessage `json:"deploys"`
+	}
+	must(t, json.Unmarshal(w.Body.Bytes(), &st))
+	if len(st.Deploys) != 1 {
+		t.Fatalf("status deploys = %s", w.Body.String())
+	}
+	if got, _ := pinOf(st.Deploys[0]); got != pin {
+		t.Fatalf("status deploys[0].sha256 = %v, want %s: %s", got, pin, w.Body.String())
+	}
+	if got, _ := pinOf(lastDeploy(w)); got != pin {
+		t.Fatalf("status last_deploy.sha256 = %v, want %s", got, pin)
+	}
+	w = do(t, h, http.MethodGet, "/demo?deploy=v1", appToken(t), "")
+	if got, _ := pinOf(w.Body.Bytes()); w.Code != 200 || got != pin {
+		t.Fatalf("record v1: %d sha256 = %v, want %s: %s", w.Code, got, pin, w.Body.String())
+	}
+
+	// Unpinned: absent, not a placeholder.
+	w = do(t, h, http.MethodPost, "/demo", appToken(t), `{"url":"https://x/a.tgz","version":"v2"}`)
+	if _, has := pinOf(lastDeploy(w)); w.Code != 200 || has {
+		t.Fatalf("unpinned deploy: %d, last_deploy has sha256: %s", w.Code, w.Body.String())
+	}
+	w = do(t, h, http.MethodGet, "/demo?deploy=v2", appToken(t), "")
+	if _, has := pinOf(w.Body.Bytes()); w.Code != 200 || has {
+		t.Fatalf("record v2: %d, has sha256: %s", w.Code, w.Body.String())
+	}
+
+	// A rollback to v1 replaces v1's record and keeps its pin; one to
+	// v2 has none to keep.
+	for _, tc := range []struct {
+		version string
+		want    any
+	}{{"v1", pin}, {"v2", nil}} {
+		w = do(t, h, http.MethodPost, "/demo?rollback="+tc.version, appToken(t), "")
+		if got, _ := pinOf(lastDeploy(w)); w.Code != 200 || got != tc.want {
+			t.Fatalf("rollback %s: %d last_deploy.sha256 = %v, want %v: %s", tc.version, w.Code, got, tc.want, w.Body.String())
+		}
+		w = do(t, h, http.MethodGet, "/demo?deploy="+tc.version, appToken(t), "")
+		if got, _ := pinOf(w.Body.Bytes()); got != tc.want {
+			t.Fatalf("record %s after rollback: sha256 = %v, want %v: %s", tc.version, got, tc.want, w.Body.String())
+		}
+	}
+
+	// The done line of a streamed deploy.
+	_, lines := streamLinesOf(t, h, `{"url":"https://x/a.tgz","version":"v3","sha256":"`+pin+`"}`)
+	last := lines[len(lines)-1]
+	ld, _ := last["last_deploy"].(map[string]any)
+	if last["event"] != "done" || ld == nil || ld["sha256"] != pin {
+		t.Fatalf("done line = %v", last)
+	}
+}
+
 func TestWebhookConflictWhileDeploying(t *testing.T) {
 	h, rig := newTestHandler(t)
 	rig.ma.deployMu.Lock()
@@ -296,24 +386,42 @@ func from(t *testing.T, h *Handler, remote, token string) *httptest.ResponseReco
 	return send(t, h, req)
 }
 
-// After the failure budget a client's bad tokens are answered 429
-// until the window slides — but a valid token from that address is
-// still admitted (and clears it): sharing an address with a flood
-// costs log lines, never a deploy.
+// After the failure budget a client's bad tokens are no longer
+// logged, and the answer does not change: the same status, headers and
+// body as the first refusal, so a caller cannot see the budget and has
+// no reason to retry. A valid token from that address is still
+// admitted (and clears it): sharing an address with a flood costs log
+// lines, never a deploy.
 func TestWebhookThrottlesAuthFailures(t *testing.T) {
 	h, rig := newTestHandler(t)
+	core, logs := observer.New(zap.WarnLevel)
+	h.logger = zap.New(core)
 	const attacker = "203.0.113.9:1"
-	for i := range authFailBudget {
-		if w := from(t, h, attacker, "not-a-jwt"); w.Code != http.StatusUnauthorized {
-			t.Fatalf("failure %d: code = %d, want 401", i+1, w.Code)
+	type answer struct {
+		code   int
+		header http.Header
+		body   string
+	}
+	refuse := func() answer {
+		t.Helper()
+		w := from(t, h, attacker, "not-a-jwt")
+		return answer{w.Code, w.Header(), w.Body.String()}
+	}
+	first := refuse()
+	if first.code != http.StatusUnauthorized || strings.TrimSpace(first.body) != flat401 {
+		t.Fatalf("first failure: %d %s, want the flat 401", first.code, first.body)
+	}
+	for i := 1; i < deploytrust.FailBudget; i++ {
+		refuse()
+	}
+	logs.TakeAll()
+	for i := range 3 {
+		if got := refuse(); !reflect.DeepEqual(got, first) {
+			t.Fatalf("past the budget, refusal %d answered %+v; want the first refusal's %+v", i+1, got, first)
 		}
 	}
-	w := from(t, h, attacker, "not-a-jwt")
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("past the budget: code = %d, want 429", w.Code)
-	}
-	if ra, err := strconv.Atoi(w.Header().Get("Retry-After")); err != nil || ra < 1 || ra > int(authFailWindow.Seconds()) {
-		t.Fatalf("Retry-After = %q, want seconds within the window", w.Header().Get("Retry-After"))
+	if logs.Len() != 0 {
+		t.Fatalf("failures past the budget were logged: %+v", logs.All())
 	}
 	// Another address is unaffected.
 	if w := from(t, h, "198.51.100.1:1", appToken(t)); w.Code != http.StatusOK {
@@ -324,18 +432,18 @@ func TestWebhookThrottlesAuthFailures(t *testing.T) {
 	if w := from(t, h, attacker, appToken(t)); w.Code != http.StatusOK {
 		t.Fatalf("a valid token from a throttled address: code = %d, want 200", w.Code)
 	}
-	for i := range authFailBudget {
-		if w := from(t, h, attacker, "not-a-jwt"); w.Code != http.StatusUnauthorized {
-			t.Fatalf("after success, failure %d: code = %d, want 401", i+1, w.Code)
-		}
+	logs.TakeAll()
+	for range deploytrust.FailBudget + 1 {
+		refuse()
 	}
-	if w := from(t, h, attacker, "not-a-jwt"); w.Code != http.StatusTooManyRequests {
-		t.Fatalf("budget did not refill on success: code = %d", w.Code)
+	if got := logs.Len(); got != deploytrust.FailBudget+1 {
+		t.Fatalf("after success, logged %d records; want the full budget and the throttled line", got)
 	}
 	// And the window slides on its own.
-	rig.clock.Advance(authFailWindow + time.Second)
-	if w := from(t, h, attacker, "not-a-jwt"); w.Code != http.StatusUnauthorized {
-		t.Fatalf("after the window: code = %d, want 401", w.Code)
+	logs.TakeAll()
+	rig.clock.Advance(deploytrust.FailWindow + time.Second)
+	if got := refuse(); !reflect.DeepEqual(got, first) || logs.Len() != 1 {
+		t.Fatalf("after the window: %+v and %d records; want the flat 401, logged", got, logs.Len())
 	}
 }
 
@@ -350,7 +458,7 @@ func TestWebhookThrottleBoundsTheLog(t *testing.T) {
 			h, _ := newTestHandler(t)
 			core, logs := observer.New(zap.WarnLevel)
 			h.logger = zap.New(core)
-			const flood = authFailBudget + 50
+			const flood = deploytrust.FailBudget + 50
 			hit := func() {
 				req := httptest.NewRequest(http.MethodGet, "/"+strings.Repeat("x", 10_000), nil)
 				req.RemoteAddr = "203.0.113.9:1"
@@ -368,8 +476,8 @@ func TestWebhookThrottleBoundsTheLog(t *testing.T) {
 					hit()
 				}
 			}
-			if got := logs.Len(); got != authFailBudget+1 {
-				t.Fatalf("logged %d Warn records for %d failures, want %d", got, flood, authFailBudget+1)
+			if got := logs.Len(); got != deploytrust.FailBudget+1 {
+				t.Fatalf("logged %d Warn records for %d failures, want %d", got, flood, deploytrust.FailBudget+1)
 			}
 			for _, e := range logs.All() {
 				for _, f := range e.Context {
@@ -381,7 +489,7 @@ func TestWebhookThrottleBoundsTheLog(t *testing.T) {
 					// path is refused by the global sources.
 					bound := 0
 					for _, v := range h.app.globalVerifiers {
-						bound += len(v.label()) + 2 + maxRefusalLen + 3 + 2
+						bound += len(v.Label()) + 2 + deploytrust.MaxRefusalLen + 3 + 2
 					}
 					if f.Key == "refused" && len(f.String) > bound {
 						t.Fatalf("refused field is %d bytes; each source's reason must be bounded", len(f.String))
@@ -393,7 +501,7 @@ func TestWebhookThrottleBoundsTheLog(t *testing.T) {
 }
 
 // flat401 is the body every refusal answers with, JSON-encoded as
-// respondJSON writes it.
+// RespondJSON writes it.
 const flat401 = `{"error":"invalid or missing deploy token (Authorization: Bearer \u003cjwt\u003e)"}`
 
 // A refused token leaves its reason in the journal — which source, and
@@ -410,7 +518,7 @@ func TestWebhookAuthFailureSaysWhyInTheJournalOnly(t *testing.T) {
 	}{
 		{"no header", "/demo", "", "no bearer token"},
 		{"garbage", "/demo", "not-a-jwt", "local:"},
-		{"wrong audience", "/demo", mintTestToken(t, appTestPriv, "other", nil), "aud"},
+		{"wrong audience", "/demo", trusttest.Mint(t, appTestPriv, "other", nil), "aud"},
 		{"unknown app", "/nope", "not-a-jwt", "local:"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -432,19 +540,19 @@ func TestWebhookAuthFailureSaysWhyInTheJournalOnly(t *testing.T) {
 }
 
 // A flood from many addresses runs into the process-wide budget: past
-// it, failures still 401 (and a throttled address still 429s) but the
-// journal gets one line saying so and nothing more.
+// it, failures still 401 but the journal gets one line saying so and
+// nothing more.
 func TestWebhookThrottleIsBoundedAcrossAddresses(t *testing.T) {
 	h, _ := newTestHandler(t)
 	core, logs := observer.New(zap.WarnLevel)
 	h.logger = zap.New(core)
-	for i := range authFailGlobalBudget + 200 {
+	for i := range deploytrust.FailGlobalBudget + 200 {
 		w := from(t, h, "10."+strconv.Itoa(i/256)+"."+strconv.Itoa(i%256)+".1:1", "not-a-jwt")
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("address %d: code = %d, want 401", i, w.Code)
 		}
 	}
-	if got := logs.Len(); got != authFailGlobalBudget+1 {
+	if got := logs.Len(); got != deploytrust.FailGlobalBudget+1 {
 		t.Fatalf("logged %d Warn records, want the global budget plus one", got)
 	}
 }
@@ -672,7 +780,13 @@ func TestWebhookURLDeployForwardsWireFields(t *testing.T) {
 // and returns the response and its lines, each parsed.
 func streamLines(t *testing.T, h *Handler) (*httptest.ResponseRecorder, []map[string]any) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/demo", strings.NewReader(`{"url":"https://example.test/v1.tgz","version":"v1"}`))
+	return streamLinesOf(t, h, `{"url":"https://example.test/v1.tgz","version":"v1"}`)
+}
+
+// streamLinesOf is streamLines for a deploy payload of the caller's.
+func streamLinesOf(t *testing.T, h *Handler, body string) (*httptest.ResponseRecorder, []map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/demo", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+appToken(t))
 	req.Header.Set("Accept", "application/x-ndjson")
 	w := httptest.NewRecorder()
@@ -878,12 +992,46 @@ func TestDeployRecordVersionsAreNamesNotSecrets(t *testing.T) {
 		t.Fatalf("second deploy: %d %s", w.Code, w.Body.String())
 	}
 	// The failed SHA's release is gone; it is in no field but deploys.
+	// The assertion reads the version fields alone: other fields may be
+	// masked by the entropy layer (deployed_by names the test's random
+	// t.TempDir() key path, which sometimes looks like a secret).
 	for _, path := range []string{"/demo", "/demo?deploy=" + sha} {
 		w := do(t, h, http.MethodGet, path, appToken(t), "")
-		if w.Code != 200 || !strings.Contains(w.Body.String(), sha) || strings.Contains(w.Body.String(), "[masked") {
+		if w.Code != 200 {
 			t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
 		}
+		var body any
+		must(t, json.Unmarshal(w.Body.Bytes(), &body))
+		versions := versionFields(body, "", nil)
+		if !slices.Contains(versions, sha) {
+			t.Fatalf("%s: version fields %q lack %s: %s", path, versions, sha, w.Body.String())
+		}
+		for _, v := range versions {
+			if strings.Contains(v, "[masked") || strings.Contains(v, "[redacted") {
+				t.Fatalf("%s: version field %q filtered: %s", path, v, w.Body.String())
+			}
+		}
 	}
+}
+
+// versionFields collects every string a JSON body holds under a key
+// that names a version: version, current_version, available_versions.
+func versionFields(v any, key string, out []string) []string {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, child := range v {
+			out = versionFields(child, k, out)
+		}
+	case []any:
+		for _, child := range v {
+			out = versionFields(child, key, out)
+		}
+	case string:
+		if key == "version" || key == "current_version" || key == "available_versions" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // An app the pool holds without a loaded spec answers the record route
@@ -1006,31 +1154,34 @@ func TestWebhookDeployRecordOutcomeSurvivesAVocabularySecret(t *testing.T) {
 }
 
 // A trust source the box cannot reach is the box's failure, not the
-// caller's — but it is charged like any other, since whether a
-// failure spends the budget is measurable from outside and must not
-// depend on which sources an app names. What the outage changes is
+// caller's — but it is charged like any other: the same flat 401, and
+// its "webhook auth failed" lines count against the same budgets. What
+// the outage changes is
 // the journal: one line per source per window naming it, written
 // however spent the budgets are, so a CI loop retrying through an
 // issuer outage cannot leave the journal quiet about the cause. And
-// the first valid token after the outage is admitted from the
-// throttled address, so charging costs the deployer nothing.
+// the first valid token once the issuer is back — and the source's
+// refetch interval has passed since its last failed fetch — is
+// admitted from the throttled address, so charging costs the deployer
+// nothing.
 func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 	h, rig := newTestHandler(t)
 	core, logs := observer.New(zap.WarnLevel)
 	h.logger = zap.New(core)
-	iss := newMockIssuer(t)
-	iss.jwksDown.Store(true)
-	rig.ma.verifiers = resolveVerifiers([]trustSource{{
-		kind: "oidc", issuer: iss.url, audience: "hotserve", claims: map[string]string{"sub": "ci"},
-	}}, iss.client)
+	iss := trusttest.NewIssuer(t)
+	iss.JWKSDown.Store(true)
+	// The key set's own clock, apart from the limiter's: its interval
+	// is advanced alone at the end, so the address is still throttled.
+	keys := trusttest.NewClock()
+	rig.ma.verifiers = deploytrust.VerifiersOn(keys, []deploytrust.Source{oidcSource(t, iss.URL)}, iss.Client)
 	token := func() string {
-		return iss.mint(t, iss.priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+		return iss.Mint(t, iss.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	}
 	const ci, other = "203.0.113.9:1", "203.0.113.10:1"
 	outageLines := func(all []observer.LoggedEntry) (n int) {
 		for _, e := range all {
 			if strings.Contains(e.Message, "could not consult") {
-				if src := e.ContextMap()["source"]; src != "oidc:"+iss.url {
+				if src := e.ContextMap()["source"]; src != "oidc:"+iss.URL {
 					t.Fatalf("source = %v, want the down issuer", src)
 				}
 				n++
@@ -1041,7 +1192,7 @@ func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 
 	// Within the budget: charged and logged as any refusal, plus the
 	// one outage line for the window.
-	for i := range authFailBudget {
+	for i := range deploytrust.FailBudget {
 		w := from(t, h, ci, token())
 		if w.Code != http.StatusUnauthorized || strings.TrimSpace(w.Body.String()) != flat401 {
 			t.Fatalf("request %d during the outage: %d %s; want the flat 401", i+1, w.Code, w.Body.String())
@@ -1051,14 +1202,14 @@ func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 	if got := outageLines(all); got != 1 {
 		t.Fatalf("logged %d outage lines within the budget, want one: %+v", got, all)
 	}
-	if len(all) != authFailBudget+2 { // the per-request lines, the address tripped, the outage
+	if len(all) != deploytrust.FailBudget+2 { // the per-request lines, the address tripped, the outage
 		t.Fatalf("logged %d records, want the budget plus the tripped line plus the outage line: %+v", len(all), all)
 	}
-	// Past it: 429 as for any failure, and silent — the outage line
-	// for this window is already written.
+	// Past it: the flat 401 as for any failure, and silent — the
+	// outage line for this window is already written.
 	for i := range 5 {
-		if w := from(t, h, ci, token()); w.Code != http.StatusTooManyRequests {
-			t.Fatalf("request %d past the budget: code = %d, want 429", i+1, w.Code)
+		if w := from(t, h, ci, token()); w.Code != http.StatusUnauthorized || strings.TrimSpace(w.Body.String()) != flat401 {
+			t.Fatalf("request %d past the budget: %d %s; want the flat 401", i+1, w.Code, w.Body.String())
 		}
 	}
 	if got := logs.TakeAll(); len(got) != 0 {
@@ -1067,7 +1218,7 @@ func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 
 	// A window on: another address writes this window's outage line;
 	// a second later the CI address spends its fresh budget again.
-	rig.clock.Advance(authFailWindow)
+	rig.clock.Advance(deploytrust.FailWindow)
 	if w := from(t, h, other, token()); w.Code != http.StatusUnauthorized {
 		t.Fatalf("another address, next window: code = %d, want 401", w.Code)
 	}
@@ -1075,7 +1226,7 @@ func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 		t.Fatalf("another address logged %+v, want its refusal and the window's outage line", got)
 	}
 	rig.clock.Advance(time.Second)
-	for range authFailBudget {
+	for range deploytrust.FailBudget {
 		from(t, h, ci, token())
 	}
 	logs.TakeAll()
@@ -1083,25 +1234,27 @@ func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 	// throttled (its failures are a second younger than the line), and
 	// its throttled request — silent as any other — still writes the
 	// outage line for the new window.
-	rig.clock.Advance(authFailWindow - time.Second)
-	if w := from(t, h, ci, token()); w.Code != http.StatusTooManyRequests {
-		t.Fatalf("throttled during the outage: code = %d, want 429", w.Code)
+	rig.clock.Advance(deploytrust.FailWindow - time.Second)
+	if w := from(t, h, ci, token()); w.Code != http.StatusUnauthorized {
+		t.Fatalf("throttled during the outage: code = %d, want 401", w.Code)
 	}
 	if got := logs.TakeAll(); len(got) != 1 || outageLines(got) != 1 {
 		t.Fatalf("throttled request logged %+v, want the outage line alone", got)
 	}
 
-	// The issuer is back: the throttled address's first valid token
-	// deploys and clears it.
-	iss.jwksDown.Store(false)
-	eventually(t, "issuer back", func() error {
-		if w := from(t, h, ci, token()); w.Code != http.StatusOK {
-			return fmt.Errorf("code = %d, want 200; body: %s", w.Code, w.Body.String())
-		}
-		return nil
-	})
-	if h.limiter.size() != 1 { // the other address's one failure remains
-		t.Fatalf("after the deploy %d addresses are charged, want the other one alone", h.limiter.size())
+	// The issuer is back: within the source's refetch interval its
+	// failed fetch stands, and once that has passed the throttled
+	// address's first valid token deploys and clears it.
+	iss.JWKSDown.Store(false)
+	if w := from(t, h, ci, token()); w.Code != http.StatusUnauthorized {
+		t.Fatalf("issuer back within the refetch interval: code = %d, want 401", w.Code)
+	}
+	keys.Advance(deploytrust.KeyRefetchInterval)
+	if w := from(t, h, ci, token()); w.Code != http.StatusOK {
+		t.Fatalf("issuer back past the refetch interval: code = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if h.limiter.Size() != 1 { // the other address's one failure remains
+		t.Fatalf("after the deploy %d addresses are charged, want the other one alone", h.limiter.Size())
 	}
 }
 
@@ -1115,21 +1268,21 @@ func TestWebhookOutageIsNamedWhenAnotherSourceAccepts(t *testing.T) {
 	h, rig := newTestHandler(t)
 	core, logs := observer.New(zap.WarnLevel)
 	h.logger = zap.New(core)
-	down, up := newMockIssuer(t), newMockIssuer(t)
-	down.jwksDown.Store(true)
+	down, up := trusttest.NewIssuer(t), trusttest.NewIssuer(t)
+	down.JWKSDown.Store(true)
 	rig.ma.verifiers = append(
-		resolveVerifiers([]trustSource{{kind: "oidc", issuer: down.url, audience: "hotserve", claims: map[string]string{"sub": "ci"}}}, down.client),
-		resolveVerifiers([]trustSource{{kind: "oidc", issuer: up.url, audience: "hotserve", claims: map[string]string{"sub": "ci"}}}, up.client)...)
-	tok := up.mint(t, up.priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, down.URL)}, down.Client),
+		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, up.URL)}, up.Client)...)
+	tok := up.Mint(t, up.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	if w := do(t, h, http.MethodGet, "/demo", tok, ""); w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
 	all := logs.All()
-	if len(all) != 1 || !strings.Contains(all[0].Message, "could not consult") || all[0].ContextMap()["source"] != "oidc:"+down.url {
+	if len(all) != 1 || !strings.Contains(all[0].Message, "could not consult") || all[0].ContextMap()["source"] != "oidc:"+down.URL {
 		t.Fatalf("logged %+v, want the one line naming the down issuer", all)
 	}
-	if h.limiter.size() != 0 {
-		t.Fatalf("an accepted token charged %d addresses, want none", h.limiter.size())
+	if h.limiter.Size() != 0 {
+		t.Fatalf("an accepted token charged %d addresses, want none", h.limiter.Size())
 	}
 }
 
@@ -1139,13 +1292,13 @@ func TestWebhookOutageNamesEverySourceDown(t *testing.T) {
 	h, rig := newTestHandler(t)
 	core, logs := observer.New(zap.WarnLevel)
 	h.logger = zap.New(core)
-	a, b := newMockIssuer(t), newMockIssuer(t)
-	a.jwksDown.Store(true)
-	b.jwksDown.Store(true)
+	a, b := trusttest.NewIssuer(t), trusttest.NewIssuer(t)
+	a.JWKSDown.Store(true)
+	b.JWKSDown.Store(true)
 	rig.ma.verifiers = append(
-		resolveVerifiers([]trustSource{{kind: "oidc", issuer: a.url, audience: "hotserve", claims: map[string]string{"sub": "ci"}}}, a.client),
-		resolveVerifiers([]trustSource{{kind: "oidc", issuer: b.url, audience: "hotserve", claims: map[string]string{"sub": "ci"}}}, b.client)...)
-	tok := a.mint(t, a.priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, a.URL)}, a.Client),
+		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, b.URL)}, b.Client)...)
+	tok := a.Mint(t, a.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	if w := do(t, h, http.MethodGet, "/demo", tok, ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", w.Code)
 	}
@@ -1155,7 +1308,7 @@ func TestWebhookOutageNamesEverySourceDown(t *testing.T) {
 			sources = append(sources, e.ContextMap()["source"].(string))
 		}
 	}
-	if strings.Join(sources, " ") != "oidc:"+a.url+" oidc:"+b.url {
+	if strings.Join(sources, " ") != "oidc:"+a.URL+" oidc:"+b.URL {
 		t.Fatalf("sources named = %q, want both issuers in config order", sources)
 	}
 }

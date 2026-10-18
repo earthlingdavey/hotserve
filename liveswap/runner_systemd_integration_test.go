@@ -108,7 +108,10 @@ echo "$$ $w1 $w2" > pids.txt
 wait
 `
 
-func readPIDs(t *testing.T, dir string) []int {
+// waitForPIDs blocks until pids.txt holds the leader's line (two
+// spaces), so the workers are forked, and fails on a non-numeric field.
+// It does not count the fields: an empty $w1 still passes.
+func waitForPIDs(t *testing.T, dir string) {
 	t.Helper()
 	var data []byte
 	deadline := time.Now().Add(5 * time.Second)
@@ -123,15 +126,11 @@ func readPIDs(t *testing.T, dir string) []int {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	var pids []int
 	for _, f := range strings.Fields(string(data)) {
-		n, err := strconv.Atoi(f)
-		if err != nil {
+		if _, err := strconv.Atoi(f); err != nil {
 			t.Fatal(err)
 		}
-		pids = append(pids, n)
 	}
-	return pids
 }
 
 func alivePID(pid int) bool {
@@ -175,7 +174,7 @@ func TestIntegrationSystemdStopKillsWholeTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readPIDs(t, spec.dir) // readiness: the workers are forked
+	waitForPIDs(t, spec.dir) // readiness: the workers are forked
 	pids := unitPIDs(t, h.state().Unit)
 	if len(pids) < 3 || !hasPID(pids, h.state().PID) {
 		t.Fatalf("cgroup holds %v; want the leader (handle pid %d) and two workers", pids, h.state().PID)
@@ -209,7 +208,7 @@ exit 3
 	if err != nil {
 		t.Fatal(err)
 	}
-	readPIDs(t, spec.dir) // readiness: the workers are forked
+	waitForPIDs(t, spec.dir) // readiness: the workers are forked
 	pids := unitPIDs(t, h.state().Unit)
 	if len(pids) < 3 {
 		t.Fatalf("cgroup holds %v; want the leader and two workers", pids)
@@ -495,7 +494,7 @@ func TestIntegrationSystemdReattachAdoptsLiveUnit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readPIDs(t, spec.dir) // readiness: the workers are forked
+	waitForPIDs(t, spec.dir) // readiness: the workers are forked
 	st := h1.state()
 	pids := unitPIDs(t, st.Unit)
 	if st.Unit == "" {
@@ -592,8 +591,8 @@ func TestIntegrationSystemdSweepStopsStrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readPIDs(t, strayDir)
-	readPIDs(t, spec.dir)
+	waitForPIDs(t, strayDir)
+	waitForPIDs(t, spec.dir)
 	strayPIDs := unitPIDs(t, stray.state().Unit)
 	keepPIDs := unitPIDs(t, keep.state().Unit)
 	if err := r.Sweep(spec.app, keep); err != nil {
@@ -639,7 +638,7 @@ func TestIntegrationSystemdManagerStallIsNotACrash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readPIDs(t, spec.dir) // readiness: the workers are forked
+	waitForPIDs(t, spec.dir) // readiness: the workers are forked
 	pids := unitPIDs(t, h.state().Unit)
 	mgr := managerPID(t)
 	if err := syscall.Kill(mgr, syscall.SIGSTOP); err != nil {
@@ -830,6 +829,9 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 		"hotserve_lib": "closed", "run_hotserve": "closed", "etc_hotserve": "closed",
 		"admin_socket": "closed", "mgr_socket": "closed",
 		"cgroup": "readonly", "tmp": "writable", "home": shared, "xdg_runtime": "unset",
+		// No core dump of a crashed app, and no way to raise the soft
+		// limit back: LimitCORE=0 on both, read back from inside.
+		"core_soft": "0", "core_hard": "0",
 		// The base view: an OS the app can actually run on. Without
 		// these, "absent" below would only mean the unit is empty.
 		"binsh": "ok", "usrbinenv": "ok", "etcssl": "ok", "resolvconf": "ok",
@@ -877,8 +879,8 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 		t.Errorf("nprocs = %q, want a handful (own PID namespace)", got["nprocs"])
 	}
 	unit := h.state().Unit
-	props := run(t, "systemctl", "--user", "show", unit, "-p", "PrivatePIDs,PrivateUsers,ProtectSystem,ProtectControlGroups,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,InaccessiblePaths")
-	for _, want := range []string{"PrivatePIDs=yes", "PrivateUsers=yes", "ProtectControlGroups=yes", "TemporaryFileSystem=/:ro"} {
+	props := run(t, "systemctl", "--user", "show", unit, "-p", "PrivatePIDs,PrivateUsers,ProtectSystem,ProtectControlGroups,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,InaccessiblePaths,LimitCORE,LimitCORESoft")
+	for _, want := range []string{"PrivatePIDs=yes", "PrivateUsers=yes", "ProtectControlGroups=yes", "TemporaryFileSystem=/:ro", "LimitCORE=0", "LimitCORESoft=0"} {
 		if !strings.Contains(props, want) {
 			t.Errorf("unit lacks %s:\n%s", want, props)
 		}

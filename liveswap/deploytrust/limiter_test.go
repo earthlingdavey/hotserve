@@ -1,0 +1,202 @@
+package deploytrust
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+
+	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+)
+
+func TestAuthLimiterWindow(t *testing.T) {
+	clk := trusttest.NewClock()
+	l := NewLimiter(clk)
+	l.budget, l.window = 3, time.Minute
+
+	// Failures at t=0, 10s, 20s: the third spends the budget.
+	for i := range 3 {
+		v := l.fail("a")
+		if !v.log || v.trippedKey != (i == 2) {
+			t.Fatalf("failure %d: %+v", i+1, v)
+		}
+		if i < 2 {
+			clk.Advance(10 * time.Second)
+		}
+	}
+	if v := l.fail("a"); v != (failVerdict{}) {
+		t.Fatalf("past the budget: %+v, want nothing logged", v)
+	}
+	// Another address is untouched.
+	if v := l.fail("b"); !v.log {
+		t.Fatalf("a different address was affected: %+v", v)
+	}
+	// Over-budget failures are not recorded, so the window is exactly
+	// the budgeted ones: nothing more counts until the oldest ages out.
+	clk.Advance(30 * time.Second) // t=50
+	if v := l.fail("a"); v.log || len(l.keys["a"].times) != 3 {
+		t.Fatalf("t=50: %+v with %d recorded, want unlogged and 3", v, len(l.keys["a"].times))
+	}
+	// The window slides: once the oldest ages out one more is logged,
+	// and the budget is spent again — but "throttled" is said once per
+	// window, not once per refilled slot.
+	clk.Advance(11 * time.Second) // t=61: the t=0 failure has aged out
+	if v := l.fail("a"); !v.log || v.trippedKey {
+		t.Fatalf("after the window slid: %+v", v)
+	}
+	if v := l.fail("a"); v.log {
+		t.Fatalf("the refilled slot should have been the last: %+v", v)
+	}
+	// Once the window drains entirely the next spend says so again.
+	clk.Advance(2 * time.Minute)
+	var v failVerdict
+	for range 3 {
+		v = l.fail("a")
+	}
+	if !v.trippedKey {
+		t.Fatalf("a drained window should trip again: %+v", v)
+	}
+	// A success clears the address entirely.
+	l.clear("a")
+	l.clear("b")
+	if l.Size() != 0 {
+		t.Fatalf("clear left %d addresses", l.Size())
+	}
+}
+
+// The process-wide budget holds however many addresses a flood comes
+// from: past it, failures are still counted per address (so a spent
+// address stays spent once the process budget refills) but nothing is
+// logged.
+func TestAuthLimiterGlobalBudget(t *testing.T) {
+	clk := trusttest.NewClock()
+	l := NewLimiter(clk)
+	l.budget, l.globalBudget, l.window = 3, 5, time.Minute
+
+	logged := 0
+	var tripped int
+	for i := range 20 {
+		v := l.fail("addr-" + strconv.Itoa(i))
+		if v.log {
+			logged++
+		}
+		if v.trippedGlobal {
+			tripped++
+			if i != 4 {
+				t.Fatalf("global budget tripped on failure %d, want the 5th", i+1)
+			}
+		}
+	}
+	if logged != 5 || tripped != 1 {
+		t.Fatalf("logged %d (want 5), tripped %d (want 1)", logged, tripped)
+	}
+	// Per-address accounting still runs while the global budget is
+	// spent: an address that exhausts its own stops being recorded.
+	for range 4 {
+		if v := l.fail("loud"); v.log {
+			t.Fatalf("logged under a spent global budget: %+v", v)
+		}
+	}
+	if n := len(l.keys["loud"].times); n != 3 {
+		t.Fatalf("loud has %d failures recorded, want its budget of 3", n)
+	}
+	// The global window slides too.
+	clk.Advance(time.Minute + time.Second)
+	if v := l.fail("later"); !v.log {
+		t.Fatalf("global budget did not refill: %+v", v)
+	}
+}
+
+// The table is bounded however many addresses a flood comes from:
+// drained addresses go first, then arbitrary ones, and a fresh address
+// is always admitted.
+func TestAuthLimiterBoundsTrackedAddresses(t *testing.T) {
+	clk := trusttest.NewClock()
+	l := NewLimiter(clk)
+	l.maxKeys = 8
+	for i := range 80 {
+		l.fail("addr-" + strconv.Itoa(i))
+		if l.Size() > l.maxKeys {
+			t.Fatalf("tracking %d addresses, max %d", l.Size(), l.maxKeys)
+		}
+	}
+	// With every tracked address drained, room is made by the sweep
+	// alone and the survivor is the fresh one.
+	clk.Advance(l.window + time.Second)
+	l.fail("fresh")
+	if l.Size() != 1 {
+		t.Fatalf("drained addresses survived the sweep: %d tracked", l.Size())
+	}
+}
+
+func TestClientKey(t *testing.T) {
+	req := func(remote string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/demo", nil)
+		r.RemoteAddr = remote
+		return r
+	}
+	for remote, want := range map[string]string{
+		"203.0.113.9:4242":           "203.0.113.9",
+		"[2001:db8:1:2:3:4:5:6]:443": "2001:db8:1:2::/64", // one /64, one client
+		"[2001:db8:1:2:9:9:9:9]:80":  "2001:db8:1:2::/64",
+		"[::ffff:203.0.113.9]:1":     "203.0.113.9", // mapped v4 is v4
+		"not-an-address":             "not-an-address",
+	} {
+		if got := clientKey(req(remote)); got != want {
+			t.Errorf("clientKey(%q) = %q, want %q", remote, got, want)
+		}
+	}
+	// Caddy's client_ip (the forwarded address behind a trusted proxy)
+	// wins over the peer.
+	r := req("10.0.0.1:1")
+	vars := map[string]any{caddyhttp.ClientIPVarKey: "198.51.100.7"}
+	r = r.WithContext(context.WithValue(r.Context(), caddyhttp.VarsCtxKey, vars))
+	if got := clientKey(r); got != "198.51.100.7" {
+		t.Errorf("client_ip var not honoured: %q", got)
+	}
+}
+
+// An unreachable source is logged once per window per source, and
+// touches no address: the outage is the box's, and its bound is the
+// number of configured sources.
+func TestAuthLimiterOutageOncePerWindowPerSource(t *testing.T) {
+	clk := trusttest.NewClock()
+	l := NewLimiter(clk)
+	l.window = time.Minute
+	if !l.outage("oidc:a", "app") {
+		t.Fatal("first outage of a source must be logged")
+	}
+	if l.outage("oidc:a", "app") {
+		t.Fatal("second outage of a source within the window must not be logged")
+	}
+	if !l.outage("oidc:b", "app") {
+		t.Fatal("another source has its own line")
+	}
+	if !l.outage("oidc:a", "webhook") {
+		t.Fatal("another caller has its own line for the same source")
+	}
+	clk.Advance(30 * time.Second)
+	if l.outage("oidc:a", "app") {
+		t.Fatal("still within the window")
+	}
+	clk.Advance(30 * time.Second)
+	if !l.outage("oidc:a", "app") {
+		t.Fatal("the window passed: logged again")
+	}
+	// A label whose window drained (b, a minute ago) is swept on that
+	// write: a reload's retired sources do not accumulate.
+	if _, kept := l.outages[outageKey{"oidc:b", "app"}]; kept || len(l.outages) != 1 {
+		t.Fatalf("outages = %v, want the one live label", l.outages)
+	}
+	if l.Size() != 0 {
+		t.Fatalf("outages tracked %d addresses, want none", l.Size())
+	}
+	// And the address budget is untouched by them.
+	if v := l.fail("203.0.113.9"); !v.log || len(l.keys["203.0.113.9"].times) != 1 {
+		t.Fatalf("first failure after outages: %+v", v)
+	}
+}

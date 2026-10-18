@@ -113,7 +113,8 @@ below as a contract the sandbox path must keep.
 - The view therefore MUST NOT contain, without anything having to
   enumerate them: other apps' directories, `/var/lib` outside the
   liveswap root's path to this app's own dirs (hotserve's TLS keys
-  live there), `/run/hotserve` (admin socket), `/etc/hotserve` and
+  and the box applier's exchange tree live there), `/run/hotserve`
+  (admin socket), `/etc/hotserve` and
   `/etc/liveswap` (env files), `/home`, `/root`, `/opt`, `/srv`, or
   any operator `env_file` wherever it lives. `/run/user` MUST NOT be
   reachable by any route, read-only included: with `PrivateUsers=`
@@ -130,8 +131,8 @@ below as a contract the sandbox path must keep.
   fails `203/EXEC` — measured, and exactly what the capability probe
   (which has no directories of its own) would otherwise do. Empty list
   properties MUST NOT be emitted.
-- An app's mandatory binds — the release being started and `shared/` —
-  MUST resolve to the directories they name, and a launch whose bind
+- An app's mandatory binds — the release being started, `shared/` and
+  the instance's `run/<nonce>/` — MUST resolve to the directories they name, and a launch whose bind
   source resolves anywhere else MUST be refused. The only permitted
   difference is one an alias on the liveswap root itself explains.
   Resolution to a path outside the root is unsound: the app's own
@@ -256,9 +257,9 @@ below as a contract the sandbox path must keep.
 
 ## Config surface
 
-There is none. The view is exactly `sandboxBaseView` plus the app's
-own release and `shared/` dirs, and nothing in the Caddyfile widens or
-disables it; a config naming `sandbox` fails to load
+There is none. The view is the one listed above — `sandboxBaseView`
+plus the app's own release, `shared/` and `run/<nonce>/` dirs — and
+nothing in the Caddyfile widens or disables it; a config naming `sandbox` fails to load
 (`TestRetiredSandboxConfigIsRejected`). Raw unit directives are
 deliberately not exposed — hand-rolled flag soup is the "looks
 configured, quietly weaker" failure mode. See "`extra_path` — rules
@@ -273,7 +274,8 @@ last moment before the manager acts (closing the planted-symlink
 case), `homeOutsideView` reports an operator `HOME` the view cannot
 satisfy, and `unitProperties` (liveswap/systemd_dbus.go) renders the
 lifecycle properties — `Restart=no`, `KillMode=control-group`,
-`NoNewPrivileges=` — then appends `sandboxProperties` for the
+`NoNewPrivileges=`, `LimitCORE=0` on both limits — then appends
+`sandboxProperties` for the
 namespaces, the view and the privilege surface. `unitFor` refuses a
 spec without a sandbox.
 
@@ -325,15 +327,21 @@ watcher, where no synchronous hook can see it.
 the systemd semantics so the invalidation is not reinvented.
 
 **Packaging.** `postinstall.sh` enables linger for the hotserve user so
-its manager runs without a session. Nothing else: there is no runtime
-dependency and no profile to install.
+its manager runs without a session. The `.deb` depends on
+`systemd (>= 257)`, the release that added `PrivatePIDs=`, so apt
+refuses an older release at install rather than letting it fail when
+liveswap first starts. That floor is not the check: the probe above
+still decides. There is no profile to install.
 
 ## Availability dependency
 
 The sandbox is an availability dependency of the whole server: on a
-host that cannot sandbox, hotserve does not come up at all — admin
-socket and proxy included. There is no graceful degrade for host
-incapability (a container, an LXC VPS, a locked-down kernel), because
+host that cannot sandbox, a config that defines an app does not load,
+so hotserve does not come up on one at all — admin socket and proxy
+included — and a reload to one is refused. Only a config with no app,
+such as the starter, skips the probe and serves. There is no graceful
+degrade for host incapability (a container, an LXC VPS, a locked-down
+kernel), because
 the setting that would run apps without one hands a bare app every
 sibling's data and hotserve's keys on the shared uid. The refusal
 message names where the probe's output is and says that no setting
@@ -363,8 +371,8 @@ the manager; a namespace policy changed underneath a running hotserve
 There is deliberately no uncached preflight: the cache is what keeps a
 throwaway unit off Caddy's reload path.
 
-Nothing here is destructive: the release and `shared/` are
-bind-mounted at their real paths and everything else is simply absent
+Nothing here is destructive: the release, `shared/` and the
+instance's `run/<nonce>/` are bind-mounted at their real paths and everything else is simply absent
 from the unit's view — `state.json` included, which the supervisor
 still reads and writes as itself. hotserve itself is never sandboxed.
 
@@ -550,3 +558,8 @@ Dated one-liners; the full text of each is in git.
 - 2026-09-06 — App contract moved from `127.0.0.1:$PORT` to a
   per-instance unix socket under a third writable bind, `run/<nonce>/`; the
   socket and the unit share a nonce.
+- 2026-10-12 (#225) — The `.deb` depends on `systemd (>= 257)`. Since
+  the starter config left liveswap off (#85), the probe first ran at
+  the box's first config, so an older release installed and failed
+  there. The probe still decides; the floor moves the commonest refusal
+  to install.

@@ -1,0 +1,602 @@
+#!/bin/sh
+# Sends HEAD to each box this repository holds and prints what each
+# box made of it. .github/workflows/apply.yml runs it on every push to
+# main, beside make check (each box validates what it is sent). The protocol is box/DESIGN-box.md in the
+# hotserve repository ("The trust chain", "Handler contract").
+#
+#   bin/apply           every box: each <host>/Caddyfile at the top of the repository
+#   bin/apply <host>    that box alone
+#
+# For each box, from HEAD's own copy of its file:
+#
+#   1. GET / on the file's box_webhook host: the commit the box runs.
+#   2. HEAD is that commit or an ancestor of it: a later run got there
+#      first, and there is nothing to send ("superseded", green). HEAD
+#      is the commit itself: it is sent again, which changes nothing
+#      unless someone edited the file on the box.
+#   3. A bundle of what the box needs to check, without git, that a key
+#      it lists signed HEAD and every commit between the two along
+#      main's first-parent line, and that the file is HEAD's: the file,
+#      those commit objects, and the trees from the root down to the file.
+#      With the box's secrets beside the file (<host>/secrets/), the
+#      secrets' tree, each app's, and every value's encrypted blob too,
+#      but not the recipients file, which the box never reads. Before
+#      it sends values, the box's key (GET /'s recipient) must be the
+#      first recipient in <host>/secrets/recipients: a rebuilt box has a
+#      new key, and values encrypted to the old one would be refused.
+#   4. POST / under a request id chosen at random. The box answers at
+#      once (applied, nothing to change, refused), or 202 while it
+#      installs; then GET /?result=<id> until it says how the push
+#      ended, for 30 minutes at most. A response lost on the way is
+#      recovered the same way: the id was chosen here.
+#
+#   HOTSERVE_TOKEN     a token the box block's deploy_trust accepts, naming
+#                      HEAD in a sha claim: hotserve deploy-token --claims
+#                      sha=$(git rev-parse HEAD) --ttl 1h ... Not needed in
+#                      GitHub Actions: with `permissions: id-token: write` a
+#                      fresh one is minted for each request
+#   HOTSERVE_AUDIENCE  the audience the box block's deploy_trust expects
+#                      (default: hotserve)
+#   HOTSERVE           the hotserve command (default: hotserve); `hotserve
+#                      box webhook` names the address as the box reads the file
+#
+# In GitHub Actions the output is also dressed for the job page: each
+# box in a collapsible group, a failure as an error annotation, and in
+# the job summary a line per box (with an applied push's secrets, reload
+# and next-launch lines under it). Any box failing fails the run; the
+# others are still sent.
+set -eu
+cd "$(dirname "$0")/.."
+HOTSERVE=${HOTSERVE:-hotserve}
+audience=${HOTSERVE_AUDIENCE:-hotserve}
+actions=${GITHUB_ACTIONS:-}
+# A request's bound. A push's (post) is 600 s: before the box waits up
+# to 30 s for the first result, it checks the chain, bounded at 10
+# minutes, then runs up to three children on the file, each bounded at
+# 120 s: hotserve validate, hotserve adapt, and hotserve-backup validate
+# when backups are installed (box/DESIGN-box.md, Caps). A legitimate
+# push takes seconds. A POST cut short is no answer, and the poll asks
+# for its result.
+maxtime=60
+# How long a push is waited for, polled or held off by another pending
+# one: past root's worst case (box/DESIGN-box.md, Caps, "workflow poll").
+patience=1800
+# A laptop's one token can outlive a long run; a minted one cannot.
+expired=", or HOTSERVE_TOKEN expired (its --ttl)"
+[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || expired=
+
+tmpd=$(mktemp -d)
+trap 'rm -rf "$tmpd"' EXIT
+
+# A shallow clone lacks the commits between the box's and HEAD, and
+# would make a box's commit missing from it look like a rewritten main
+# — whose remedy is a trust reset. Full history or nothing.
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+	echo "apply: this clone is shallow; the bundle needs every commit since the one each box runs: git fetch --unshallow (in a workflow, fetch-depth: 0)" >&2
+	exit 1
+fi
+head=$(git rev-parse --verify HEAD)
+short=$(git rev-parse --short=7 HEAD)
+# The token Actions mints names the commit the run is for, and the box
+# refuses a bundle for another (the workflow checks out that commit).
+if [ -n "${GITHUB_SHA:-}" ] && [ "$GITHUB_SHA" != "$head" ]; then
+	echo "apply: the checkout is at $head, but this run is for $GITHUB_SHA: its token would name the wrong commit" >&2
+	exit 1
+fi
+if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -z "${HOTSERVE_TOKEN:-}" ]; then
+	echo "apply: set HOTSERVE_TOKEN (hotserve deploy-token --claims sha=$head ...), or run in GitHub Actions with id-token: write" >&2
+	exit 1
+fi
+
+# mint puts a token in $tmpd/token: a fresh one per request in Actions,
+# since a slow apply can outlive one. The token stays in files of this
+# process: an output of the step would print it in the job log.
+mint() {
+	if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+		printf 'Authorization: Bearer %s\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" >"$tmpd/mint"
+		for try in 1 2 3; do
+			# -G appends the audience to the URL's own query, encoded.
+			curl -fsS --max-time 30 -H "@$tmpd/mint" -G --data-urlencode "audience=$audience" "$ACTIONS_ID_TOKEN_REQUEST_URL" |
+				sed -n 's/.*"value" *: *"\([^"]*\)".*/\1/p' >"$tmpd/token" || true
+			[ -s "$tmpd/token" ] && break
+			sleep "$try"
+		done
+		[ -s "$tmpd/token" ] || { echo "apply: could not mint an OIDC token" >&2; return 1; }
+		printf '::add-mask::%s\n' "$(cat "$tmpd/token")"
+	else
+		printf '%s' "$HOTSERVE_TOKEN" >"$tmpd/token"
+	fi
+	# A header file, so no token is in a process's arguments.
+	printf 'Authorization: Bearer %s\n' "$(cat "$tmpd/token")" >"$tmpd/auth"
+}
+
+# req <curl args...>: one request with a token. The status goes in
+# $code — 000 when no answer came, `mint` when no token could be had
+# and nothing was sent — and the body in $tmpd/resp.
+req() {
+	: >"$tmpd/resp"
+	mint || { code=mint; return 0; }
+	code=$(curl -sS -o "$tmpd/resp" -w '%{http_code}' --max-time "$maxtime" \
+		-H "@$tmpd/auth" "$@") || code=000
+}
+
+# field <key>: a string field of the response, JSON's escapes undone.
+# The box's answers are flat objects on one line, so the last match is
+# the field itself: inside a string a quote is escaped and cannot start
+# a key.
+field() {
+	sed -n 's/.*"'"$1"'":"\(\([^\\"]*\\.\)*[^\\"]*\)".*/\1/p' "$tmpd/resp" | unescape
+}
+unescape() {
+	awk '
+	function hex(h,   n, k) {
+		n = 0
+		for (k = 1; k <= 4; k++) n = n * 16 + index("0123456789abcdef", tolower(substr(h, k, 1))) - 1
+		return n
+	}
+	{
+		out = ""; s = $0
+		while ((i = index(s, "\\")) > 0) {
+			out = out substr(s, 1, i - 1); c = substr(s, i + 1, 1)
+			h = substr(s, i + 2, 4)
+			# An escaped printable ASCII character (json.Marshal writes
+			# <, > and & so) is that character; anything else, a control
+			# character or \r included, stays escaped: the text reaches
+			# a terminal and the Actions log.
+			if (c == "u" && h ~ /^[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$/ && (n = hex(h)) >= 32 && n < 127) {
+				out = out sprintf("%c", n); s = substr(s, i + 6); continue
+			}
+			if (c == "n") out = out "\n"
+			else if (c == "t") out = out "\t"
+			else if (c == "\"" || c == "\\" || c == "/") out = out c
+			else out = out "\\" c
+			s = substr(s, i + 2)
+		}
+		printf "%s", out s
+	}'
+}
+# list <key>...: the items of the result's string arrays, one a line.
+# Their names are held to grammars (an app's name, <app>/<VAR>), with
+# no quote, comma or bracket in them.
+list() {
+	for k in "$@"; do
+		sed -n 's/.*"'"$k"'":\[\([^]]*\)\].*/\1/p' "$tmpd/resp" | tr ',' '\n' | tr -d '"'
+	done
+}
+# apps [md]: the result's app names, comma separated; with md, each in
+# backticks, for the job summary.
+apps() {
+	if [ "${1:-}" = md ]; then list apps | sed 's/.*/`&`/'; else list apps; fi | paste -s -d , - | sed 's/,/, /g'
+}
+# secrets_said [md]: a line for each app whose secrets the push added,
+# changed or removed, naming the variables, never a value:
+#   apply: deploy.example.com secrets: example: added STRIPE_KEY; changed DATABASE_URL
+# With md, the same as a job summary list item, each name in backticks
+# (an _ in one would turn Markdown italic):
+#   - secrets: `example`: added `STRIPE_KEY`; changed `DATABASE_URL`
+secrets_said() {
+	{
+		list secrets_added | sed 's/^/1 /'
+		list secrets_changed | sed 's/^/2 /'
+		list secrets_removed | sed 's/^/3 /'
+	} | awk 'NF == 2 { i = index($2, "/"); print substr($2, 1, i - 1), $1, substr($2, i + 1) }' |
+		LC_ALL=C sort -k1,1 -k2,2n -k3,3 |
+		awk -v box="$box" -v md="${1:-}" '
+		function name(s) { return md != "" ? "`" s "`" : s }
+		function flush() {
+			if (app == "") return
+			if (md != "") printf "- secrets: %s: %s\n", name(app), out
+			else printf "apply: %s secrets: %s: %s\n", box, app, out
+		}
+		{
+			if ($1 != app) { flush(); app = $1; out = ""; kind = "" }
+			if ($2 != kind) {
+				kind = $2
+				out = out (out == "" ? "" : "; ") (kind == 1 ? "added " : kind == 2 ? "changed " : "removed ") name($3)
+			} else out = out ", " name($3)
+		}
+		END { flush() }'
+}
+
+# The Actions dressing, as scripts/deploy.sh in hotserve's examples has
+# it: what a workflow command's message and property may not contain.
+msg() { printf '%s' "$1" | sed 's/%/%25/g' | tr '\r\n' '  '; }
+prop() { msg "$1" | sed 's/:/%3A/g; s/,/%2C/g'; }
+summary() { [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '%s\n\n' "$1" >>"$GITHUB_STEP_SUMMARY"; }
+
+# red <message>: this box failed.
+red() {
+	printf 'apply: %s\n' "$1" >&2
+	[ -z "$actions" ] || printf '::error title=%s::%s\n' "$(prop "apply $box failed")" "$(msg "$1")"
+	summary "**$box:** failed: $1"
+	failed=1
+}
+
+# refused401 says what the box must trust for a token it turned away. Its
+# 401 is one flat sentence whatever the reason, so this side is built
+# from what the run has; the reason is in the box's journal.
+refused401() {
+	echo "the box refused this token. Most often the deploy_trust in its box block — the Caddyfile the box"
+	echo "runs, not the one being sent — does not accept:"
+	if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+		printf '  %-18s%s\n' 'audience' "$audience" 'claim repository' "${GITHUB_REPOSITORY:-?}" 'claim ref' "${GITHUB_REF:-?}"
+	else
+		echo "  the key this token was minted with (deploy_trust local { public_key ... })"
+		echo "  the audience, subject or claim it pins, against what hotserve deploy-token was given"
+		echo "A box token must also name the commit: hotserve deploy-token --claims sha=$head."
+	fi
+	echo "Or the box could not consult the token's issuer (an outage there): its journal says so, and a"
+	echo "re-run once the issuer is back goes through. On the box, journalctl -u hotserve ('webhook auth"
+	echo "failed') names the check that refused it."
+}
+
+# done_ok <phase>: a result the box answered green.
+done_ok() {
+	[ "$(sed -n 's/.*"caddyfile_edited_out_of_band":\(true\).*/\1/p' "$tmpd/resp")" != true ] || {
+		w="the Caddyfile on the box had been edited there since the last apply; this push replaced the edit with $path at $short"
+		printf 'apply: %s\n' "$w"
+		[ -z "$actions" ] || printf '::warning title=%s::%s\n' "$(prop "apply $box")" "$(msg "$w")"
+	}
+	for app in $(list secrets_edited_out_of_band); do
+		# The box removes an app's env file only when the commit has no
+		# secrets for it at all; one variable gone rewrites the file.
+		if ! git cat-file -e "$head:$dir/secrets/$app" 2>/dev/null; then
+			w="$app's env file on the box had been edited there since the last apply; this push removed it, as $short has no secrets for $app"
+		else
+			w="$app's env file on the box had been edited there since the last apply; this push replaced the edit with $dir/secrets/$app/ at $short"
+		fi
+		printf 'apply: %s\n' "$w"
+		[ -z "$actions" ] || printf '::warning title=%s::%s\n' "$(prop "apply $box")" "$(msg "$w")"
+	done
+	case $1 in
+	no_change)
+		printf 'apply: %s at %s: the box already runs this Caddyfile\n' "$box" "$short"
+		summary "**$box:** $short, unchanged" ;;
+	applied)
+		d=$(field diff)
+		if [ -n "$d" ]; then
+			printf '%s\n' "$d"
+		fi
+		secrets_said
+		a=$(apps)
+		# The diff is the Caddyfile's: none means the box wrote env files
+		# alone, and an env file is read at an app's launch, not a reload.
+		if [ -n "$d" ]; then
+			what='loaded; running apps are not restarted'
+		else
+			what='secrets updated; the Caddyfile is unchanged, nothing reloaded'
+		fi
+		printf 'apply: %s at %s: %s%s\n' "$box" "$short" "$what" "${a:+; apps $a}"
+		# The job summary says what happened too, as a list under the
+		# box's line; the Caddyfile's diff stays in the log. Every box
+		# writes to the one step's summary, which GitHub caps at 1 MiB:
+		# past it (thousands of long secrets' names) GitHub drops the
+		# whole summary, every box's lines, with an error annotation,
+		# and the log keeps every line (box/DESIGN-box.md, Accepted
+		# residuals).
+		md="**$box:** $short applied"
+		s=$(secrets_said md)
+		[ -z "$s" ] || md="$md
+$s"
+		a=$(apps md)
+		md="$md
+- $what${a:+; apps $a}"
+		for app in $(list secrets_added secrets_changed secrets_removed | sed 's,/.*,,' | LC_ALL=C sort -u); do
+			printf 'apply: %s reads its secrets at its next launch; a deploy of a new version launches it now\n' "$app"
+			md="$md
+- \`$app\` reads its secrets at its next launch; a deploy of a new version launches it now"
+		done
+		summary "$md" ;;
+	*)
+		# A 2xx that is not the box's: something in front of it.
+		red "HTTP 200 without a result the box gives (phase '$1')" ;;
+	esac
+}
+
+# outcome: what the last answer says about the push. Returns 0 when it
+# is settled (green or red), 1 when the result is still to come.
+outcome() {
+	case $code in
+	200)
+		done_ok "$(field phase)"
+		return 0 ;;
+	202)
+		ph=$(field phase)
+		if [ "$ph" = verified ] && [ -z "$said" ]; then
+			signer=$(field signer)
+			printf 'apply: %s at %s%s; verified; installing\n' "$box" "$short" "${signer:+, signed by $signer}"
+			said=1
+		fi
+		return 1 ;;
+	422)
+		e=$(field error) ph=$(field phase)
+		red "${ph:-refused}: ${e:-see the response}"
+		return 0 ;;
+	401)
+		refused401
+		red "the box refused the token (401); the log above says what it must trust"
+		return 0 ;;
+	mint)
+		red "could not mint an OIDC token for this request"
+		return 0 ;;
+	*)
+		e=$(field error)
+		red "HTTP $code: ${e:-$(head -c 300 "$tmpd/resp" 2>/dev/null)}"
+		return 0 ;;
+	esac
+}
+
+# poll [resend]: GET /?result=<id> until the push settles, 30 minutes at
+# most. A 404 is "not yet" after the box took the push (202, 504): only
+# root can tell a push it holds from one it lost. After a POST that got
+# no answer from the box, a 404 may also be a push that never arrived,
+# or a fast-path no_change (which writes no result) whose 200 was lost:
+# with `resend`, every third 404 sends the POST again under the same
+# id, which the box answers 409 duplicate if it holds the push.
+poll() {
+	deadline=$(($(date +%s) + patience))
+	wait=1 last= misses=0
+	while [ "$(date +%s)" -lt "$deadline" ]; do
+		sleep "$wait"
+		[ "$wait" -ge 5 ] || wait=$((wait + 1))
+		if [ "${1:-}" = resend ] && [ "$misses" -ge 3 ]; then
+			misses=0
+			post
+			case $code in
+			409|000|mint|502|503|504|52[0-4]|530) ;;
+			400)
+				# A broken upload admits nothing: the next resend tries again.
+				case $(field error) in
+				'could not read the bundle'*) ;;
+				*) outcome; return 0 ;;
+				esac ;;
+			*) outcome && return 0; continue ;;
+			esac
+		fi
+		req "$url?result=$id"
+		case $code in
+		200|202|422) outcome && return 0 ;;
+		401)
+			red "the box refused a token for the result poll (401)$expired. If this push changed the box block's deploy_trust, it may have applied and dropped this workflow: journalctl -u hotserve-box-apply on the box says"
+			return 0 ;;
+		404) last=404 misses=$((misses + 1)) ;;
+		000|mint|502|503|504|52[0-4]|530) ;;
+		*) outcome; return 0 ;;
+		esac
+	done
+	if [ "$last" = 404 ] && [ "${1:-}" = resend ]; then
+		red "no result for push $id after 30 minutes, and no sign the box took it: journalctl -u hotserve -u hotserve-box-apply on the box"
+	else
+		red "no result for push $id after 30 minutes: journalctl -u hotserve-box-apply on the box"
+	fi
+}
+
+# post: the push, $tmpd/bundle.tgz under $id.
+post() {
+	maxtime=600
+	req -X POST -H "X-Box-Request-Id: $id" -H "Content-Type: application/gzip" \
+		--data-binary "@$tmpd/bundle.tgz" "$url"
+	maxtime=60
+}
+
+# once <tree|blob> <id>: the object into the bundle as trees/<id> or
+# blobs/<id>, and its name printed, unless it is there already.
+once() {
+	[ -e "$b/$1s/$2" ] && return 0
+	git cat-file "$1" "$2" >"$b/$1s/$2"
+	printf '%s\n' "$1s/$2"
+}
+
+# send: one box, $box, from HEAD's $path.
+send() {
+	# A regular file, by its mode in the tree, as the box holds it
+	# (ProveFile): a symlink is a blob too, and its text is a path.
+	case $(git ls-tree --full-tree "$head" -- "$path" | cut -d ' ' -f 1) in
+	100644|100755) ;;
+	120000) red "$path is a symlink: a box's file is a regular file (the box refuses one; make check says the same)"; return 0 ;;
+	'') red "$path is not in HEAD"; return 0 ;;
+	*) red "$path is not a file: a box's file is a regular file"; return 0 ;;
+	esac
+	git cat-file blob "$head:$path" >"$tmpd/Caddyfile" || { red "$path is not in HEAD"; return 0; }
+	url=$("$HOTSERVE" box webhook "$tmpd/Caddyfile" 2>"$tmpd/err") || { red "$path: $(cat "$tmpd/err")"; return 0; }
+
+	req "$url"
+	case $code in
+	200) ;;
+	mint) red "could not mint an OIDC token"; return 0 ;;
+	401) refused401; red "the box refused the token (401); the log above says what it must trust"; return 0 ;;
+	000) red "$url did not answer"; return 0 ;;
+	*) e=$(field error); red "$url: HTTP $code: ${e:-$(head -c 300 "$tmpd/resp" 2>/dev/null)}"; return 0 ;;
+	esac
+	base=$(field commit)
+	case $base in
+	*[!0-9a-f]*|'') red "$url did not name the commit it runs"; return 0 ;;
+	esac
+
+	parents=
+	if [ "$base" != "$head" ]; then
+		if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+			red "the box runs $base, which this repository's history does not hold: if main was rewritten below it, hotserve box baseline $head, as root on the box, resets trust to $head, whose ancestors the box will then never examine"
+			return 0
+		fi
+		if git merge-base --is-ancestor "$head" "$base"; then
+			printf 'apply: %s already runs %s, a later commit than %s: superseded, nothing to send\n' "$box" "$(git rev-parse --short=7 "$base")" "$short"
+			summary "**$box:** superseded by $(git rev-parse --short=7 "$base")"
+			return 0
+		fi
+		# HEAD and the commits between, first parent by first parent,
+		# HEAD first. The box takes 500 counting HEAD; past that only
+		# a trust reset on the box moves it on.
+		n=$(git rev-list --first-parent --count "$base..$head")
+		if [ "$n" -gt 500 ]; then
+			red "the chain from $base to $head is longer than 500 commits; run hotserve box baseline $head as root on the box"
+			return 0
+		fi
+		parents=$(git rev-list --first-parent "$base..$head" | tail -n +2)
+	fi
+
+	# The secrets beside the file, if HEAD has any: the tree, and how
+	# many values it holds (a file in an app's directory). A recipients
+	# file alone is no value, and needs no key on the box.
+	dir=${path%/Caddyfile}
+	# (A <rev>:<path> takes no ^{tree}: everything after the colon is the
+	# path. Anything else at that name is the box's to refuse.)
+	stree=$(git rev-parse -q --verify "$head:$dir/secrets" 2>/dev/null) || stree=
+	[ -z "$stree" ] || [ "$(git cat-file -t "$stree")" = tree ] || stree=
+	values=0
+	[ -z "$stree" ] || values=$(git -c core.quotePath=false ls-tree -r --name-only "$stree" | grep -c '^[^/]*/[^/.][^/]*\.age$' || true)
+	if [ "$values" -gt 0 ]; then
+		# The box decrypts with its own key, so the values must be
+		# encrypted to it: the first recipient (box/DESIGN-box.md, "The
+		# box's key"). GET / names the key; this compares, never trusts.
+		key=$(field recipient)
+		# A line as age reads one: a CR before its newline is the line
+		# ending's, not the key's.
+		first=$(git cat-file blob "$head:$dir/secrets/recipients" 2>/dev/null | awk '{ sub(/\r$/, "") } !/^[[:space:]]*(#|$)/ { print; exit }')
+		if [ -z "$first" ]; then
+			red "$dir/secrets holds values but no recipients file names a key: make secret APP=… VAR=… BOX_KEY=\$(ssh root@$box hotserve box key) makes one; nothing was sent"
+			return 0
+		fi
+		if [ -z "$key" ]; then
+			red "the box names no key for secrets (no recipient in GET /): run hotserve box key as root on it; nothing was sent"
+			return 0
+		fi
+		if [ "$key" != "$first" ]; then
+			red "the box's key is $key, but the first recipient in $dir/secrets/recipients is $first: a rebuilt box has a new key. Confirm it with ssh root@$box hotserve box key, then make rekey BOX_KEY=$key, commit and push; nothing was sent"
+			return 0
+		fi
+	fi
+
+	# The bundle: exactly these names, regular files, no directories.
+	b=$tmpd/bundle
+	rm -rf "$b" "$tmpd/bundle.tgz"
+	mkdir -p "$b/parents" "$b/trees"
+	printf '%s\n' "$path" >"$b/path"
+	cp "$tmpd/Caddyfile" "$b/Caddyfile"
+	git cat-file commit "$head" >"$b/commit"
+	set -- path Caddyfile commit
+	i=0
+	for p in $parents; do
+		i=$((i + 1))
+		f=parents/$(printf '%04d' "$i")
+		git cat-file commit "$p" >"$b/$f"
+		set -- "$@" "$f"
+	done
+	# The root tree, then each directory's down to the file.
+	t=$(git rev-parse "$head^{tree}")
+	git cat-file tree "$t" >"$b/trees/$t"
+	set -- "$@" "trees/$t"
+	sub= rest=${path%/*}
+	while [ -n "$rest" ]; do
+		c=${rest%%/*}
+		sub=${sub:+$sub/}$c
+		t=$(git rev-parse "$head:$sub")
+		git cat-file tree "$t" >"$b/trees/$t"
+		set -- "$@" "trees/$t"
+		[ "$rest" = "${rest#*/}" ] && rest= || rest=${rest#*/}
+	done
+	# The secrets (box/DESIGN-box.md, "Proving the secrets"): their tree,
+	# each app's tree, and each value's blob, each name once (two values
+	# copied from one file are one blob). The box needs every value the
+	# commit lists, so a value left out is refused, never read as gone.
+	if [ -n "$stree" ]; then
+		mkdir -p "$b/blobs"
+		for m in $(
+			once tree "$stree"
+			for a in $(git ls-tree "$stree" | awk '$2 == "tree" { print $3 }'); do
+				once tree "$a"
+				for v in $(git ls-tree "$a" | awk '$2 == "blob" { print $3 }'); do
+					once blob "$v"
+				done
+			done
+		); do
+			set -- "$@" "$m"
+		done
+	fi
+	# COPYFILE_DISABLE: macOS tar would add ._ files for extended
+	# attributes, which the box refuses as names it does not know.
+	COPYFILE_DISABLE=1 tar -czf "$tmpd/bundle.tgz" -C "$b" "$@"
+
+	id=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+	n=$(printf '%s\n' "$parents" | grep -c . || true)
+	printf 'apply: %s → %s: the box runs %s; sending %s (%s commit%s), push %s\n' \
+		"$path" "$url" "$(printf '%.7s' "$base")" "$short" "$((n + 1))" "$([ "$n" = 0 ] && echo || echo s)" "$id"
+	said=
+	deadline=$(($(date +%s) + patience))
+	while :; do
+		# No answer at all is polled for: the id was chosen here.
+		post
+		case $code in
+		409|400) ;;
+		mint) red "could not mint an OIDC token"; return 0 ;;
+		*) break ;;
+		esac
+		e=$(field error)
+		case $e in
+		'duplicate request id'*) break ;;
+		'could not read the bundle'*)
+			# The upload broke; nothing was admitted under this id.
+			if [ "$(date +%s)" -ge "$deadline" ]; then
+				red "$e"
+				return 0
+			fi
+			printf 'apply: %s; sending it again\n' "$e"
+			sleep 2 ;;
+		'a push is being admitted'*|'a push is pending'*)
+			if [ "$(date +%s)" -ge "$deadline" ]; then
+				red "$e: for 30 minutes. On the box: journalctl -u hotserve-box-apply -u hotserve-box-apply.path, and if the path unit is failed, systemctl restart hotserve-box-apply.path (again ten seconds later if it fails)"
+				return 0
+			fi
+			printf 'apply: %s; trying again\n' "$e"
+			# Another push's body is being read: a moment. One pending
+			# on the box: its apply, seconds.
+			case $e in 'a push is being admitted'*) sleep 2 ;; *) sleep 10 ;; esac ;;
+		*) red "${e:-HTTP $code: $(head -c 300 "$tmpd/resp" 2>/dev/null)}"; return 0 ;;
+		esac
+	done
+	case $code in
+	# No answer, or one from something in front of the box (a gateway's
+	# 502 or 503, Cloudflare's 520-524 or 530): the box may have the
+	# push, and the id is enough to ask. Cloudflare's 525-527 (TLS to
+	# the box) are a setup to fix, not a push to wait for.
+	000|502|503|52[0-4]|530) echo "apply: no answer from the box to the push; asking for its result"; poll resend ;;
+	# A 504 naming the push is the box's own (step 8); any other is a
+	# gateway's.
+	504)
+		if [ "$(field id)" = "$id" ]; then
+			echo "apply: the box has the push; asking for its result"; poll
+		else
+			echo "apply: no answer from the box to the push; asking for its result"; poll resend
+		fi ;;
+	409) echo "apply: the box has the push; asking for its result"; poll ;;
+	*) outcome || poll ;;
+	esac
+}
+
+if [ $# -gt 0 ]; then
+	[ $# -eq 1 ] || { echo "apply: one box at most, by its directory" >&2; exit 1; }
+	d=${1%/}
+	d=${d#./}
+	case $d in
+	''|.|..|*/*) echo "apply: '$1' is not a box: name its directory, e.g. deploy.example.com" >&2; exit 1 ;;
+	esac
+	boxes=$d/Caddyfile
+else
+	# A symlink is a blob too: found here, and named by send().
+	boxes=$(git -c core.quotePath=false ls-tree --name-only HEAD | while read -r d; do
+		[ "$(git cat-file -t "HEAD:$d/Caddyfile" 2>/dev/null)" = blob ] && echo "$d/Caddyfile"
+	done || true)
+fi
+[ -n "$boxes" ] || { echo "apply: no box in HEAD: a box is <host>/Caddyfile at the top of the repository" >&2; exit 1; }
+
+failed=
+IFS='
+'
+for path in $boxes; do
+	unset IFS
+	box=${path%/Caddyfile}
+	[ -z "$actions" ] || printf '::group::%s\n' "apply $box"
+	send
+	[ -z "$actions" ] || printf '::endgroup::\n'
+done
+[ -z "$failed" ]

@@ -15,7 +15,7 @@ import (
 
 // Per-app sandboxing (issue #35) is systemd's own per-unit sandboxing
 // on the user-manager runner: a user namespace (PrivateUsers=) plus a
-// PID namespace (PrivatePIDs=, systemd 256+) on top of the mount,
+// PID namespace (PrivatePIDs=, systemd 257+) on top of the mount,
 // device, cgroup, seccomp and capability set.
 //
 // The user namespace is what closes /proc/<pid>/{root,environ,cwd} of
@@ -35,8 +35,8 @@ import (
 // The filesystem view is deny-by-default. An empty read-only tmpfs
 // replaces the whole root (TemporaryFileSystem=/) and the only things
 // that exist inside a unit are the ones this file names:
-// sandboxBaseView and the app's own release and shared dirs. Nothing
-// widens it. The guarantee is one sentence — anything not named is
+// sandboxBaseView and the app's own release, shared and run/<nonce>
+// dirs. Nothing widens it. The guarantee is one sentence — anything not named is
 // absent — and it holds by construction rather than by a list of
 // things to hide being complete. Nothing has to be derived from the
 // running configuration, and nothing ages: a secret that appears on
@@ -129,10 +129,13 @@ var sandboxNeverReachable = []string{"/run/user", "/dev", "/sys", "/proc"}
 
 // sandboxHotservePaths is the supervisor's own state on a packaged
 // install: TLS keys and certificates, the admin socket's directory,
-// the documented env-file directories: a mistake to put the liveswap
-// *root* inside of, and never reachable as a bind source.
+// the documented env-file directories, the box applier's exchange tree
+// (box/DESIGN-box.md, "Paths, owners, and who may touch what"): a
+// mistake to put the liveswap *root* inside of, and never reachable as
+// a bind source.
 var sandboxHotservePaths = []string{
 	"/var/lib/hotserve", "/run/hotserve", "/etc/hotserve", "/etc/liveswap",
+	"/var/lib/hotserve-box",
 }
 
 // sandboxSpec is what the runner needs to render the sandbox
@@ -145,8 +148,9 @@ type sandboxSpec struct {
 	// reaching into another's data.
 	root string
 	// writable are this app's own directories bound back at their real
-	// paths, read-write (BindPaths=): the release being started and
-	// the shared dir. Its state.json, its tmp/ (the upload staging dir
+	// paths, read-write (BindPaths=): the release being started, the
+	// shared dir and the instance's own run/<nonce> dir (where it binds
+	// its socket). Its state.json, its tmp/ (the upload staging dir
 	// — a running instance must never be able to rewrite the next
 	// version's tarball) and its other releases are simply not named,
 	// so they do not exist inside the unit.
@@ -218,9 +222,10 @@ func (s *sandboxSpec) resolveBindSources() error {
 	// the configured app name, NOT from what appDir itself resolves to.
 	// Resolving appDir would let the alias vouch for itself: a link at
 	// <root>/blog pointing at <root>/shop would make
-	// shop's directory the expected base, and both of blog's mandatory
-	// binds would then match it exactly — handing the sibling's release
-	// and shared data to the new sandbox.
+	// shop's directory the expected base, and every one of blog's
+	// mandatory binds (release, shared, run/<nonce>) would then match
+	// it exactly — handing the sibling's release and shared data to the
+	// new sandbox.
 	appC := filepath.Join(rootC, s.appName)
 	own := func(dest, resolved string) error {
 		// The only difference a mandatory bind may have from its
@@ -399,12 +404,10 @@ func probeSandboxSpec() *sandboxSpec {
 func sandboxProbeCommand() []string {
 	// The echo lands in the journal under the probe unit's identifier
 	// (hotserve-sandbox-probe), so a refused host can be diagnosed
-	// from `journalctl -t hotserve-sandbox-probe`. systemd applies its
-	// own escaping to ExecStart arguments before the shell sees them:
-	// "$$" becomes "$" (systemd.service, "Command lines"), so the
-	// shell's own pid is spelled "$$$$" here; "$n" inside a word is
-	// left alone.
-	return []string{"/bin/sh", "-c", `read _ _ n < /proc/self/uid_map; echo "sandbox probe: uid_map range $n, pid $$$$"; [ "$n" != 4294967295 ] && [ "$$$$" = 1 ]`}
+	// from `journalctl -t hotserve-sandbox-probe`. The argv reaches the
+	// shell byte for byte, as every unit's command does (no-env-expand,
+	// see unitProperties), so the script is spelled as a shell reads it.
+	return []string{"/bin/sh", "-c", `read _ _ n < /proc/self/uid_map; echo "sandbox probe: uid_map range $n, pid $$"; [ "$n" != 4294967295 ] && [ "$$" = 1 ]`}
 }
 
 // sandboxProbeTimeout bounds one probe unit: a shell that exits at
@@ -479,7 +482,7 @@ func probeSandboxCapability(r runner) error {
 		err = attempt()
 	}
 	if err != nil {
-		return fmt.Errorf("sandbox probe unit: %w — check `journalctl -t hotserve-sandbox-probe` for the probe's own output, if it got as far as running; the supported host is Debian 13 (systemd 257): PrivatePIDs= needs systemd 256 and both namespaces need a kernel that permits them", err)
+		return fmt.Errorf("sandbox probe unit: %w — check `journalctl -t hotserve-sandbox-probe` for the probe's own output, if it got as far as running; the supported host is Debian 13: PrivatePIDs= needs systemd 257, and both namespaces need a kernel that permits them", err)
 	}
 	return nil
 }

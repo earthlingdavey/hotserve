@@ -90,6 +90,13 @@ case "$b" in
 "hello v1"*) pass "proxy serves v1: '$b'" ;;
 *) fail "expected 'hello v1 ...', got '$b'" ;;
 esac
+# The command's words reach the app byte for byte (e2e/Caddyfile: `./server
+# $HOME $$`). With systemd's environment substitution on, the unit would
+# have run the server with HOME's value and a single "$".
+a=$(curl -s --max-time 5 "$PROXY/argv")
+[ "$a" = '["$HOME" "$$"]' ] \
+	&& pass "the command's words reach the app as written: $a" \
+	|| fail "the app got other words than the command's \$HOME \$\$: '$a'"
 
 echo "=== scenario 4: zero-downtime cutover to v2 under continuous traffic ==="
 traffic_start /tmp/codes-cutover
@@ -397,6 +404,11 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TO
 # the first (the Run-workflow path), then a refused
 # deploy: deploy.sh exits non-zero and prints the reason, and the
 # running version is untouched.
+#
+# The e2e box's webhook is plain http on the compose network, and
+# deploy.sh refuses a non-https HOTSERVE_URL (it would send the token
+# in the clear) unless told this is a test box.
+export HOTSERVE_ALLOW_HTTP=1
 example_scenario() { # <app> <port> <deploy.sh path> <version prefix>
 	app=$1 hook="http://e2e-hotserve:8081/$1" proxy="http://e2e-hotserve:$2" script=$3 pre=$4
 	# The auth header is what the workflow sends for a release asset;

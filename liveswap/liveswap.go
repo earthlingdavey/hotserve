@@ -33,6 +33,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
 	"go.uber.org/zap"
 )
 
@@ -64,7 +65,7 @@ type App struct {
 	// verifies it (OIDC against an issuer's public JWKS, or a local
 	// public key). No shared secret ever lives on the box. Every app
 	// must resolve to at least one source — config load fails otherwise.
-	DeployTrust []TrustConfig `json:"deploy_trust,omitempty"`
+	DeployTrust []deploytrust.TrustConfig `json:"deploy_trust,omitempty"`
 
 	// AllowInsecureHTTP permits artifact downloads over plain http.
 	// Default false (https only). Exists for test rigs and LAN setups.
@@ -126,13 +127,12 @@ type App struct {
 	sandboxProbe    func(*zap.Logger) error
 	processManager  managerClient
 	allowlist       []artifactAllowEntry
-	globalTrust     []trustSource // resolved global DeployTrust, for the unknown-app path
-	globalVerifiers []verifier
+	globalVerifiers []deploytrust.Verifier
 	// appVerifiers is each app's resolved deploy_trust, built once in
 	// Provision and installed by Start. The OIDC discovery/JWKS cache
 	// lives on the verifier object, so the set Provision warms must be
 	// the set the handler is later handed — not a fresh resolution.
-	appVerifiers map[string][]verifier
+	appVerifiers map[string][]deploytrust.Verifier
 }
 
 // AppConfig defines one managed application.
@@ -158,7 +158,7 @@ type AppConfig struct {
 
 	// DeployTrust overrides the global deploy-auth trust sources for
 	// this app (replaces, not appends).
-	DeployTrust []TrustConfig `json:"deploy_trust,omitempty"`
+	DeployTrust []deploytrust.TrustConfig `json:"deploy_trust,omitempty"`
 
 	// ArtifactAllowlist overrides the global allowlist for this app
 	// (same entry syntax; replaces, not appends).
@@ -176,8 +176,11 @@ type AppConfig struct {
 	HealthTimeout caddy.Duration `json:"health_timeout,omitempty"`
 
 	// Soak is how long the new instance must be continuously healthy
-	// before traffic cuts over. Default 15s.
-	Soak caddy.Duration `json:"soak,omitempty"`
+	// before traffic cuts over. 0 is no soak: traffic cuts over on the
+	// first healthy probe, so it needs a HealthPath (Validate). A
+	// pointer, as DeployLogLines, so that 0 stays apart from unset.
+	// Default 15s.
+	Soak *caddy.Duration `json:"soak,omitempty"`
 
 	// Deadline bounds the whole health gate (and pre_start); a version
 	// that cannot get healthy within it is stopped and the deploy
@@ -284,7 +287,6 @@ func (a *App) Provision(ctx caddy.Context) error {
 	for i, e := range a.ArtifactAllowlist {
 		a.ArtifactAllowlist[i] = repl.ReplaceKnown(e, "")
 	}
-	resolveTrustPlaceholders(repl, a.DeployTrust)
 	if a.Root == "" {
 		a.Root = "/var/lib/liveswap"
 	}
@@ -293,21 +295,22 @@ func (a *App) Provision(ctx caddy.Context) error {
 	if a.allowlist, err = parseAllowlist(a.ArtifactAllowlist); err != nil {
 		return err
 	}
-	// Global trust sources back the unknown-app path: a request for an
-	// app that does not exist is still authenticated (against the
-	// global sources) before its 404, so app names never leak to
-	// unauthenticated callers.
-	if a.globalTrust, err = buildTrust(a.DeployTrust, nil); err != nil {
-		return err
-	}
-
 	clients := &fetchClients{
 		download: newDownloadClient(a.AllowInsecureHTTP),
 		// The JWKS client fetches OIDC issuers' public keys over https
 		// only (unless allow_insecure_http), with a bounded timeout.
-		jwks: newJWKSClient(a.AllowInsecureHTTP),
+		jwks: deploytrust.NewJWKSClient(a.AllowInsecureHTTP),
 	}
-	a.globalVerifiers = resolveVerifiers(a.globalTrust, clients.jwks)
+	// Global trust sources back the unknown-app path: a request for an
+	// app that does not exist is still authenticated (against the
+	// global sources) before its 404, so the status never leaks app
+	// names to unauthenticated callers; the time to the 401 still can,
+	// within the bound DESIGN-threat-model.md states ("Webhook
+	// endpoint", the residual; owed: #306). The same wiring serves the
+	// box webhook (New).
+	if a.globalVerifiers, err = deploytrust.Resolve(repl, a.DeployTrust, clients.jwks); err != nil {
+		return err
+	}
 
 	// Build every spec first, then validate, and only then commit to the
 	// process-global pool. Caddy calls Validate *after* Provision, but a
@@ -338,6 +341,8 @@ func (a *App) Provision(ctx caddy.Context) error {
 		return err
 	}
 	warnEnvFileInView(a.logger, specs)
+	warnEnvFileMode(a.logger, specs)
+	warnUnboundTrust(a.logger, a.DeployTrust, a.Apps)
 	// Take pool references now (so a reload never drops the refcount to
 	// zero) but install nothing on the pooled apps until Start: Caddy
 	// keeps the old config if any app's Start fails, and `validate`
@@ -351,17 +356,20 @@ func (a *App) Provision(ctx caddy.Context) error {
 		a.pooled = append(a.pooled, poolKey(name))
 	}
 	// Warm OIDC discovery in the background so the first verification of a
-	// known app is not slower (by JWKS-fetch latency) than an unknown one.
-	// The objects warmed here are the ones Start installs (appVerifiers):
-	// resolving again at Start would hand the handler a cold set.
-	a.appVerifiers = make(map[string][]verifier, len(specs))
-	sets := [][]verifier{a.globalVerifiers}
+	// known app does not pay the discovery round trip an unknown one
+	// would not. Warm leaves each key set empty, so the first token after
+	// a reload still waits on a key fetch (DESIGN-threat-model.md's
+	// timing residual; owed: #306). The objects warmed here are the ones Start
+	// installs (appVerifiers): resolving again at Start would hand the
+	// handler a cold set.
+	a.appVerifiers = make(map[string][]deploytrust.Verifier, len(specs))
+	sets := [][]deploytrust.Verifier{a.globalVerifiers}
 	for name, spec := range specs {
-		vs := resolveVerifiers(spec.trust, clients.jwks)
+		vs := deploytrust.Verifiers(spec.trust, clients.jwks)
 		a.appVerifiers[name] = vs
 		sets = append(sets, vs)
 	}
-	warmVerifiers(sets...)
+	deploytrust.Warm(sets...)
 	return nil
 }
 
@@ -391,7 +399,7 @@ func caddyExiting() bool {
 }
 
 func (cfg *AppConfig) applyDefaults(repl *caddy.Replacer) {
-	resolveTrustPlaceholders(repl, cfg.DeployTrust)
+	deploytrust.ResolvePlaceholders(repl, cfg.DeployTrust)
 	cfg.EnvFile = repl.ReplaceKnown(cfg.EnvFile, "")
 	for i, e := range cfg.ArtifactAllowlist {
 		cfg.ArtifactAllowlist[i] = repl.ReplaceKnown(e, "")
@@ -414,8 +422,9 @@ func (cfg *AppConfig) applyDefaults(repl *caddy.Replacer) {
 	if cfg.HealthTimeout == 0 {
 		cfg.HealthTimeout = caddy.Duration(2 * time.Second)
 	}
-	if cfg.Soak == 0 {
-		cfg.Soak = caddy.Duration(15 * time.Second)
+	if cfg.Soak == nil {
+		d := caddy.Duration(15 * time.Second)
+		cfg.Soak = &d
 	}
 	if cfg.Deadline == 0 {
 		cfg.Deadline = caddy.Duration(5 * time.Minute)
@@ -492,7 +501,7 @@ func (a *App) buildSpec(name string, cfg *AppConfig) (*appSpec, error) {
 			return nil, fmt.Errorf("app %s: %w", name, err)
 		}
 	}
-	trust, err := buildTrust(a.DeployTrust, cfg.DeployTrust)
+	trust, err := deploytrust.Build(a.DeployTrust, cfg.DeployTrust)
 	if err != nil {
 		return nil, fmt.Errorf("app %s: %w", name, err)
 	}
@@ -506,7 +515,7 @@ func (a *App) buildSpec(name string, cfg *AppConfig) (*appSpec, error) {
 		healthPath:         healthPath,
 		healthInterval:     time.Duration(cfg.HealthInterval),
 		healthTimeout:      time.Duration(cfg.HealthTimeout),
-		soak:               time.Duration(cfg.Soak),
+		soak:               time.Duration(*cfg.Soak),
 		deadline:           time.Duration(cfg.Deadline),
 		drain:              time.Duration(cfg.Drain),
 		grace:              time.Duration(cfg.Grace),
@@ -557,7 +566,7 @@ func (a *App) Validate() error {
 			return fmt.Errorf("app %s: command is required", name)
 		}
 		if len(a.DeployTrust) == 0 && len(cfg.DeployTrust) == 0 {
-			return fmt.Errorf("app %s: no deploy_trust configured — declare who may deploy, e.g. a `deploy_trust github { audience ...; claim repository your-org/%s }` block or a `deploy_trust local { public_key ... }` fallback (globally or per app)", name, name)
+			return fmt.Errorf("app %s: no deploy_trust configured — declare who may deploy, e.g. a `deploy_trust github { audience ...; claim repository your-org/%s; claim ref refs/heads/main }` block or a `deploy_trust local { public_key ...; audience ... }` fallback (globally or per app)", name, name)
 		}
 		// Closed by default, deliberately without an "any origin"
 		// escape hatch: a deploy webhook that fetches from anywhere is
@@ -579,16 +588,28 @@ func (a *App) Validate() error {
 				return fmt.Errorf("app %s: %s must be positive, got %v", name, field, time.Duration(d))
 			}
 		}
-		if cfg.Soak < 0 || cfg.Drain < 0 {
+		// Provision has set Soak by now; a config validated without
+		// its defaults has none, which bounds nothing.
+		var soak caddy.Duration
+		if cfg.Soak != nil {
+			soak = *cfg.Soak
+		}
+		if soak < 0 || cfg.Drain < 0 {
 			return fmt.Errorf("app %s: soak and drain must not be negative", name)
+		}
+		// With health_path off the gate's one check is that the process
+		// is alive, made once per health_interval through the soak; with
+		// no soak that is a single look straight after the start.
+		if cfg.Soak != nil && soak == 0 && cfg.HealthPath == "off" {
+			return fmt.Errorf("app %s: soak 0 needs a health_path: with health_path off nothing is probed, so the gate would look once, straight after the process starts, and an app that crashes a moment later would take traffic; set a health_path or a soak above 0", name)
 		}
 		// The deadline bounds the whole gate, soak included: a soak
 		// the deadline cannot contain is a deploy that can never pass.
 		// Equal is allowed — the gate judges the soak on the tick at
 		// the deadline — so a config that loaded before this check
 		// and could deploy still does.
-		if cfg.Soak > cfg.Deadline {
-			return fmt.Errorf("app %s: soak (%v) must not exceed deadline (%v), which bounds the whole health gate including the soak", name, time.Duration(cfg.Soak), time.Duration(cfg.Deadline))
+		if soak > cfg.Deadline {
+			return fmt.Errorf("app %s: soak (%v) must not exceed deadline (%v), which bounds the whole health gate including the soak", name, time.Duration(soak), time.Duration(cfg.Deadline))
 		}
 		if cfg.Watchdog != "on" && cfg.Watchdog != "off" {
 			return fmt.Errorf("app %s: watchdog must be \"on\" or \"off\", got %q", name, cfg.Watchdog)
@@ -838,6 +859,11 @@ func (a *App) Cleanup() error {
 				}
 			}
 		}
+	}
+	if a.clients != nil && a.clients.jwks != nil {
+		// This config is being discarded. Only idle connections close,
+		// so anything still holding the client keeps a working one.
+		a.clients.jwks.CloseIdleConnections()
 	}
 	var firstErr error
 	for _, key := range a.pooled {

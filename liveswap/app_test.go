@@ -2,9 +2,12 @@ package liveswap
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -16,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
@@ -402,6 +406,10 @@ type fakeStore struct {
 	state appState
 	ok    bool
 	err   error
+	// onSave, when set, runs at each save with the state saved: a
+	// test's look at what else was visible then. Set it before any
+	// goroutine that saves is started.
+	onSave func(appState)
 }
 
 func (s *fakeStore) load() (appState, bool, error) {
@@ -411,6 +419,9 @@ func (s *fakeStore) load() (appState, bool, error) {
 }
 
 func (s *fakeStore) save(st appState) error {
+	if s.onSave != nil {
+		s.onSave(st)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state = st
@@ -425,7 +436,7 @@ func testSpec(t *testing.T) *appSpec {
 		name:               "demo",
 		command:            []string{"./server", "--version", "{version}"},
 		env:                map[string]string{"DATA": "{shared_dir}/db"},
-		trust:              []trustSource{localTrust(appTestPub, "demo")},
+		trust:              []deploytrust.Source{localSource(t, appTestPub, "demo")},
 		healthPath:         "/health",
 		healthInterval:     5 * time.Second,
 		healthTimeout:      2 * time.Second,
@@ -441,7 +452,11 @@ func testSpec(t *testing.T) *appSpec {
 		keep:               2,
 		maxArtifactSize:    1 << 20,
 		maxArtifactEntries: 1000,
-		dirs:               newAppDirs(shortTempDir(t), "demo"),
+		// The host the tests' artifact URLs name. The fake fetcher
+		// consults no allowlist; a relaunch of the running version does
+		// (relaunchRefusal), before it decides.
+		allowlist: mustAllowlist(t, "x"),
+		dirs:      newAppDirs(shortTempDir(t), "demo"),
 	}
 }
 
@@ -545,7 +560,7 @@ func newTestRig(t *testing.T) *testRig {
 	}
 	ma := newManagedApp("demo")
 	ma.spec = rig.spec
-	ma.verifiers = resolveVerifiers(rig.spec.trust, nil)
+	ma.verifiers = deploytrust.Verifiers(rig.spec.trust, nil)
 	ma.runner = rig.runner
 	ma.prober = rig.prober
 	ma.fetch = rig.fetch
@@ -666,6 +681,77 @@ func TestDeployPreStartFailureKeepsOldServing(t *testing.T) {
 	}
 }
 
+// migrationRunner is a fakeRunner whose pre_start runs until the test
+// releases it, the way a migration takes its time. Like the real
+// runner it stops the unit when its context ends first, and says so.
+type migrationRunner struct {
+	*fakeRunner
+	entered   chan context.Context
+	release   chan struct{}
+	completed atomic.Bool
+}
+
+func (r *migrationRunner) RunOnce(ctx context.Context, spec startSpec) error {
+	r.entered <- ctx
+	select {
+	case <-r.release:
+		r.completed.Store(true)
+		return r.fakeRunner.RunOnce(ctx, spec)
+	case <-ctx.Done():
+		return ctx.Err() // the unit stopped mid-migration
+	}
+}
+
+// Promise: a client that hangs up mid-pre_start does not stop the
+// migration. pre_start runs under deadline, not under the request; it
+// finishes, and the deploy then fails at the health gate, which reads
+// the request's context as it does for any deploy whose client left.
+// The old instance serves throughout, and the record names the gate,
+// not the migration.
+func TestDeployPreStartOutlivesTheRequest(t *testing.T) {
+	rig := newTestRig(t)
+	must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/1", version: "v1"}))
+	sockV1 := rig.ma.activeSocket.Load()
+
+	runner := &migrationRunner{fakeRunner: rig.runner, entered: make(chan context.Context), release: make(chan struct{})}
+	rig.ma.runner = runner
+	rig.ma.prober = &httpProber{clock: rig.clock} // the real gate: it is what reads the request after pre_start
+	rig.spec.preStart = []string{"./migrate"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() { errc <- rig.ma.Deploy(ctx, deployRequest{url: "https://x/2", version: "v2"}) }()
+
+	var preCtx context.Context
+	select {
+	case preCtx = <-runner.entered:
+	case err := <-errc:
+		t.Fatalf("the deploy ended before pre_start ran: %v", err)
+	}
+	cancel() // the CI job is cancelled mid-migration
+	if err := preCtx.Err(); err != nil {
+		t.Fatalf("pre_start's context ended with the request's: %v", err)
+	}
+	if dl, ok := preCtx.Deadline(); !ok || time.Until(dl) > rig.spec.deadline {
+		t.Fatalf("pre_start must still be bounded by deadline (%v): deadline %v, set %v", rig.spec.deadline, dl, ok)
+	}
+	close(runner.release)
+
+	err := <-errc
+	if !runner.completed.Load() {
+		t.Fatal("the migration did not run to completion")
+	}
+	if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "health gate") || strings.Contains(err.Error(), "pre_start") {
+		t.Fatalf("want the health gate to fail the deploy on the cancelled request, got %v", err)
+	}
+	if rig.ma.activeSocket.Load() != sockV1 {
+		t.Fatal("the old instance must keep serving")
+	}
+	if got := rig.ma.status().LastDeploy; got.Status != "failed" || got.Phase != "soaking" || strings.Contains(got.Error, "pre_start") {
+		t.Fatalf("the record must name the gate, not the migration: %+v", got)
+	}
+}
+
 func TestDeployHealthFailureStopsNewKeepsOld(t *testing.T) {
 	rig := newTestRig(t)
 	ctx := context.Background()
@@ -689,7 +775,10 @@ func TestDeployHealthFailureStopsNewKeepsOld(t *testing.T) {
 	}
 }
 
-func TestDeployRejectsSameRunningVersion(t *testing.T) {
+// An unpinned deploy of the running version is refused: with no digest
+// there is nothing to match the artifact by (a matching digest would
+// relaunch it — app_relaunch_test.go).
+func TestDeployRejectsSameRunningVersionWithoutAPin(t *testing.T) {
 	rig := newTestRig(t)
 	ctx := context.Background()
 	must(t, rig.ma.Deploy(ctx, deployRequest{url: "https://x/1", version: "v1"}))
@@ -915,6 +1004,161 @@ func TestParseEnvFileRejectsGarbage(t *testing.T) {
 	}
 }
 
+// The box writes env files with RenderEnvFile; every launch reads them
+// with parseEnvLines. A value must come back byte for byte, whatever
+// the quoting, spacing or punctuation in it; what the format cannot
+// carry is refused, never altered.
+func TestRenderEnvFileRoundTrips(t *testing.T) {
+	values := []string{
+		"plain", "", `"x"`, `"`, `'`, `''`, `a"b`, " lead", "trail ", "  both  ",
+		"\xc2\xa0nbsp\xc2\xa0", "\xe2\x80\xa8", "\t", "# not a comment", "a=b=c",
+		"export X=1", "$HOME", "`cmd`", "\\n", "emoji \xf0\x9f\x94\x91",
+	}
+	for i, v := range values {
+		vars := []string{"Z_LAST=z", fmt.Sprintf("K%d=%s", i, v), "A=a"}
+		out, err := RenderEnvFile(vars)
+		if err != nil {
+			t.Fatalf("RenderEnvFile(%q): %v", vars, err)
+		}
+		got, err := ParseEnvLines("rendered", out)
+		if err != nil {
+			t.Fatalf("ParseEnvLines(%q): %v", out, err)
+		}
+		want := []string{"A=a", fmt.Sprintf("K%d=%s", i, v), "Z_LAST=z"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("value %q: rendered %q, read back %q", v, out, got)
+		}
+	}
+}
+
+func TestRenderEnvFileSortsByKeyNotByLine(t *testing.T) {
+	out, err := RenderEnvFile([]string{"A9=x", "A=y", "A_B=z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "A=\"y\"\nA9=\"x\"\nA_B=\"z\"\n"; string(out) != want {
+		t.Fatalf("rendered %q, want %q", out, want)
+	}
+}
+
+func TestRenderEnvFileRefusesWhatTheFormatCannotCarry(t *testing.T) {
+	for _, c := range []struct {
+		vars []string
+		want string
+	}{
+		{[]string{"K=a\nb"}, "line break"},
+		{[]string{"K=a\r"}, "line break"},
+		{[]string{"K=a\x00"}, "NUL"},
+		{[]string{"K=\xff"}, "not UTF-8"},
+		{[]string{"1K=v"}, "not a valid environment variable name"},
+		{[]string{"my-var=v"}, "not a valid environment variable name"},
+		{[]string{"=v"}, "not a valid environment variable name"},
+		{[]string{"novalue"}, "not a valid environment variable name"},
+		{[]string{"K=a", "L=b", "K=c"}, "K is given twice"},
+	} {
+		_, err := RenderEnvFile(c.vars)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("RenderEnvFile(%q) = %v, want an error naming %q", c.vars, err, c.want)
+		}
+	}
+}
+
+func TestWarnEnvFileMode(t *testing.T) {
+	cases := []struct {
+		name  string
+		mode  os.FileMode
+		warns []string // message substrings, in order
+	}{
+		{"the documented 0640 is quiet", 0o640, nil},
+		{"0600 is quiet", 0o600, nil},
+		{"group bits are not the check's business", 0o660, nil},
+		{"world-readable warns once", 0o644, []string{"world-readable"}},
+		{"world-writable without world-readable warns once, for the write", 0o622, []string{"world-writable"}},
+		{"world-readable and -writable warns for each", 0o666, []string{"world-readable", "world-writable"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "app.env")
+			must(t, os.WriteFile(p, []byte("KEY=value\n"), 0o600))
+			must(t, os.Chmod(p, tc.mode)) // WriteFile's mode is subject to the umask; Chmod is not
+			core, logs := observer.New(zap.WarnLevel)
+			warnEnvFileMode(zap.New(core), map[string]*appSpec{"blog": {envFile: p}})
+			got := logs.All()
+			if len(got) != len(tc.warns) {
+				t.Fatalf("warned %d times, want %d: %v", len(got), len(tc.warns), got)
+			}
+			for i, want := range tc.warns {
+				fields := got[i].ContextMap()
+				if !strings.Contains(got[i].Message, want) || fields["app"] != "blog" || fields["env_file"] != p || fields["mode"] != fmt.Sprintf("%04o", tc.mode) || fields["fix"] == nil {
+					t.Errorf("warning %d = %q %v, want message containing %q for app blog, env_file %s, mode %04o, with a fix", i, got[i].Message, fields, want, p, tc.mode)
+				}
+			}
+		})
+	}
+	t.Run("an absent file is silent: loading the config does not open it", func(t *testing.T) {
+		core, logs := observer.New(zap.WarnLevel)
+		warnEnvFileMode(zap.New(core), map[string]*appSpec{"blog": {envFile: filepath.Join(t.TempDir(), "missing.env")}})
+		if logs.Len() != 0 {
+			t.Fatalf("an absent env_file warned: %v", logs.All())
+		}
+	})
+	t.Run("a file that cannot be checked is reported as such, never as fine", func(t *testing.T) {
+		notADir := filepath.Join(t.TempDir(), "file")
+		must(t, os.WriteFile(notADir, nil, 0o600))
+		p := filepath.Join(notADir, "app.env")
+		core, logs := observer.New(zap.WarnLevel)
+		warnEnvFileMode(zap.New(core), map[string]*appSpec{"blog": {envFile: p}})
+		got := logs.All()
+		if len(got) != 1 || got[0].Level != zap.WarnLevel || !strings.Contains(got[0].Message, "could not be checked") || got[0].ContextMap()["app"] != "blog" || got[0].ContextMap()["env_file"] != p {
+			t.Fatalf("a stat that fails with ENOTDIR must warn, naming the app and the file, that the mode went unchecked, got %v", got)
+		}
+	})
+	t.Run("a file this account cannot reach is noted at info level, never reported as fine", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reaches everything, so EACCES cannot be produced here")
+		}
+		dir := filepath.Join(t.TempDir(), "closed")
+		must(t, os.Mkdir(dir, 0o700))
+		p := filepath.Join(dir, "app.env")
+		must(t, os.WriteFile(p, []byte("KEY=value\n"), 0o600))
+		must(t, os.Chmod(dir, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		core, logs := observer.New(zap.InfoLevel)
+		warnEnvFileMode(zap.New(core), map[string]*appSpec{"blog": {envFile: p}})
+		got := logs.All()
+		if len(got) != 1 || got[0].Level != zap.InfoLevel || !strings.Contains(got[0].Message, "not checked") || got[0].ContextMap()["app"] != "blog" || got[0].ContextMap()["env_file"] != p {
+			t.Fatalf("EACCES at load must be noted at info level, naming the app and the file, got %v", got)
+		}
+	})
+	t.Run("a launch warns from the descriptor it read, through the logger it was given", func(t *testing.T) {
+		rig := newTestRig(t)
+		p := filepath.Join(t.TempDir(), "app.env")
+		must(t, os.WriteFile(p, []byte("KEY=value\n"), 0o600))
+		must(t, os.Chmod(p, 0o644))
+		rig.spec.envFile = p
+		core, logs := observer.New(zap.WarnLevel)
+		l, err := rig.spec.prepareLaunch(zap.New(core), "v1")
+		must(t, err)
+		if l.envFileMode != 0o644 || logs.FilterMessageSnippet("world-readable").Len() != 1 {
+			t.Fatalf("prepareLaunch recorded mode %04o and warned %d times, want 0644 and 1: %v", l.envFileMode, logs.Len(), logs.All())
+		}
+	})
+	t.Run("a deploy warns too, so a chmod after load is not silent until the next reload", func(t *testing.T) {
+		rig := newTestRig(t)
+		p := filepath.Join(t.TempDir(), "app.env")
+		must(t, os.WriteFile(p, []byte("KEY=value\n"), 0o600))
+		must(t, os.Chmod(p, 0o644))
+		rig.spec.envFile = p
+		core, logs := observer.New(zap.WarnLevel)
+		rig.ma.logger = zap.New(core)
+		must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/a.tgz", version: "v1"}))
+		if n := logs.FilterMessageSnippet("world-readable").Len(); n != 1 {
+			t.Fatalf("the deploy warned %d times about a world-readable env_file, want 1: %v", n, logs.All())
+		}
+	})
+	warnEnvFileMode(nil, map[string]*appSpec{"blog": {envFile: "/x"}}) // a nil logger is skipped, not dereferenced
+}
+
 func TestHostOfStripsUserinfoCredentials(t *testing.T) {
 	cases := map[string]string{
 		"https://example.com/artifact.tar.gz":             "example.com",
@@ -1082,7 +1326,7 @@ func TestStageUploadClassifiesErrors(t *testing.T) {
 	var se *stagingError
 
 	// A body-read failure is a client fault — bare error, not stagingError.
-	if _, err := stageUpload(errReader{}, t.TempDir(), 100); err == nil || errors.As(err, &se) {
+	if _, _, err := stageUpload(errReader{}, t.TempDir(), 100); err == nil || errors.As(err, &se) {
 		t.Fatalf("body-read error should be a bare (client) error, got %v", err)
 	}
 	// A local filesystem failure (tmpDir is actually a file → MkdirAll
@@ -1091,12 +1335,13 @@ func TestStageUploadClassifiesErrors(t *testing.T) {
 	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageUpload(strings.NewReader("data"), notADir, 100); !errors.As(err, &se) {
+	if _, _, err := stageUpload(strings.NewReader("data"), notADir, 100); !errors.As(err, &se) {
 		t.Fatalf("a local FS failure should be a *stagingError (server), got %v", err)
 	}
-	// Happy path still works.
-	if _, err := stageUpload(strings.NewReader("data"), t.TempDir(), 100); err != nil {
-		t.Fatalf("valid upload should stage: %v", err)
+	// Happy path still works, and the digest is the staged bytes'.
+	sum := sha256.Sum256([]byte("data"))
+	if _, digest, err := stageUpload(strings.NewReader("data"), t.TempDir(), 100); err != nil || digest != hex.EncodeToString(sum[:]) {
+		t.Fatalf("valid upload should stage with its digest: %q %v", digest, err)
 	}
 }
 
@@ -1575,6 +1820,21 @@ func TestCleanupJoinsRecoveryBeforeReleasing(t *testing.T) {
 	}
 }
 
+// closeRecorder is a RoundTripper that only counts CloseIdleConnections.
+type closeRecorder struct{ closes atomic.Int32 }
+
+func (*closeRecorder) RoundTrip(*http.Request) (*http.Response, error) { return nil, errTest }
+func (c *closeRecorder) CloseIdleConnections()                         { c.closes.Add(1) }
+
+func TestCleanupClosesTheRetiredJWKSClient(t *testing.T) {
+	rt := &closeRecorder{}
+	a := &App{logger: zap.NewNop(), clients: &fetchClients{jwks: &http.Client{Transport: rt}}}
+	must(t, a.Cleanup())
+	if n := rt.closes.Load(); n != 1 {
+		t.Fatalf("Cleanup closed the JWKS client's idle connections %d times, want 1", n)
+	}
+}
+
 // markLive stands in for a started liveswap config being live for the
 // rest of the test (what App.Start/Cleanup maintain).
 func markLive(t *testing.T) {
@@ -1597,8 +1857,8 @@ func TestConfigureInstallsTheVerifiersItIsGiven(t *testing.T) {
 	// same objects rather than resolving a cold set of its own.
 	rig := newTestRig(t)
 	spec := testSpec(t)
-	spec.trust = []trustSource{{kind: "oidc", issuer: "https://issuer.example", audience: "aud"}}
-	warmed := resolveVerifiers(spec.trust, nil)
+	spec.trust = []deploytrust.Source{oidcSource(t, "https://issuer.example")}
+	warmed := deploytrust.Verifiers(spec.trust, nil)
 	rig.ma.configure(new(int), spec, warmed, zap.NewNop(), &fetchClients{}, userManager)
 	got := rig.ma.currentVerifiers()
 	if len(got) != 1 || got[0] != warmed[0] {
@@ -1612,8 +1872,8 @@ func TestRollbackConfigRestoresTheServingDefinition(t *testing.T) {
 	specA, specB := testSpec(t), testSpec(t)
 	specB.grace = 99 * time.Second
 	ownerA, ownerB := new(int), new(int)
-	rig.ma.configure(ownerA, specA, resolveVerifiers(specA.trust, nil), zap.NewNop(), clients, userManager)
-	rig.ma.configure(ownerB, specB, resolveVerifiers(specB.trust, nil), zap.NewNop(), clients, userManager)
+	rig.ma.configure(ownerA, specA, deploytrust.Verifiers(specA.trust, nil), zap.NewNop(), clients, userManager)
+	rig.ma.configure(ownerB, specB, deploytrust.Verifiers(specB.trust, nil), zap.NewNop(), clients, userManager)
 	// A successful reload: A is cleaned up after B configured — not
 	// the last writer, nothing happens.
 	if rig.ma.rollbackConfig(ownerA) || rig.ma.snapshot().spec != specB {
@@ -1634,8 +1894,8 @@ func TestRollbackConfigWakesTheWatchdog(t *testing.T) {
 	on, off := testSpec(t), testSpec(t)
 	off.watchdogOn = false
 	ownerA, ownerB := new(int), new(int)
-	rig.ma.configure(ownerA, on, resolveVerifiers(on.trust, nil), zap.NewNop(), clients, userManager)
-	rig.ma.configure(ownerB, off, resolveVerifiers(off.trust, nil), zap.NewNop(), clients, userManager)
+	rig.ma.configure(ownerA, on, deploytrust.Verifiers(on.trust, nil), zap.NewNop(), clients, userManager)
+	rig.ma.configure(ownerB, off, deploytrust.Verifiers(off.trust, nil), zap.NewNop(), clients, userManager)
 	// Drain the pokes configure sent, then roll back: the rollback
 	// itself must poke, or a parked loop never re-reads watchdog=on.
 	for len(rig.ma.wdNotify) > 0 {
@@ -1909,7 +2169,7 @@ func TestRetiredAddressesNeverResolveAgain(t *testing.T) {
 func TestPrepareLaunchFailureReservesNothing(t *testing.T) {
 	rig := newTestRig(t)
 	rig.spec.envFile = filepath.Join(t.TempDir(), "missing.env")
-	if _, err := rig.spec.prepareLaunch("v1"); err == nil {
+	if _, err := rig.spec.prepareLaunch(nil, "v1"); err == nil {
 		t.Fatal("a missing env_file must fail preparation")
 	}
 	if got := socketFiles(t, rig); len(got) != 0 {

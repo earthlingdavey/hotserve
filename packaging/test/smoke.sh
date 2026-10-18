@@ -12,7 +12,14 @@
 # comes up as a transient unit under that user's own systemd manager —
 # the exact packaging interaction (ProtectSystem=full, User=hotserve,
 # lingering, the user@<uid> drop-in) no other test layer exercises.
-# Stage 3 then proves the app survives the upgrade restart.
+# Stage 3 then proves the app survives the upgrade restart, and stage
+# 3c that an upgrade restart the new binary refuses is reported. Stage
+# 1b runs the box applier's units as shipped, with a stub for the
+# applier and then with the real one, and stages 3 to 5 follow its path
+# unit through upgrade, removal and an install after removal. Stage 5b
+# follows the starter config through upgrades: none asks, a stock file
+# follows the starter, and no other file is touched. Stage 6 purges:
+# what the package made goes, the apps' data and the key stay.
 #
 # Stage 2c runs the "Set it up" lines of the backups guide — read out
 # of docs/backups.md itself, mounted at /docs-backups.md, so the lines
@@ -24,7 +31,7 @@
 # why (expect_backup_state, a row per transition). And to the edges of
 # each transition (#154): a run under way at an upgrade left alone to
 # finish, the timers' stamps and a killed run's mounts gone with the
-# package, and — stage 6 — an install where the account cannot be made,
+# package, and — stage 7 — an install where the account cannot be made,
 # and what purge keeps said for what it is.
 set -eu
 
@@ -73,19 +80,14 @@ stage "stage 1: install, service basics, reload"
 # Depends (libpam-systemd, dbus) resolve the way they would on a real
 # box — that resolution is part of what this stage proves.
 apt-get update -qq
-apt-get install -y "$deb" >/tmp/install.log 2>&1 || { cat /tmp/install.log; die "apt-get install of the package failed"; }
-cat /tmp/install.log
+apt-get install -y "$deb" >/tmp/install.out 2>&1 \
+	|| { cat /tmp/install.out; die "apt-get install of the package failed"; }
+cat /tmp/install.out
+# Not enabled yet, so postinstall owes the operator the start command.
+grep -q 'systemctl enable --now hotserve' /tmp/install.out \
+	|| die "a fresh install did not print the 'systemctl enable --now hotserve' hint"
 
 id hotserve >/dev/null || die "postinstall did not create the hotserve user"
-# The package ships no user-manager wrapper and no AppArmor profile:
-# the support matrix is Debian 13, whose kernel does not restrict
-# unprivileged user namespaces, so user@<uid>.service runs stock. A
-# leftover from an older package would mean postinstall's cleanup did
-# not run.
-[ ! -e /usr/libexec/hotserve/user-manager ] \
-	|| die "the retired user-manager wrapper is installed; the package should ship no such path"
-[ ! -e /etc/apparmor.d/hotserve-user-manager ] \
-	|| die "the retired AppArmor profile is installed; postinstall should have removed it"
 # Every packaged file's mode is pinned in nfpm.yaml rather than
 # inherited from the build host's umask; check the one that matters.
 bmode=$(stat -c '%U:%G %a' /usr/bin/hotserve)
@@ -103,7 +105,37 @@ for d in /var/lib/hotserve /var/lib/liveswap; do
 done
 echo "user/group and data dir ownership OK"
 
-/usr/bin/hotserve version
+# The starter config is no conffile, so no upgrade can ask about it:
+# postinstall installs it from /usr/share and records its digest where
+# only root can write (stage 5 follows it through upgrades).
+STARTER=/usr/share/hotserve/Caddyfile
+CONFIG=/etc/hotserve/Caddyfile
+RECORD=/var/lib/hotserve-package/starter.sha256
+sha() { sha256sum <"$1" | cut -d' ' -f1; }
+conffiles=$(dpkg-query -W -f='${Conffiles}' hotserve)
+[ -z "$conffiles" ] || die "the package lists conffiles, which an upgrade can ask about: $conffiles"
+for f in "$STARTER" "$CONFIG" "$RECORD"; do
+	got=$(stat -c '%U:%G %a %F' "$f")
+	[ "$got" = "root:root 644 regular file" ] || die "$f is '$got', want 'root:root 644 regular file'"
+done
+cmp -s "$STARTER" "$CONFIG" || die "a fresh install's $CONFIG is not the starter"
+got=$(stat -c '%U:%G %a' "${RECORD%/*}")
+[ "$got" = "root:root 700" ] || die "${RECORD%/*} is '$got', want 'root:root 700'"
+[ "$(cat "$RECORD")" = "$(sha "$STARTER")" ] || die "the record is not the starter's sha256: $(cat "$RECORD")"
+runuser -u hotserve -- sh -c ": >>$RECORD" 2>/dev/null \
+	&& die "the hotserve user can write the record: a compromised hotserve could make an upgrade overwrite the box's config"
+runuser -u hotserve -- touch "${RECORD%/*}/smoke" 2>/dev/null \
+	&& die "the hotserve user can create files beside the record"
+echo "starter installed, no conffiles, the record root's alone"
+
+# A bug report quotes this line (SECURITY.md), so it names the release
+# ahead of the Caddy it was built with (the Makefile's GO_LDFLAGS). The
+# package carries the same release, with nfpm's "~" for a prerelease's
+# "-", which makes dpkg sort it before the release.
+want="v$(dpkg-query -W -f='${Version}' hotserve | tr '~' '-')"
+got=$(/usr/bin/hotserve version) || die "hotserve version failed"
+echo "$got"
+case "$got" in "$want "*) : ;; *) die "hotserve version printed '$got', want it to start with '$want ' (the package's release)" ;; esac
 for m in liveswap http.handlers.liveswap_webhook \
 	http.reverse_proxy.upstreams.liveswap http.handlers.hint_penaltybox \
 	http.handlers.cache storages.cache.otter; do
@@ -160,6 +192,318 @@ journalctl -u hotserve --no-pager \
 	&& die "crash or writability error in the journal (see lines above)" || true
 echo "reload OK, journal clean"
 
+stage "stage 1b: the box applier's units and exchange tree"
+# box/DESIGN-box.md, "The applier unit". box/units_test.go holds the
+# files to the design; this stage holds the manager's reading of them,
+# what postinstall did with them, and what the service may do inside
+# its sandbox — the one lane that runs the units as the package ships
+# them, first with a stub for the applier, then with `hotserve box
+# apply` itself; pushes that apply are the e2e lane's.
+B=/var/lib/hotserve-box
+[ "$(systemctl is-enabled hotserve-box-apply.path)" = enabled ] \
+	|| die "postinstall did not enable hotserve-box-apply.path ($(systemctl is-enabled hotserve-box-apply.path))"
+systemctl is-active --quiet hotserve-box-apply.path \
+	|| die "postinstall did not start hotserve-box-apply.path: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
+[ "$(systemctl is-enabled hotserve-box-apply.service)" = static ] \
+	|| die "hotserve-box-apply.service is '$(systemctl is-enabled hotserve-box-apply.service)', want static: the path unit is its only start"
+[ "$(command -v ssh-keygen)" = /usr/bin/ssh-keygen ] || die "ssh-keygen is not installed: the openssh-client Depends did not resolve"
+# The floor that makes apt refuse an older release at install, as
+# docs/first-deploy.md step 2 quotes it. Debian 13 meets it, so this
+# image cannot show the refusal; this is what keeps the quote true.
+# One entry per line, matched whole: a substring match would also
+# accept `libpam-systemd (>= 257)`.
+dpkg-deb -f "$deb" Depends | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -qxF 'systemd (>= 257)' \
+	|| die "the package does not depend on systemd (>= 257): apt would install it where no app can run"
+# The tree as the shipped tmpfiles.d file says, read back off the disk
+# (the file itself is held to the Paths table by box/units_test.go).
+conf=/usr/lib/tmpfiles.d/hotserve-box.conf
+[ -f "$conf" ] || die "$conf is not installed"
+n=0
+while read -r typ path mode user group _; do
+	case "$typ" in '' | '#'*) continue ;; esac
+	want="$(printf '%o' "$((8#$mode))") $user:$group"
+	got=$(stat -c '%a %U:%G' "$path") || die "$path does not exist: postinstall's systemd-tmpfiles --create did not make it"
+	[ "$got" = "$want" ] || die "$path is '$got', want '$want' (from $conf)"
+	n=$((n + 1))
+done <"$conf"
+[ "$n" -eq 7 ] || die "$conf made $n directories, want the 7 of the Paths table"
+# The box's key for secrets, made by postinstall on this running system
+# (box/DESIGN-box.md, "The box's key"): the identity root's alone, its
+# recipient in age.pub, and `hotserve box key` printing that recipient
+# alone on stdout.
+[ "$(stat -c '%a %U:%G' /etc/hotserve/age/identity)" = "600 root:root" ] \
+	|| die "postinstall did not make /etc/hotserve/age/identity 0600 root:root: $(stat -c '%a %U:%G' /etc/hotserve/age/identity 2>&1)"
+[ "$(stat -c '%a %U:%G' /etc/hotserve/age.pub)" = "644 root:root" ] \
+	|| die "/etc/hotserve/age.pub is not 0644 root:root: $(stat -c '%a %U:%G' /etc/hotserve/age.pub 2>&1)"
+box_key=$(hotserve box key 2>/dev/null) || die "hotserve box key failed"
+case "$box_key" in age1*) : ;; *) die "hotserve box key printed '$box_key', want the age1… recipient alone" ;; esac
+[ "$box_key" = "$(cat /etc/hotserve/age.pub)" ] || die "age.pub is not the key hotserve box key prints"
+grep -qx "# public key: $box_key" /etc/hotserve/age/identity || die "the identity does not hold the key age.pub names"
+# The manager's own reading of the units: what box/units_test.go reads
+# from the files is what systemd took from them.
+show() { systemctl show -p "$2" --value "$1"; }
+expect_show() { # <unit> <property> <want>
+	got=$(show "$1" "$2")
+	[ "$got" = "$3" ] || die "$1 $2 is '$got', want '$3'"
+}
+svc=hotserve-box-apply.service
+expect_show $svc Type oneshot
+expect_show $svc CapabilityBoundingSet "cap_dac_override cap_fowner cap_kill cap_setgid cap_setuid"
+expect_show $svc ProtectSystem strict
+expect_show $svc ReadWritePaths "/etc/hotserve /var/lib/hotserve-box"
+expect_show $svc PrivateDevices yes
+expect_show $svc ProtectKernelTunables yes
+expect_show $svc ProtectControlGroups yes
+expect_show $svc DevicePolicy closed
+expect_show $svc PrivateTmp yes
+expect_show $svc NoNewPrivileges yes
+expect_show $svc RestrictAddressFamilies AF_UNIX
+expect_show $svc TimeoutStartUSec infinity
+expect_show $svc StartLimitIntervalUSec 0
+expect_show hotserve-box-apply.path StartLimitIntervalUSec 0
+expect_show $svc User ""
+expect_show hotserve-box-apply.path TriggerLimitIntervalUSec 10s
+expect_show hotserve-box-apply.path TriggerLimitBurst 20
+case " $(show hotserve-box-apply.path After) " in *" hotserve.service "*) : ;; *) die "the path unit is not After=hotserve.service" ;; esac
+# Every path the shipped file names, as the manager took it: one
+# "path (Type)" line each, so a spec the manager dropped shows here.
+want_paths=$(sed -n 's/^\(DirectoryNotEmpty\|PathExists\|PathExistsGlob\)=\(.*\)$/\2 (\1)/p' /lib/systemd/system/hotserve-box-apply.path | sort)
+[ "$(printf '%s\n' "$want_paths" | wc -l)" -eq 9 ] || die "the shipped path unit names $(printf '%s\n' "$want_paths" | wc -l) paths, want 9"
+got_paths=$(show hotserve-box-apply.path Paths | sort)
+[ "$got_paths" = "$want_paths" ] || die "the manager watches
+$got_paths
+and the unit file names
+$want_paths"
+# A path unit's default Before=paths.target, beside After=hotserve.service,
+# is an ordering cycle the manager breaks by deleting paths.target's
+# start job at boot and hotserve's stop job at shutdown.
+case " $(show hotserve-box-apply.path Before) " in *" paths.target "*) die "the path unit is Before=paths.target: with After=hotserve.service that is an ordering cycle" ;; esac
+cycle=$(systemd-analyze verify default.target 2>&1 | grep -i 'ordering cycle' || true)
+[ -z "$cycle" ] || die "the boot transaction has an ordering cycle: $cycle"
+# The hotserve uid's reach into the tree, path by path: its own stage/
+# and nothing else it can write but in/ (below); the base, work/ and
+# out/ are root's.
+as_hotserve() { su -s /bin/sh hotserve -c "$1" 2>/dev/null; }
+as_hotserve "touch $B/stage/smoke && rm $B/stage/smoke" || die "the hotserve uid cannot write $B/stage"
+for p in "$B/smoke" "$B/out/smoke" "$B/work/smoke"; do
+	as_hotserve "touch $p" && die "the hotserve uid could create $p"
+done
+as_hotserve "ls $B/work" && die "the hotserve uid can list $B/work"
+# The units run: the service's ExecStart swapped for a stub by a runtime
+# drop-in, everything else as shipped. In the first run the stub probes
+# the sandbox — reloads hotserve, verifies a signature as uid 65534
+# under its PrivateTmp, kills a child of that uid, writes where it may
+# and not elsewhere; in every run it moves whatever is in in/ to work/,
+# empties work/ and removes the record, as the applier does.
+sig=/root/box-smoke
+rm -rf "$sig"; mkdir -p "$sig"
+ssh-keygen -q -t ed25519 -N '' -C smoke -f "$sig/key"
+printf 'box smoke payload\n' >"$sig/payload"
+ssh-keygen -q -Y sign -f "$sig/key" -n git "$sig/payload" || die "could not sign the smoke payload"
+printf 'smoke namespaces="git" %s\n' "$(cut -d' ' -f1,2 "$sig/key.pub")" >"$sig/allowed"
+cat >/run/hotserve-box-smoke.sh <<'EOF'
+#!/bin/sh
+B=/var/lib/hotserve-box
+out=$B/smoke-result
+: >"$out"
+r() { echo "$1=$2" >>"$out"; }
+if [ -e /run/hotserve-box-smoke.probe ]; then
+	systemctl reload hotserve; r reload $?
+	d=$(mktemp -d /tmp/box-verify-smoke.XXXXXX)
+	cp /root/box-smoke/payload.sig /root/box-smoke/allowed "$d/" && chmod 755 "$d" && chmod 644 "$d"/*
+	setpriv --reuid=65534 --regid=65534 --clear-groups env -i PATH=/usr/bin:/bin \
+		ssh-keygen -Y verify -f "$d/allowed" -I smoke -n git -s "$d/payload.sig" </root/box-smoke/payload >/dev/null 2>&1
+	r verify $?
+	rm -rf "$d"
+	setpriv --reuid=65534 --regid=65534 --clear-groups sleep 30 &
+	child=$!
+	# Killed only once it is uid 65534: before setpriv's switch it is
+	# root's own, and the kill would pass without CAP_KILL. A kill that
+	# fails is not waited for: the manager ends the child with the unit.
+	i=0
+	until [ "$(awk '/^Uid:/ {print $2}' /proc/$child/status 2>/dev/null)" = 65534 ]; do
+		i=$((i + 1)); [ "$i" -ge 100 ] && break
+		sleep 0.05
+	done
+	r childuid "$(awk '/^Uid:/ {print $2}' /proc/$child/status 2>/dev/null)"
+	if kill "$child"; then r kill 0; wait "$child"; else r kill 1; fi
+	touch /etc/hotserve/.smoke-box && rm /etc/hotserve/.smoke-box; r etc $?
+	touch /var/lib/hotserve/.smoke-box 2>/dev/null; r varlibhotserve $?
+	r blockdevs "$(find /dev -type b 2>/dev/null | wc -l)"
+	v=$(cat /proc/sys/kernel/printk_ratelimit)
+	(echo "$v" >/proc/sys/kernel/printk_ratelimit) 2>/dev/null; r sysctl $?
+	(: 1<>/sys/fs/cgroup/cgroup.procs) 2>/dev/null; r cgroup $?
+fi
+find "$B/in" -mindepth 1 -maxdepth 1 -exec mv -t "$B/work/" {} + || r move 1
+find "$B/work" -mindepth 1 -delete; r clear $?
+rm -f "$B/txn.json"
+r left "$(find "$B/in" "$B/work" -mindepth 1 | wc -l)"
+EOF
+mkdir -p /run/systemd/system/$svc.d
+printf '[Service]\nExecStart=\nExecStart=/bin/sh /run/hotserve-box-smoke.sh\n' >/run/systemd/system/$svc.d/smoke.conf
+systemctl daemon-reload
+res() { sed -n "s/^$1=//p" "$B/smoke-result"; }
+# One round: an entry made, a run that clears it — judged from inside
+# the unit and from outside — and the path unit waiting again. A round
+# "stopped" stops the path unit while the entry is made (it would fire
+# at the entry's first step) and starts it again, so it finds the entry
+# at once; any other round makes the entry while the path unit waits,
+# so its watch is what fires.
+box_round() { # <what> <maker: hotserve|root> <command> <stopped|waiting>
+	[ "$4" = stopped ] && systemctl stop hotserve-box-apply.path
+	rm -f "$B/smoke-result"
+	if [ "$2" = root ]; then sh -c "$3"; else as_hotserve "$3"; fi || die "could not make $1"
+	if [ "$4" = stopped ]; then
+		systemctl start hotserve-box-apply.path || die "$1: the path unit did not start: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
+	fi
+	i=0
+	until [ -s "$B/smoke-result" ] && grep -q '^left=' "$B/smoke-result" && [ "$(show $svc ActiveState)" = inactive ]; do
+		i=$((i + 1))
+		[ "$i" -ge 90 ] && die "$1: no run of the service within 45s: path $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' '), service $(systemctl show -p ActiveState,Result $svc | tr '\n' ' ')"
+		sleep 0.5
+	done
+	[ -z "$(res move)" ] && [ "$(res clear)" = 0 ] && [ "$(res left)" = 0 ] \
+		&& [ -z "$(find "$B/in" "$B/work" -mindepth 1)" ] && [ ! -e "$B/txn.json" ] \
+		|| die "$1: the run did not clear it: $(tr '\n' ' ' <"$B/smoke-result") left: $(find "$B/in" "$B/work" "$B/txn.json" -mindepth 0 2>/dev/null | tr '\n' ' ')"
+	wait_path_waiting "$1"
+	echo "$1: started a run, which cleared it"
+}
+# The path unit back to waiting, its last trigger a success.
+wait_path_waiting() { # <what>
+	i=0
+	until [ "$(show hotserve-box-apply.path SubState)" = waiting ] && [ "$(show hotserve-box-apply.path Result)" = success ]; do
+		i=$((i + 1))
+		[ "$i" -ge 20 ] && die "$1: the path unit is not waiting after the run: $(systemctl show -p ActiveState,SubState,Result hotserve-box-apply.path | tr '\n' ' ')"
+		sleep 0.5
+	done
+}
+# The probe, and the two capabilities that let a run clear what the
+# hotserve uid makes: a 000 directory (CAP_DAC_OVERRIDE) and a sticky
+# directory holding its file (CAP_FOWNER).
+: >/run/hotserve-box-smoke.probe
+box_round "a 000 directory in in/" hotserve "mkdir $B/in/x000 && touch $B/in/x000/f && chmod 000 $B/in/x000" stopped
+rm -f /run/hotserve-box-smoke.probe
+echo "inside the unit:"; sed 's/^/  /' "$B/smoke-result"
+[ "$(res reload)" = 0 ] || die "systemctl reload hotserve failed inside the applier's unit"
+[ "$(res verify)" = 0 ] || die "ssh-keygen -Y verify as uid 65534 under the unit's PrivateTmp failed"
+[ "$(res childuid)" = 65534 ] || die "the child to kill was uid '$(res childuid)', not 65534: the kill check would prove nothing"
+[ "$(res kill)" = 0 ] || die "the unit could not kill a uid-65534 child (CAP_KILL)"
+[ "$(res etc)" = 0 ] || die "the unit cannot write /etc/hotserve"
+[ "$(res varlibhotserve)" != 0 ] || die "the unit could write /var/lib/hotserve: ProtectSystem=strict is not in force"
+# The host's block devices, which the unit must not see: without one
+# out here, "none in there" would prove nothing.
+[ -n "$(find /dev -type b 2>/dev/null | head -1)" ] || die "this host has no block device under /dev; the PrivateDevices check would prove nothing"
+[ "$(res blockdevs)" = 0 ] || die "the unit sees $(res blockdevs) block devices: PrivateDevices=yes is not in force, and root opens a device it owns with no capability"
+[ "$(res sysctl)" != 0 ] || die "the unit could write a sysctl: ProtectKernelTunables=yes is not in force"
+[ "$(res cgroup)" != 0 ] || die "the unit could open the cgroup tree for writing: ProtectControlGroups=yes is not in force"
+[ "$(stat -c %G "$B/smoke-result")" = hotserve ] || die "a file root made in $B is not group hotserve: the setgid bit is missing"
+box_round "a sticky directory in in/" hotserve "mkdir $B/in/sticky && chmod 1777 $B/in/sticky && touch $B/in/sticky/f" stopped
+# Then one round for every path the manager says the path unit watches,
+# its entry renamed into place while the path unit waits, as the
+# handler and the applier write: for each glob, a name no other line of
+# its directory counts (systemd's DirectoryNotEmpty= skips names it takes
+# for hidden or backup files); the record itself; and a plain name for
+# DirectoryNotEmpty= — which <dir>/* counts too, so those two rounds
+# show the pair, not the line alone. in/ is filled by the hotserve uid
+# through stage/, the rest by root.
+n=0
+while read -r spec kind; do
+	dir=$spec
+	case "$kind" in
+	"(DirectoryNotEmpty)") entry=$dir/plain ;;
+	"(PathExists)") entry=$spec dir=$(dirname "$spec") ;;
+	"(PathExistsGlob)")
+		dir=$(dirname "$spec")
+		case "$(basename "$spec")" in
+		'*') entry=$dir/stale~ ;;
+		'.[!.]*') entry=$dir/.hidden ;;
+		'..?*') entry=$dir/..hidden ;;
+		*) die "no sample name for the glob $spec: add one here" ;;
+		esac ;;
+	*) die "a path spec of a kind this stage has no round for: $spec $kind" ;;
+	esac
+	maker=root tmp=$B/.smoke-entry
+	[ "$dir" = "$B/in" ] && maker=hotserve tmp=$B/stage/smoke-entry
+	box_round "$spec $kind" "$maker" "touch '$tmp' && mv '$tmp' '$entry'" waiting
+	n=$((n + 1))
+done <<<"$got_paths"
+[ "$n" -eq 9 ] || die "$n rounds, want one for each of the path unit's 9 paths"
+systemctl is-active --quiet hotserve || die "hotserve is not active after the reload inside the applier's unit"
+rm -f /run/systemd/system/$svc.d/smoke.conf "$B/smoke-result" /run/hotserve-box-smoke.sh
+rmdir /run/systemd/system/$svc.d
+systemctl daemon-reload
+wait_path_waiting "the path unit, its stub removed"
+echo "box applier: path unit enabled and waiting; tree as tmpfiles.d says; the unit reloads hotserve, verifies as 65534, kills its child; every path the unit watches starts a run that clears it"
+# The real applier in the unit as shipped, no stub: what the hotserve
+# uid drops that is not a bundle — a hidden 000 directory, a sticky
+# directory holding its file, a plain file — is taken and removed with
+# an error line and no result; an empty file named as a bundle is
+# refused when its bundle is read, its result written in out/ as the
+# Paths table says. The run exits 0, and the path unit waits again.
+bad_id=0123456789abcdef0123456789abcdef
+real_journal() { journalctl -u $svc --since "$since" --no-pager -o cat; }
+systemctl stop hotserve-box-apply.path
+since=$(date '+%Y-%m-%d %H:%M:%S')
+as_hotserve "mkdir $B/in/.x000 && touch $B/in/.x000/f && chmod 000 $B/in/.x000 && mkdir $B/in/sticky && chmod 1777 $B/in/sticky && touch $B/in/sticky/f $B/in/junk $B/in/$bad_id.tar" \
+	|| die "could not drop the real applier's entries into $B/in"
+systemctl start hotserve-box-apply.path || die "the path unit did not start: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
+# Done when the tree is clear and the service has stopped, either way:
+# a failed run is reported below, not as a timeout. The journal is
+# synced before it is counted, so a line still on its way is not missed.
+i=0
+until [ -z "$(find "$B/in" "$B/work" -mindepth 1)" ] && [ -e "$B/out/$bad_id.json" ] \
+	&& case "$(show $svc ActiveState)" in inactive | failed) true ;; *) false ;; esac; do
+	i=$((i + 1))
+	[ "$i" -ge 120 ] && die "the real applier did not clear in/ within 60s: in/work: $(find "$B/in" "$B/work" -mindepth 1 | tr '\n' ' ') service $(systemctl show -p ActiveState,Result,ExecMainStatus $svc | tr '\n' ' '); $(real_journal | tail -20)"
+	sleep 0.5
+done
+[ "$(show $svc Result)" = success ] && [ "$(show $svc ExecMainStatus)" = 0 ] \
+	|| die "the real applier's run did not end clean: $(systemctl show -p Result,ExecMainStatus $svc | tr '\n' ' '); $(real_journal | tail -20)"
+journalctl --sync
+removed=$(real_journal | grep -c 'removing an entry that is not a bundle' || true)
+[ "$removed" -eq 3 ] || die "the real applier named $removed entries that are not bundles, want 3: $(real_journal | tail -20)"
+[ "$(ls -A "$B/out")" = "$bad_id.json" ] || die "out/ holds $(ls -A "$B/out" | tr '\n' ' '), want only $bad_id.json: an entry that is not a bundle gets no result"
+got=$(stat -c '%a %U:%G' "$B/out/$bad_id.json")
+[ "$got" = "640 root:hotserve" ] || die "the real applier's result is '$got', want '640 root:hotserve' (Paths table)"
+grep -Eq '"phase": *"(failed|refused)"' "$B/out/$bad_id.json" || die "the result of a bundle that is not one is not terminal: $(cat "$B/out/$bad_id.json")"
+echo "  its result: $(cat "$B/out/$bad_id.json")"
+wait_path_waiting "the real applier's run"
+rm -f "$B/out/$bad_id.json"
+echo "the real applier, in the unit as shipped: three entries that are not bundles removed with no result, one bad bundle settled in out/ (640 root:hotserve), exit 0"
+
+# An unreadable record, with the real applier: each run journals it,
+# takes nothing, ends with the left-on-disk line (the restart remedy)
+# and exits 0, so the path unit starts the next at once
+# and ends at its trigger limit; removing the record does not start it
+# again, and `systemctl restart hotserve-box-apply.path`, once the
+# limit's ten seconds have passed, does (DESIGN-box.md, "Why the path
+# unit cannot loop"). The record is written the way root writes one, by
+# rename.
+since=$(date '+%Y-%m-%d %H:%M:%S')
+t0=$(date +%s)
+printf 'not a record\n' >"$B/.smoke-txn" && mv "$B/.smoke-txn" "$B/txn.json"
+i=0
+until [ "$(show hotserve-box-apply.path Result)" = trigger-limit-hit ]; do
+	i=$((i + 1))
+	[ "$i" -ge 120 ] && die "an unreadable record did not end at the trigger limit within 60s: path $(systemctl show -p ActiveState,SubState,Result hotserve-box-apply.path | tr '\n' ' '); $(real_journal | tail -5)"
+	sleep 0.5
+done
+t1=$(date +%s)
+journalctl --sync
+runs=$(real_journal | grep -c 'txn.json cannot be read' || true)
+[ "$runs" -ge 1 ] || die "the path unit hit its trigger limit, but no run journaled the unreadable record"
+real_journal | grep 'box apply leaves work on disk' | grep -qF '"left":["txn.json"]' || die "no run ended with the left-on-disk line counting the record"
+real_journal | grep -q 'once the console has cleared the cause, systemctl restart hotserve-box-apply.path, and again ten seconds later if that fails' || die "the left-on-disk line does not name the restart the console needs, and when"
+echo "an unreadable record: $runs runs, then trigger-limit-hit, within $((t1 - t0 + 1))s"
+rm -f "$B/txn.json"
+sleep 2
+[ "$(show hotserve-box-apply.path ActiveState)" = failed ] \
+	|| die "the path unit left trigger-limit-hit with no restart: $(systemctl show -p ActiveState,SubState,Result hotserve-box-apply.path | tr '\n' ' ')"
+while [ "$(date +%s)" -le $((t1 + 11)) ]; do sleep 1; done
+systemctl restart hotserve-box-apply.path || die "systemctl restart hotserve-box-apply.path failed past the limit's ten seconds"
+wait_path_waiting "the path unit, restarted after the record was removed"
+echo "removing the record left the path unit failed; systemctl restart started it again"
+
 stage "stage 2: liveswap deploy under the systemd sandbox"
 # Generate a local deploy keypair; the app trusts the public half, and
 # we mint the deploy bearer with the private half. The service (User=
@@ -173,8 +517,8 @@ hotserve deploy-keygen --out /etc/hotserve/deploy.key
 mgr_pid=$(systemctl show -p MainPID --value "user@$uid.service")
 [ -n "$mgr_pid" ] && [ "$mgr_pid" != "0" ] || die "no MainPID for user@$uid.service"
 
-# Overwriting the packaged conffile doubles as the modification marker
-# for the stage-3 config|noreplace assertion.
+# Overwriting the starter makes this a configured box, whose file
+# stages 3 and 5 prove no upgrade touches.
 cat > /etc/hotserve/Caddyfile <<'EOF'
 {
 	admin unix//run/hotserve/admin.sock
@@ -352,12 +696,23 @@ app_hard=$(probe_val nofile_hard)
 app_nofile=$app_soft
 sd_version=$(systemctl --version | awk 'NR==1 {print $2}')
 # The user@<uid> drop-in only reaches the manager from systemd 256 (#37);
-# the support matrix is Debian 13 (257), so this is unconditional.
+# the package requires 257, so this is unconditional.
 [ "${sd_version%%[!0-9]*}" -ge 256 ] \
-	|| die "systemd $sd_version is below the supported floor of 256 (Debian 13 ships 257)"
+	|| die "systemd $sd_version is below 256, where the user@ drop-in does not reach the manager (#37)"
 [ "$mgr_nofile" = "1048576" ] \
 	|| die "systemd $sd_version: user@$uid DefaultLimitNOFILE is $mgr_nofile, not the drop-in's 1048576"
 echo "app NOFILE $app_nofile = user@$uid DefaultLimitNOFILE = the drop-in's 1048576 (systemd $sd_version)"
+# No core dump of a crashed app: LimitCORE=0 on both limits
+# (liveswap/systemd_dbus.go; the why is in DESIGN-threat-model.md,
+# "Where env_file values sit"). The unit's property, then the limit
+# the app itself saw from inside.
+[ "$(user_systemctl show -p LimitCORE --value "$unit")" = "0" ] \
+	|| die "app unit LimitCORE is '$(user_systemctl show -p LimitCORE --value "$unit")', want 0: a crash could write the app's memory to disk"
+[ "$(user_systemctl show -p LimitCORESoft --value "$unit")" = "0" ] \
+	|| die "app unit LimitCORESoft is '$(user_systemctl show -p LimitCORESoft --value "$unit")', want 0"
+expect_probe core_soft 0
+expect_probe core_hard 0
+echo "app core-dump limit 0/0: a crash writes no dump"
 echo "deployed as unit $unit under user@$uid; app output in the journal"
 
 # The sandbox tier: full — a PID namespace on top of the user namespace
@@ -552,10 +907,10 @@ for u in hotserve-backup.service hotserve-backup-drill.service; do
 	[ "$(systemctl show -p ActiveState --value "$u")" = inactive ] && [ "$(systemctl show -p Result --value "$u")" = success ] \
 		|| die "$u after install: $(systemctl show -p ActiveState,Result "$u" | tr '\n' ' ') — nothing may start before setup"
 done
-grep -q "sudo hotserve-backup setup <repository>" /tmp/install.log \
+grep -q "sudo hotserve-backup setup <repository>" /tmp/install.out \
 	|| die "postinstall did not say that the timers wait for setup"
-grep -q "refuse that account" /tmp/install.log \
-	&& die "postinstall warned of the account it had just made: $(grep hotserve-backup /tmp/install.log)" || true
+grep -q "refuse that account" /tmp/install.out \
+	&& die "postinstall warned of the account it had just made: $(grep hotserve-backup /tmp/install.out)" || true
 hotserve-backup account >/dev/null || die "the account postinstall made is not one setup accepts: $(hotserve-backup account 2>&1)"
 echo "the package's own: restic and sqlite3 by Recommends, the account, the units, the timers enabled and waiting"
 
@@ -680,7 +1035,7 @@ snaps=$(systemd-run --quiet --pipe --wait --collect -p User=hotserve-backup -p E
 curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "the app is not served after the backups"
 echo "the guide's lines ran as written, as the administrator: validate, reload, setup, a run, status, a restore --to, a restore into place with its pre-restore snapshot"
 
-stage "stage 3: reinstall — upgrade path, conffile preservation, app survival"
+stage "stage 3: reinstall — upgrade path, the box's config kept, app survival"
 pid_before=$(printf '%s' "$status" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')
 [ -n "$pid_before" ] || die "status missing pid: $status"
 # The account already exists by definition on a reinstall, which is the
@@ -696,11 +1051,49 @@ usermod -g smoketest-other hotserve \
 	|| die "could not move the hotserve account off its primary group; the reinstall assertion below would be vacuous"
 id -nG hotserve | tr ' ' '\n' | grep -qx hotserve \
 	&& die "the hotserve account is still in the hotserve group; the reinstall assertion below would be vacuous"
-dpkg -i "$deb"
+# The box applier across the upgrade: an administrator's disable is kept
+# (deb-systemd-helper's was-enabled), and a tree that drifted is put
+# back by postinstall's systemd-tmpfiles.
+systemctl disable --now hotserve-box-apply.path
+chmod 0777 "$B/in"
+# Five digits: GNU chmod keeps a directory's setgid bit for a
+# four-digit mode, and the bit is what tmpfiles.d must put back.
+chmod 00755 "$B"
+chown hotserve "$B/out"
+cp "$CONFIG" /tmp/Caddyfile.configured
+# stdin from /dev/null and no --force-conf*: a question would end at
+# EOF and fail the install.
+dpkg -i "$deb" </dev/null >/tmp/reinstall.out 2>/tmp/reinstall.err \
+	|| { cat /tmp/reinstall.out /tmp/reinstall.err; die "reinstall (dpkg -i) failed"; }
+cat /tmp/reinstall.out /tmp/reinstall.err
+# hotserve is enabled and running: the start hint would be noise, and a
+# restart that went fine must not read as one that failed.
+grep -q 'enable --now' /tmp/reinstall.out /tmp/reinstall.err \
+	&& die "reinstall over an enabled hotserve printed the 'enable --now' start hint"
+grep -q 'journalctl -u hotserve' /tmp/reinstall.err \
+	&& die "reinstall printed the failed-restart hint although the restart succeeded"
+grep -qx 'hotserve restarted.' /tmp/reinstall.out \
+	|| die "reinstall over a running hotserve did not say it restarted"
 id -nG hotserve | tr ' ' '\n' | grep -qx hotserve \
 	|| die "reinstall did not restore the hotserve user's group membership: the package's group-owned directories would be unreachable"
-grep -q liveswap_webhook /etc/hotserve/Caddyfile \
-	|| die "reinstall clobbered the modified /etc/hotserve/Caddyfile (config|noreplace broken)"
+cmp -s /tmp/Caddyfile.configured "$CONFIG" \
+	|| die "reinstall changed the configured $CONFIG"
+[ "$(cat "$RECORD")" = "$(sha "$STARTER")" ] \
+	|| die "reinstall over a configured box changed the record"
+[ "$(systemctl is-enabled hotserve-box-apply.path)" = disabled ] \
+	|| die "an upgrade re-enabled the box applier's path unit an administrator disabled"
+systemctl is-active --quiet hotserve-box-apply.path \
+	&& die "an upgrade started the box applier's path unit an administrator disabled"
+for d in "$B 2750 root:hotserve" "$B/in 770 root:hotserve" "$B/out 2750 root:hotserve"; do
+	read -r p want_mode want_owner <<<"$d"
+	got=$(stat -c '%a %U:%G' "$p")
+	[ "$got" = "$want_mode $want_owner" ] || die "$p is '$got' after the upgrade, want '$want_mode $want_owner': postinstall's systemd-tmpfiles did not put it back"
+done
+systemctl enable --now hotserve-box-apply.path
+# The upgrade's postinstall ran hotserve box key again: the key is the
+# one the install made, never replaced.
+[ "$(hotserve box key 2>/dev/null)" = "$box_key" ] || die "an upgrade replaced the box's key for secrets"
+[ "$(cat /etc/hotserve/age.pub)" = "$box_key" ] || die "an upgrade rewrote age.pub with another key"
 systemctl is-active --quiet hotserve \
 	|| die "service not active after reinstall — an upgrade must not leave the server down (preremove stop / missing postinstall restart)"
 id hotserve >/dev/null || die "hotserve user gone after reinstall (postinstall not idempotent)"
@@ -881,6 +1274,77 @@ hotserve-backup account >/dev/null || die "hotserve's account is not accepted: $
 systemctl start hotserve-backup.service || die "a run after the account was hotserve's again failed: $(journalctl -u hotserve-backup.service --no-pager | tail -20)"
 echo "an account hotserve did not make: warned of at the upgrade in setup's words, refused by a run, accepted once it is hotserve's"
 
+stage "stage 3b: prerm deconfigure is not removal"
+# dpkg runs `prerm deconfigure` when a dependency (dbus, libpam-systemd)
+# is swapped out mid-dist-upgrade; the package stays installed and no
+# later maintainer script re-enables the service. Calling the installed
+# script directly is the only way to reach that path without a real
+# conflicting package.
+prerm=/var/lib/dpkg/info/hotserve.prerm
+[ -x "$prerm" ] || die "installed prerm not found at $prerm"
+main_before=$(systemctl show -P MainPID hotserve)
+"$prerm" deconfigure in-favour smoketest-dep 1.0 removing dbus 1.0 \
+	|| die "prerm deconfigure exited non-zero"
+systemctl is-active --quiet hotserve || die "prerm deconfigure stopped hotserve"
+systemctl is-enabled --quiet hotserve || die "prerm deconfigure disabled hotserve"
+[ "$(systemctl show -P MainPID hotserve)" = "$main_before" ] || die "prerm deconfigure restarted hotserve"
+systemctl is-active --quiet "user@$uid.service" || die "prerm deconfigure stopped the user manager (and every app)"
+[ -e /etc/systemd/system/hotserve.service.d/10-user-manager.conf ] || die "prerm deconfigure removed the user-manager drop-in"
+[ -e "/etc/systemd/system/user@$uid.service.d/10-hotserve.conf" ] || die "prerm deconfigure removed the user@ limits drop-in"
+[ -e /var/lib/systemd/linger/hotserve ] || die "prerm deconfigure disabled lingering"
+kill -0 "$pid_after" 2>/dev/null || die "deployed app (pid $pid_after) did not survive prerm deconfigure"
+curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "app not served after prerm deconfigure"
+echo "prerm deconfigure left the service, the user manager and the app (pid $pid_after) running"
+
+stage "stage 3c: an upgrade restart the new version refuses is reported"
+# An upgrade whose config the new binary refuses stops the old one and
+# fails to start the new: the site is down. postinstall must say so on
+# stderr — and still exit 0, or the package is left half-configured.
+# A subdirective no version accepts stands in for one an upgrade stops
+# accepting; reinstalling the same .deb runs the same try-restart.
+cp /etc/hotserve/Caddyfile /tmp/Caddyfile.good
+sed -i '/^[[:space:]]*liveswap {$/a smoke_retired_option on' /etc/hotserve/Caddyfile
+hotserve adapt --config /etc/hotserve/Caddyfile >/dev/null 2>&1 \
+	&& die "the broken Caddyfile adapts; the failed-restart assertions below would be vacuous"
+dpkg -i "$deb" >/tmp/refused.out 2>/tmp/refused.err \
+	|| { cat /tmp/refused.out /tmp/refused.err; die "dpkg -i exited non-zero over a refused config: a failed restart must not fail the package"; }
+cat /tmp/refused.out /tmp/refused.err
+[ "$(dpkg-query -W -f='${Status}' hotserve)" = "install ok installed" ] \
+	|| die "package state is '$(dpkg-query -W -f='${Status}' hotserve)' after a refused restart, want 'install ok installed'"
+systemctl is-active --quiet hotserve \
+	&& die "hotserve is active after a restart over a refused config; this stage tests nothing"
+grep -q 'journalctl -u hotserve -e' /tmp/refused.err \
+	|| die "a failed upgrade restart printed no journalctl hint on stderr (postinstall swallowed it)"
+grep -q 'systemctl status hotserve' /tmp/refused.err \
+	|| die "a failed upgrade restart printed no systemctl status hint on stderr"
+grep -q 'enable --now' /tmp/refused.out /tmp/refused.err \
+	&& die "a failed upgrade restart printed the 'enable --now' start hint, as if all were well"
+grep -q 'restarted\.' /tmp/refused.out \
+	&& die "a failed upgrade restart claimed hotserve restarted"
+kill -0 "$pid_after" 2>/dev/null || die "deployed app (pid $pid_after) did not survive hotserve's refused start"
+# The box applier's path unit, enabled again after stage 3, is restarted
+# by the upgrade whatever became of hotserve.
+[ "$(systemctl is-enabled hotserve-box-apply.path)" = enabled ] && systemctl is-active --quiet hotserve-box-apply.path \
+	|| die "the box applier's path unit is not enabled and active after an upgrade: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
+# Recover the way the hint says, so stage 4 starts from a serving box.
+# reset-failed first: stages 3 to 3c started the unit often enough in
+# a few seconds to reach systemd's start limit (5 in 10 s), which an
+# operator fixing the config by hand would have long outlived.
+cp /tmp/Caddyfile.good /etc/hotserve/Caddyfile
+systemctl reset-failed hotserve
+timeout 300 systemctl restart hotserve || die "hotserve did not start again on the restored config"
+i=0
+until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HOOK")" = "200" ]; do
+	i=$((i + 1))
+	[ "$i" -ge 30 ] && die "webhook not back within 30s of the recovery restart"
+	sleep 1
+done
+status=$(curl -s --max-time 5 -H "Authorization: Bearer $TOKEN" "$HOOK")
+[ "$(printf '%s' "$status" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')" = "$pid_after" ] \
+	|| die "app pid changed across the refused restart and recovery: reattach failed: $status"
+curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "app not served after recovery"
+echo "refused restart: dpkg exit 0, hint on stderr, no start hint; recovered and reattached to pid $pid_after"
+
 stage "stage 4: removal"
 # What remove has to take with it, staged: the persistent timers'
 # stamps, eight days old — a reinstall beside the credential file
@@ -926,13 +1390,34 @@ grep -q " /run/hotserve-backup/" /proc/self/mountinfo \
 echo "remove took the timers' stamps, and the engine's sweep a killed run's mount and its directory, and nothing of the app's"
 systemctl is-active --quiet hotserve && die "service still active after remove (preremove did not stop it)" || true
 [ ! -e /usr/bin/hotserve ] || die "/usr/bin/hotserve still present after remove"
-[ -f /etc/hotserve/Caddyfile ] || die "conffile deleted on remove (should survive until purge)"
+cmp -s /tmp/Caddyfile.configured "$CONFIG" || die "remove changed or deleted $CONFIG"
+[ -f "$RECORD" ] || die "remove deleted the record"
 systemctl is-active --quiet "user@$uid.service" && die "user manager still running after remove (apps would linger)" || true
 [ ! -e /etc/systemd/system/hotserve.service.d/10-user-manager.conf ] || die "user-manager drop-in left behind"
 [ ! -e "/etc/systemd/system/user@$uid.service.d/10-hotserve.conf" ] || die "user@ limits drop-in left behind"
 [ ! -e /var/lib/systemd/linger/hotserve ] || die "lingering left enabled"
 kill -0 "$pid_after" 2>/dev/null && die "deployed app (pid $pid_after) survived package removal" || true
-echo "removal stopped the service and the apps, kept the conffile"
+systemctl is-active --quiet hotserve-box-apply.path && die "the box applier's path unit is still active after remove (preremove did not stop it)" || true
+[ ! -e /lib/systemd/system/hotserve-box-apply.path ] && [ ! -e /lib/systemd/system/hotserve-box-apply.service ] \
+	|| die "the box applier's units are still installed after remove"
+# postremove's daemon-reload, run after dpkg removed the unit files:
+# the manager no longer loads them. The path unit is masked, as
+# dh_installsystemd has it, until an install unmasks it (stage 5 finds
+# it enabled and active again); the mask is a /dev/null link where the
+# unit file was, and deb-systemd-helper's note of it is what lets
+# postinstall take it off without undoing an administrator's own mask.
+for u in hotserve.service hotserve-box-apply.service; do
+	[ "$(systemctl show -p LoadState --value "$u")" = not-found ] \
+		|| die "$u is still loaded after remove ($(systemctl show -p LoadState,FragmentPath --value "$u" | tr '\n' ' ')): postremove did not reload the manager"
+	[ -z "$(systemctl list-unit-files --no-legend "$u" 2>/dev/null)" ] \
+		|| die "$u is still a unit file after remove: $(systemctl list-unit-files --no-legend "$u")"
+done
+[ "$(systemctl is-enabled hotserve-box-apply.path 2>/dev/null)" = masked ] \
+	|| die "hotserve-box-apply.path is '$(systemctl is-enabled hotserve-box-apply.path 2>&1)' after remove, want masked (postremove's deb-systemd-helper mask)"
+[ "$(readlink /etc/systemd/system/hotserve-box-apply.path)" = /dev/null ] \
+	|| die "the mask of hotserve-box-apply.path is not a /dev/null link in /etc/systemd/system"
+[ -e /var/lib/systemd/deb-systemd-helper-masked/hotserve-box-apply.path ] \
+	|| die "deb-systemd-helper did not note the mask: postinstall's unmask would leave the path unit masked"
 # The table's remove row: the timers stopped and masked, the unit files
 # gone, the credential file and the account kept.
 expect_backup_state "after remove" masked inactive "$CRED_SHA"
@@ -942,10 +1427,18 @@ done
 systemctl is-active --quiet hotserve-backup.service && die "a backup run is still active after remove" || true
 getent passwd hotserve-backup >/dev/null || die "the hotserve-backup account was removed with the package"
 [ ! -e /usr/bin/hotserve-backup ] || die "/usr/bin/hotserve-backup still present after remove"
+echo "removal stopped the service, the apps and the box applier's path unit, kept the config and the record; the units unloaded, the path unit masked; the backup timers masked, the credential file and the account kept"
 
-stage "stage 5: reinstall after remove, and purge"
+stage "stage 5: install again after removal, a backup run, and purge"
+# preremove stops the path unit and does not disable it, so an install
+# after a removal finds it enabled and starts it; a disable there would
+# have left the applier off for good.
 : >/tmp/before-reinstall
-apt-get install -y "$deb" >/tmp/reinstall.log 2>&1 || { cat /tmp/reinstall.log; die "reinstall after remove failed"; }
+apt-get install -y "$deb" >/tmp/again.out 2>&1 || { cat /tmp/again.out; die "install after removal failed"; }
+[ "$(systemctl is-enabled hotserve-box-apply.path)" = enabled ] && systemctl is-active --quiet hotserve-box-apply.path \
+	|| die "after remove and install, the box applier's path unit is '$(systemctl is-enabled hotserve-box-apply.path)', $(systemctl is-active hotserve-box-apply.path); want enabled and active"
+cmp -s /tmp/Caddyfile.configured "$CONFIG" || die "an install after removal changed the configured $CONFIG"
+echo "install after removal: the path unit enabled and active again; the configured $CONFIG kept"
 expect_backup_state "reinstalled after remove" enabled active "$CRED_SHA"
 # The stamps are new: written by the timers' first activation, which
 # fires nothing [M61]. With the old ones the drill's next elapse is the
@@ -1036,13 +1529,297 @@ for u in $TIMERS; do
 	[ ! -e "/etc/systemd/system/timers.target.wants/$u" ] || die "purge left $u enabled"
 	[ ! -e "/var/lib/systemd/deb-systemd-helper-enabled/$u.dsh-also" ] || die "purge left the helper's state for $u"
 done
-[ ! -f /etc/hotserve/Caddyfile ] || die "purge left the conffile"
+[ ! -f "$CONFIG" ] || die "purge left $CONFIG"
 for u in $TIMERS; do
 	[ ! -e "/var/lib/systemd/timers/stamp-$u" ] || die "purge left the stamp of $u"
 done
 echo "purge kept the credential file and said why, removed the package's own state, the cache, the stamps and a killed run's mounts, kept the account"
 
-stage "stage 6: an account that cannot be made, a command under way at purge, and what purge keeps"
+stage "stage 5b: the starter across upgrades"
+# Upgrades never ask about $CONFIG: postinstall installs the starter
+# where nothing stands, replaces it only while it is byte-identical to
+# the starter it last wrote (the record), and leaves anything else
+# alone. hotserve is disabled and stopped since stage 5's purge, so no
+# postinstall here restarts it.
+systemctl is-active --quiet hotserve && die "hotserve is running; stage 5b expects it stopped" || true
+rm -f "$CONFIG"
+dpkg -i "$deb" </dev/null >/tmp/starter.out 2>&1 || { cat /tmp/starter.out; die "reinstall over a missing $CONFIG failed"; }
+cmp -s "$STARTER" "$CONFIG" || die "a missing $CONFIG was not restored from the starter"
+[ "$(cat "$RECORD")" = "$(sha "$STARTER")" ] || die "restoring the starter did not record it"
+echo "a missing $CONFIG: the starter restored and recorded"
+
+# A newer package whose starter changed: this one, repacked.
+cp "$STARTER" /tmp/starter.prev
+rm -rf /tmp/repack
+dpkg-deb -R "$deb" /tmp/repack
+printf '# smoke: a changed starter\n' >>/tmp/repack/usr/share/hotserve/Caddyfile
+sed -i 's/^Version: .*/&+smoke1/' /tmp/repack/DEBIAN/control
+(cd /tmp/repack && find . -path ./DEBIAN -prune -o -type f -printf '%P\0' | xargs -0 md5sum >DEBIAN/md5sums)
+dpkg-deb -b /tmp/repack /tmp/hotserve-smoke1.deb >/dev/null || die "could not repack the .deb with a changed starter"
+dpkg -i /tmp/hotserve-smoke1.deb </dev/null >/tmp/starter.out 2>&1 \
+	|| { cat /tmp/starter.out; die "the upgrade to a changed starter failed (a question at EOF fails it)"; }
+grep -q 'Configuration file' /tmp/starter.out && { cat /tmp/starter.out; die "the upgrade to a changed starter asked about a config file"; }
+tail -n 1 "$STARTER" | grep -qx '# smoke: a changed starter' || die "the repacked .deb did not ship the changed starter"
+cmp -s "$STARTER" "$CONFIG" || die "a stock $CONFIG was not replaced by the changed starter"
+got=$(stat -c '%U:%G %a %F' "$CONFIG")
+[ "$got" = "root:root 644 regular file" ] || die "the replaced $CONFIG is '$got', want 'root:root 644 regular file'"
+[ "$(cat "$RECORD")" = "$(sha "$STARTER")" ] || die "the record does not name the starter just written"
+echo "a stock $CONFIG: replaced by the changed starter, with no question, and recorded"
+
+# Each case below runs the installed postinst directly, the way stage
+# 3b runs prerm: each is the state an upgrade would find.
+ver=$(dpkg-query -W -f='${Version}' hotserve)
+postinst() {
+	/var/lib/dpkg/info/hotserve.postinst configure "$ver" </dev/null >/tmp/postinst.out 2>&1 \
+		|| { cat /tmp/postinst.out; die "postinst exited non-zero over $1"; }
+}
+want=$(sha "$STARTER")
+
+printf '# an operator was here\n' >>"$CONFIG"
+cp "$CONFIG" /tmp/edited
+postinst "an edited $CONFIG"
+cmp -s /tmp/edited "$CONFIG" || die "postinst changed an edited $CONFIG"
+[ "$(cat "$RECORD")" = "$want" ] || die "postinst changed the record over an edited $CONFIG"
+echo "an edited $CONFIG: untouched"
+
+# A crash between the rename and the record: the starter on disk, the
+# record still the previous one's. The next run heals the record, or
+# the box would look edited for good.
+cp "$STARTER" "$CONFIG"
+sha /tmp/starter.prev >"$RECORD"
+ino=$(stat -c %i "$CONFIG")
+postinst "a crash between the rename and the record"
+[ "$(cat "$RECORD")" = "$want" ] || die "postinst did not heal a record left behind by a crash"
+[ "$(stat -c %i "$CONFIG")" = "$ino" ] && cmp -s "$STARTER" "$CONFIG" || die "healing the record rewrote $CONFIG"
+echo "a crash between the rename and the record: the record healed, $CONFIG not rewritten"
+
+# A symlink is never followed, even to bytes the record names: here a
+# followed link would be replaced.
+rm -f "$CONFIG"
+cp /tmp/starter.prev /tmp/linked
+sha /tmp/linked >"$RECORD"
+ln -s /tmp/linked "$CONFIG"
+postinst "a symlink"
+[ "$(readlink "$CONFIG")" = /tmp/linked ] || die "postinst replaced a symlinked $CONFIG"
+cmp -s /tmp/starter.prev /tmp/linked || die "postinst wrote through a symlinked $CONFIG"
+rm -f "$CONFIG"
+ln -s /nonexistent/Caddyfile "$CONFIG"
+postinst "a dangling symlink"
+[ "$(readlink "$CONFIG")" = /nonexistent/Caddyfile ] && [ ! -e /nonexistent ] \
+	|| die "postinst replaced or followed a dangling symlink at $CONFIG"
+rm -f "$CONFIG"
+mkdir "$CONFIG"
+postinst "a directory"
+[ -d "$CONFIG" ] && [ -z "$(ls -A "$CONFIG")" ] || die "postinst changed a directory at $CONFIG"
+rmdir "$CONFIG"
+echo "a symlink, a dangling symlink, a directory: untouched"
+
+# Without a record that names it, a file that is not the starter is
+# left alone: a garbled record, and none at all.
+cp /tmp/starter.prev "$CONFIG"
+echo garbage >"$RECORD"
+postinst "a garbled record"
+cmp -s /tmp/starter.prev "$CONFIG" || die "postinst replaced $CONFIG on a garbled record"
+[ "$(cat "$RECORD")" = garbage ] || die "postinst rewrote a garbled record although it wrote no starter"
+rm -f "$RECORD"
+postinst "no record"
+cmp -s /tmp/starter.prev "$CONFIG" || die "postinst replaced $CONFIG with no record"
+[ ! -e "$RECORD" ] || die "postinst wrote a record although it wrote no starter"
+echo "a garbled record, no record: $CONFIG untouched"
+ls -A /etc/hotserve | grep -q '^\.Caddyfile\.package-' && die "postinst left a temporary in /etc/hotserve" || true
+
+# postinst sweeps a crash's temporaries; a directory by one of their
+# names is not its to remove, and must not fail the install.
+mkdir /etc/hotserve/.Caddyfile.package-smoke "$RECORD.smoke"
+postinst "directories named like its temporaries"
+[ -d /etc/hotserve/.Caddyfile.package-smoke ] && [ -d "$RECORD.smoke" ] \
+	|| die "postinst removed a directory named like its temporaries"
+rmdir /etc/hotserve/.Caddyfile.package-smoke "$RECORD.smoke"
+echo "directories named like its temporaries: left, and postinst exits 0"
+
+# A directory at a temporary's exact name: made under the PID postinst
+# will run as (exec keeps the shell's, and the script's $$ is it). The
+# install goes on, saying why, and nothing is written into the
+# directory, over it or in its place.
+postinst_colliding() {
+	sh -c 'mkdir -m 0755 "$1$$" && exec "$2" configure "$3"' sh "$1" /var/lib/dpkg/info/hotserve.postinst "$ver" \
+		</dev/null >/tmp/postinst.out 2>&1 \
+		|| { cat /tmp/postinst.out; die "postinst exited non-zero with a directory at its temporary $1<pid>"; }
+	collided=$(ls -d "$1"[0-9]*) || die "no directory at $1<pid>: the collision tested nothing"
+	[ "$(stat -c '%a %F' "$collided")" = "755 directory" ] && [ -z "$(ls -A "$collided")" ] \
+		|| die "postinst changed the directory at $collided: $(stat -c '%a %F' "$collided"); holds: $(ls -A "$collided")"
+	rmdir "$collided"
+}
+cp /tmp/starter.prev "$CONFIG"
+sha /tmp/starter.prev >"$RECORD"
+postinst_colliding /etc/hotserve/.Caddyfile.package-
+cmp -s /tmp/starter.prev "$CONFIG" || die "postinst changed a stock $CONFIG although its temporary was a directory"
+[ "$(cat "$RECORD")" = "$(sha /tmp/starter.prev)" ] || die "postinst recorded a starter it did not install"
+grep -q 'could not install the starter config' /tmp/postinst.out || die "postinst did not say it could not install the starter"
+rm -f "$CONFIG"
+postinst_colliding /etc/hotserve/.Caddyfile.package-
+[ ! -e "$CONFIG" ] && [ ! -L "$CONFIG" ] \
+	|| die "postinst put a $(stat -c %F "$CONFIG") at a missing $CONFIG although its temporary was a directory"
+[ "$(cat "$RECORD")" = "$(sha /tmp/starter.prev)" ] || die "postinst recorded a starter it did not install"
+grep -q 'could not install the starter config' /tmp/postinst.out || die "postinst did not say it could not install the starter"
+# The starter on disk and a stale record: postinst writes only the record.
+cp "$STARTER" "$CONFIG"
+postinst_colliding "$RECORD."
+[ "$(cat "$RECORD")" = "$(sha /tmp/starter.prev)" ] || die "the record changed although its temporary was a directory"
+cmp -s "$STARTER" "$CONFIG" || die "postinst changed $CONFIG while failing to write the record"
+grep -q "could not write $RECORD durably" /tmp/postinst.out || die "postinst did not say it could not write the record"
+echo "a directory at a temporary's exact name: left as it was, $CONFIG and the record unchanged, postinst exits 0 and says why"
+
+apt-get remove -y hotserve >/dev/null
+systemctl is-active --quiet hotserve-box-apply.path && die "the second remove left the path unit active" || true
+echo "stage 5b: removed again; the path unit stopped"
+
+stage "stage 6: purge"
+# postremove on purge removes what the package made and nothing else
+# holds — the box's config, the starter's record, the box applier's
+# exchange tree, the path unit's enable state and its mask — and never
+# Caddy's state, the deployed apps' data or the account. The box's key
+# for secrets stays in /etc/hotserve, and the purge says so on stderr.
+# Each path is checked to be there first, so that "gone" proves the
+# purge removed it; the installed postrm is copied for the mount case
+# below, since dpkg removes the script with the purge.
+cp /var/lib/dpkg/info/hotserve.postrm /tmp/hotserve.postrm
+: >/var/lib/hotserve/smoke-state
+for p in "$CONFIG" "$RECORD" "$B/in" "$B/out" /etc/hotserve/age/identity "$view" \
+	/var/lib/liveswap/other/shared/secret /var/lib/systemd/deb-systemd-helper-enabled/hotserve-box-apply.path.dsh-also \
+	/var/lib/systemd/deb-systemd-helper-masked/hotserve-box-apply.path; do
+	[ -e "$p" ] || die "the purge would prove nothing: $p is already gone"
+done
+apt-get purge -y hotserve >/tmp/purge.out 2>&1 || { cat /tmp/purge.out; die "apt-get purge failed"; }
+cat /tmp/purge.out
+case "$(dpkg-query -W -f='${Status}' hotserve 2>/dev/null)" in
+'' | *not-installed) : ;;
+*) die "hotserve is still '$(dpkg-query -W -f='${Status}' hotserve)' after purge" ;;
+esac
+[ ! -e "$CONFIG" ] && [ ! -L "$CONFIG" ] || die "purge left $CONFIG"
+[ ! -e "${RECORD%/*}" ] || die "purge left ${RECORD%/*}"
+[ ! -e "$B" ] || die "purge left $B: $(find "$B" | tr '\n' ' ')"
+[ -f /var/lib/hotserve/smoke-state ] || die "purge removed /var/lib/hotserve, Caddy's state"
+[ -f "$view" ] && [ -f /var/lib/liveswap/other/shared/secret ] || die "purge removed the apps' data under /var/lib/liveswap"
+id hotserve >/dev/null || die "purge removed the hotserve account"
+[ -f /etc/hotserve/age/identity ] && [ "$(cat /etc/hotserve/age.pub)" = "$box_key" ] \
+	|| die "purge removed the box's key for secrets, the one way to read the secrets its repository holds"
+grep -q 'kept /etc/hotserve: it still holds' /tmp/purge.out || die "the purge did not say it kept /etc/hotserve"
+grep -q 'age/identity is the box.s key for secrets' /tmp/purge.out || die "the purge did not name the key it kept"
+# The path unit's enable state and mask: gone, so a later install
+# starts from nothing (postinstall's was-enabled is true with no state).
+st=$(systemctl is-enabled hotserve-box-apply.path 2>&1) && die "hotserve-box-apply.path is still '$st' after purge" || true
+[ "$st" != masked ] || die "purge left hotserve-box-apply.path masked"
+[ "$(systemctl show -p LoadState --value hotserve-box-apply.path)" = not-found ] \
+	|| die "hotserve-box-apply.path is '$(systemctl show -p LoadState --value hotserve-box-apply.path)' after purge, want not-found"
+for p in /etc/systemd/system/hotserve-box-apply.path /etc/systemd/system/multi-user.target.wants/hotserve-box-apply.path \
+	/var/lib/systemd/deb-systemd-helper-enabled/hotserve-box-apply.path.dsh-also /var/lib/systemd/deb-systemd-helper-masked/hotserve-box-apply.path; do
+	[ ! -e "$p" ] && [ ! -L "$p" ] || die "purge left $p"
+done
+echo "purge: config, record and exchange tree gone; the key, Caddy's state, the apps' data and the account kept; the path unit's state and mask gone"
+
+# A mount at or under the exchange tree: nothing is removed through
+# it, the tree is kept whole and named, and the script still exits 0.
+# The tree is made again by hand and the saved postrm run as dpkg
+# runs it.
+mkdir -p "$B/work"
+mount -t tmpfs -o size=1m smoke "$B/work" || die "could not mount a tmpfs under $B; the mount case would prove nothing"
+: >"$B/work/through-the-mount"
+: >"$B/beside-the-mount"
+sh /tmp/hotserve.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with a mount under $B"; }
+[ -f "$B/work/through-the-mount" ] && [ -f "$B/beside-the-mount" ] \
+	|| die "postrm purge removed through or beside a mount under $B; left: $(find "$B" | tr '\n' ' ')"
+grep -q "kept $B: something is mounted at or under it" /tmp/postrm.out \
+	|| die "postrm purge did not say it kept $B: $(cat /tmp/postrm.out)"
+umount "$B/work"
+rm -rf "$B"
+echo "a mount under $B: postrm purge kept the tree whole, said so, exit 0"
+
+# The mount table names a mount point by its physical path. A tree
+# reached through a symlinked ancestor (/var -> /srv/var) must still be
+# seen as mounted: the function is taken out of the saved postrm and
+# asked about a stand-in reached through a link, since /var itself
+# cannot be made a link here.
+sed -n '/^mounted() {/,/^}/p' /tmp/hotserve.postrm >/tmp/mounted.sh
+grep -q '^mounted() {' /tmp/mounted.sh || die "could not take mounted() out of the postrm for the symlink case"
+mkdir -p /tmp/real-var/tree/work
+ln -sfn /tmp/real-var /tmp/link-var
+mount -t tmpfs -o size=1m smoke /tmp/real-var/tree/work || die "could not mount a tmpfs for the symlink case"
+if (. /tmp/mounted.sh && mounted /tmp/link-var/tree); then :; else
+	die "mounted() missed a tmpfs under a tree reached through a symlinked ancestor (/tmp/link-var -> /tmp/real-var)"
+fi
+if (. /tmp/mounted.sh && mounted /tmp/link-var/other); then
+	die "mounted() said a tree with nothing mounted under it is mounted (symlink case)"
+fi
+umount /tmp/real-var/tree/work
+rm -rf /tmp/real-var /tmp/link-var
+echo "a mount under a tree reached through a symlinked ancestor: mounted() saw it"
+
+# A physical path the mount table escapes (a space is written \040):
+# the comparison cannot see a mount under it, so the function fails
+# closed and says mounted whether or not anything is.
+mkdir -p "/tmp/real var/tree/work"
+ln -sfn "/tmp/real var" /tmp/link-spaced
+mount -t tmpfs -o size=1m smoke "/tmp/real var/tree/work" || die "could not mount a tmpfs for the escaped-path case"
+if (. /tmp/mounted.sh && mounted /tmp/link-spaced/tree); then :; else
+	die "mounted() missed a tmpfs under a tree whose physical path holds a space (written \\040 in the mount table)"
+fi
+umount "/tmp/real var/tree/work"
+if (. /tmp/mounted.sh && mounted /tmp/link-spaced/tree); then :; else
+	die "mounted() did not fail closed on a physical path holding a space"
+fi
+rm -rf "/tmp/real var" /tmp/link-spaced
+echo "a physical path the mount table escapes: mounted() fails closed, mount or not"
+
+# A scan that fails (awk exiting 2 with no answer) must count as
+# mounted: the tree is kept and named, not removed.
+mkdir -p /tmp/fakebin "$B/in"
+printf '#!/bin/sh\nexit 2\n' >/tmp/fakebin/awk
+chmod 0755 /tmp/fakebin/awk
+: >"$B/in/entry"
+PATH="/tmp/fakebin:$PATH" sh /tmp/hotserve.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with a failing awk"; }
+[ -f "$B/in/entry" ] || die "postrm purge removed $B although the mount scan failed; output: $(cat /tmp/postrm.out)"
+grep -q "kept $B: something is mounted at or under it" /tmp/postrm.out \
+	|| die "postrm purge did not say it kept $B when the scan failed: $(cat /tmp/postrm.out)"
+rm -rf /tmp/fakebin "$B"
+echo "a failing mount scan: postrm purge kept the tree, said so, exit 0"
+
+# A run of the applier under way holds root's lock for its whole run
+# and swaps the Caddyfile under it; preremove leaves a run alone. The
+# purge takes that lock first: it waits for a run to finish, then
+# removes the config and the tree; one that holds the lock past 30s
+# keeps both, named, and the script still exits 0. A flock on the lock
+# file stands in for the run, started and then seen held.
+hold_lock() { # <seconds>
+	mkdir -p "$B/in"
+	: >"$B/lock"
+	flock "$B/lock" sleep "$1" &
+	holder=$!
+	until ! flock -n "$B/lock" true 2>/dev/null; do sleep 0.1; done
+}
+cp /tmp/starter.prev "$CONFIG"
+hold_lock 4
+t0=$(date +%s)
+sh /tmp/hotserve.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero while a run held the lock"; }
+t1=$(date +%s)
+wait "$holder" || true
+[ $((t1 - t0)) -ge 3 ] || die "postrm purge finished in $((t1 - t0))s with the lock held for 4s: it did not wait for the run"
+[ ! -e "$CONFIG" ] && [ ! -e "$B" ] || die "postrm purge waited for the lock but left $CONFIG or $B"
+echo "a run holding the lock for 4s: postrm purge waited $((t1 - t0))s, then removed the config and the tree"
+cp /tmp/starter.prev "$CONFIG"
+hold_lock 120
+t0=$(date +%s)
+sh /tmp/hotserve.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with the lock held past its wait"; }
+t1=$(date +%s)
+kill "$holder" 2>/dev/null || true
+[ $((t1 - t0)) -ge 29 ] || die "postrm purge gave up on the lock after $((t1 - t0))s, want about 30"
+[ -f "$CONFIG" ] && [ -d "$B/in" ] || die "postrm purge removed $CONFIG or $B although a run held the lock"
+grep -q "kept $CONFIG and $B: a run of the box applier holds $B/lock" /tmp/postrm.out \
+	|| die "postrm purge did not say it kept both for the run: $(cat /tmp/postrm.out)"
+rm -rf "$B" "$CONFIG"
+echo "a run holding the lock past 30s: postrm purge kept the config and the tree, said so, exit 0"
+
+stage "stage 7: an account that cannot be made, a command under way at purge, and what purge keeps"
 # A group of the account's name and no account: useradd exits 9 [M66].
 # The configure completes — hotserve is installed, on a box that may
 # use no backups — and says what setup will have to do (the owner,
@@ -1123,7 +1900,7 @@ grep -q " /run/hotserve-backup" /proc/self/mountinfo \
 [ ! -e /run/hotserve-backup ] || die "purge left /run/hotserve-backup: $(find /run/hotserve-backup)"
 echo "mounts of other names under the run directory: taken away by the engine's sweep, and nothing of the app's with them"
 
-stage "stage 7: purge where the mount table cannot be read"
+stage "stage 8: purge where the mount table cannot be read"
 # In a chroot or a namespace with no /proc, postremove cannot see what
 # is mounted under the run directory: it removes nothing there, and
 # says so, rather than taking an empty mount table for none (Copilot

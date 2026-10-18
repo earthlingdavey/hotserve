@@ -4,6 +4,12 @@
 # the built-in modules: liveswap (zero-downtime deploys), penaltybox
 # (rate-limit hint enforcement) and cache (Souin + Otter).
 #
+# A box whose config lives in a repository of its own (hotserve's
+# docs/first-deploy.md, step 3) never has this file edited by hand:
+# `hotserve init` replaces it, and signed pushes change it after that.
+# Edit it here on a box without one, or, as root on the box, when a
+# push cannot reach it.
+#
 # Check before reloading: a file that fails to load leaves the old config
 # running, but it also stops the next restart or upgrade from starting.
 #   hotserve validate --config /etc/hotserve/Caddyfile
@@ -37,7 +43,7 @@
 	# 	# Who may deploy (required). CI sends an OIDC token; the box
 	# 	# verifies it against the provider's public keys — no shared
 	# 	# secret on the server. For non-CI deploys use a local key:
-	# 	# `hotserve deploy-keygen`, then `deploy_trust local { public_key … }`.
+	# 	# `hotserve deploy-keygen`, then `deploy_trust local { public_key …; audience … }`.
 	# 	deploy_trust github {
 	# 		audience hotserve
 	# 		claim repository your-org/myapp
@@ -96,16 +102,22 @@
 # ── Replace with your domain once DNS points here — hotserve then
 #    provisions TLS automatically. ──
 :80 {
-	respond "hotserve is running. Edit /etc/hotserve/Caddyfile to serve your apps."
+	respond "hotserve is running. To serve your apps: hotserve init from your box's repository, or edit /etc/hotserve/Caddyfile."
 }
 
 # ── Example: the sites for the app above ──
 #
 # myapp.example.com {
-# 	# hint_penaltybox        # rate limiting driven by app hint headers
-# 	# cache                  # serve cached pages
-# 	reverse_proxy {
-# 		dynamic liveswap myapp
+# 	# A route keeps the written order, so hint_penaltybox checks every
+# 	# request before cache can answer it. Outside a route Caddy runs
+# 	# cache first, and cached pages skip the penalty box (hotserve's
+# 	# penaltybox/README.md, "Compatibility with Souin").
+# 	route {
+# 		# hint_penaltybox        # rate limiting driven by app hint headers
+# 		# cache                  # serve cached pages
+# 		reverse_proxy {
+# 			dynamic liveswap myapp
+# 		}
 # 	}
 # 	# Before the first deploy, and while the app is down, there is no
 # 	# upstream and visitors get a bare 503. Keep the status; add words.
@@ -117,7 +129,7 @@
 # deploy.example.com {
 # 	liveswap_webhook         # POST /myapp from CI: JSON {url, version}, or the
 # 	                         # tarball itself (Content-Type: application/gzip, ?version=)
-# 	                         # (failed auths are throttled in the journal,
-# 	                         # 10/min per address then 429 for bad tokens;
+# 	                         # (failed auths stop being logged past 10/min per
+# 	                         # address; every refusal is the same flat 401, and
 # 	                         # a valid token always gets through — built in)
 # }

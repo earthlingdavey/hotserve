@@ -44,37 +44,7 @@ type downloadOpts struct {
 // Secrets never reach the logs from here: errors carry the URL's host
 // and path only, never its query string or the auth header.
 func downloadArtifact(ctx context.Context, opts downloadOpts) (string, error) {
-	// Every refusal below is a validationError: an unusable URL is the
-	// payload's problem, and 422-with-the-reason is what lets the CI
-	// author fix it without an operator reading server logs.
-	u, err := url.Parse(opts.url)
-	if err != nil {
-		return "", validationError{fmt.Sprintf("invalid artifact url: %v", err)}
-	}
-	switch u.Scheme {
-	case "https":
-	case "http":
-		if !opts.allowInsecure {
-			return "", validationError{fmt.Sprintf("artifact url %s is plain http; use https or set allow_insecure_http", redactURL(u))}
-		}
-	default:
-		return "", validationError{fmt.Sprintf("artifact url %s has unsupported scheme %q", redactURL(u), u.Scheme)}
-	}
-	entry, escapedPath, err := matchAllowlist(opts.allowlist, u)
-	if err != nil {
-		// A validationError so the webhook answers 422 with this exact
-		// message in the body: an allowlist refusal is the payload's
-		// problem, and the CI caller — who chose the URL — is the one
-		// who can fix it (or ask the operator to extend the entry).
-		return "", validationError{fmt.Sprintf("artifact url %s refused: %v", redactURL(u), err)}
-	}
-	// From here on the request's URL is never used directly. The URL
-	// the fetch uses is a single concatenation whose provenance reads
-	// left to right — scheme (constant), host and port (THE ALLOWLIST
-	// ENTRY'S OWN CONFIG BYTES; the request's port is compared, never
-	// emitted), the pinned prefix (config bytes again), and only then
-	// the request's path suffix and vetted query. See pinnedURLString.
-	pinned, err := entry.pinnedURLString(u, escapedPath)
+	pinned, err := pinArtifactURL(opts.url, opts.allowInsecure, opts.allowlist)
 	if err != nil {
 		return "", err
 	}
@@ -87,9 +57,13 @@ func downloadArtifact(ctx context.Context, opts downloadOpts) (string, error) {
 	// Accept; it is harmless everywhere else.
 	req.Header.Set("Accept", "application/octet-stream")
 	if opts.authHeader != "" {
-		// Go's http.Client drops Authorization on cross-host redirects,
-		// which is exactly right: GitHub asset URLs redirect to S3,
-		// where a forwarded Authorization header would be rejected.
+		// Go's http.Client carries Authorization across a redirect only
+		// while the hop's host is this URL's host or a subdomain of it,
+		// on any port, and drops it for good at the first hop outside
+		// that domain (shouldCopyHeaderOnRedirect in net/http). That is
+		// exactly right: GitHub asset URLs redirect to S3, another
+		// domain, where a forwarded Authorization header would be
+		// rejected.
 		req.Header.Set("Authorization", opts.authHeader)
 	}
 
@@ -135,6 +109,46 @@ func downloadArtifact(ctx context.Context, opts downloadOpts) (string, error) {
 	return f.Name(), nil
 }
 
+// pinArtifactURL is every check a URL deploy's url gets before a byte
+// is fetched — scheme policy, then the allowlist — and the URL the
+// fetch then uses. A relaunch of the running version runs it too
+// (relaunchRefusal, app.go), so a URL the allowlist would refuse is
+// refused whether or not anything is downloaded from it.
+//
+// Every refusal is a validationError: an unusable URL is the payload's
+// problem, and 422-with-the-reason is what lets the CI author fix it
+// without an operator reading server logs.
+func pinArtifactURL(rawURL string, allowInsecure bool, allowlist []artifactAllowEntry) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", validationError{fmt.Sprintf("invalid artifact url: %v", err)}
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !allowInsecure {
+			return "", validationError{fmt.Sprintf("artifact url %s is plain http; use https or set allow_insecure_http", redactURL(u))}
+		}
+	default:
+		return "", validationError{fmt.Sprintf("artifact url %s has unsupported scheme %q", redactURL(u), u.Scheme)}
+	}
+	entry, escapedPath, err := matchAllowlist(allowlist, u)
+	if err != nil {
+		// A validationError so the webhook answers 422 with this exact
+		// message in the body: an allowlist refusal is the payload's
+		// problem, and the CI caller — who chose the URL — is the one
+		// who can fix it (or ask the operator to extend the entry).
+		return "", validationError{fmt.Sprintf("artifact url %s refused: %v", redactURL(u), err)}
+	}
+	// From here on the request's URL is never used directly. The URL
+	// the fetch uses is a single concatenation whose provenance reads
+	// left to right — scheme (constant), host and port (THE ALLOWLIST
+	// ENTRY'S OWN CONFIG BYTES; the request's port is compared, never
+	// emitted), the pinned prefix (config bytes again), and only then
+	// the request's path suffix and vetted query. See pinnedURLString.
+	return entry.pinnedURLString(u, escapedPath)
+}
+
 // digestMismatch refuses a pinned pull whose body hashed to something
 // else. It is a validationError — the webhook answers 422 with the
 // message — that also carries the two digests as values: the response
@@ -172,8 +186,9 @@ const (
 // stays on the line; the request context bounds the body.
 //
 // CheckRedirect enforces the scheme policy on EVERY hop: Go's client
-// happily follows an https -> http redirect (it strips Authorization
-// cross-host, but not the scheme), which would let a permitted-looking
+// happily follows an https -> http redirect (it drops Authorization at
+// the first hop outside the first host's domain, but never checks the
+// scheme), which would let a permitted-looking
 // https URL downgrade the fetch to cleartext — quietly defeating both
 // the encrypted-artifacts promise and the accidental SSRF barrier that
 // https-only provides (metadata/LAN endpoints are typically plain

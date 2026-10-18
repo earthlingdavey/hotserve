@@ -34,10 +34,34 @@ Windows, and macOS-as-a-server are out of scope by product design.
    Gated on being the `hotserve` user, not on the network.
 4. **Per-app secrets** — an app's own env vars / `env_file`
    (`/etc/hotserve/*.env`). Legitimately reachable by that app; the
-   goal is to keep them from *siblings*.
-5. **Sibling app data** — `/var/lib/liveswap/<app>/{releases,shared,state.json}`.
-6. **System integrity** — root, persistence, other system services.
-7. **Availability** — serving traffic and the deploy pipeline.
+   goal is to keep them from *siblings*. From accounts beyond the
+   file's owner and group it is the file's mode that keeps them (0640
+   root:hotserve as documented; root reads anything); config load and
+   each launch warn when the mode admits everyone (`warnEnvFileModeOf`,
+   liveswap/app.go). Owner and group are not checked. Where the box's
+   config repository carries an app's secrets (box/DESIGN-box.md,
+   "Secrets"), the env file is
+   `/etc/hotserve/secrets/<app>.env`, written 0640 by the `box` applier
+   into a setgid `root:hotserve` directory, and the values also exist
+   encrypted in that repository's history, which the box's key for
+   secrets (`/etc/hotserve/age/identity`, root 0600 in a 0700 root
+   directory) and each reader's key decrypt.
+5. **The box's configuration at rest** — `/etc/hotserve/Caddyfile`:
+   which repository may deploy each app, each app's command and
+   flags, which hosts are served, and who may change the file itself.
+   Root-owned, 0644; written only by root — `hotserve init`, the `box`
+   applier, the console ([box/DESIGN-box.md](box/DESIGN-box.md)), and
+   the package's postinstall, which puts the starter there only where
+   nothing stands or while the file is byte-identical to the starter
+   it last wrote. Its record of that starter's digest
+   (`/var/lib/hotserve-package/starter.sha256`, in a 0700 root
+   directory) is root's alone, so the hotserve uid cannot steer an
+   upgrade into overwriting the box's config. A
+   writer here outlasts a restart, which is what makes it an asset
+   distinct from the admin socket (whose changes do not).
+6. **Sibling app data** — `/var/lib/liveswap/<app>/{releases,shared,state.json}`.
+7. **System integrity** — root, persistence, other system services.
+8. **Availability** — serving traffic and the deploy pipeline.
 
 There is no deploy secret on the box. Deploys are authenticated by a
 verified JWT (CI OIDC or a local public key); the verifier holds only
@@ -53,13 +77,28 @@ can be found by search.
 
 ### Webhook endpoint — `liveswap/handler.go`
 
-The only application-level authenticated entry point. Auth is a
+The first of two application-level authenticated entry points (the
+other is `box_webhook`, "Config webhook" below). Auth is a
 verified JWT in `Authorization: Bearer` (see "Reducing the asset"):
 `deploy_trust` sources verify the token's signature and standard claims
 against public material, then a claim allowlist. Auth happens **before**
 existence is revealed: an unknown app name is verified against the
-*global* trust sources so callers cannot enumerate app names
-(`Handler.ServeHTTP`, liveswap/handler.go). Config load refuses an app
+*global* trust sources, so its refusal is the same 401 as a known
+app's (`Handler.ServeHTTP`, liveswap/handler.go). The time to that 401
+need not be, and that is the **residual** (S3 × O5 × D5 = 75, as #296
+scored it; owed: #306). A token is checked against each source a name
+resolves to in turn, the signature before the issuer, so an OIDC
+source refuses a forged token after a local signature check when it
+holds the token's kid, and, when it does not, after a fetch of its
+issuer's keys that it makes at most once a minute (`keySet`,
+liveswap/deploytrust/jwks.go), whatever issuer the token names. A name
+that does not exist goes to the global sources: it is refused at once
+when they hold no OIDC source, and otherwise pays the same on their own
+key sets. The fetch window is per app, not shared across apps that
+trust the same issuer: each app's sources keep their own key set, so
+one unknown-kid token per app per minute can wait on an issuer round
+trip that one to a missing name, sent just before, did not, and an app
+name can be confirmed by timing. Config load refuses an app
 that resolves to zero trust sources (`App.Validate`,
 liveswap/liveswap.go). Bearer is the only transport, which Caddy
 redacts from access logs.
@@ -72,7 +111,7 @@ Properties that matter to the model:
   authenticated — not public.
 - **What the webhook says back is filtered** (liveswap/redact.go,
   which states the filter's four rules; every body passes it —
-  through `respondJSON` in liveswap/handler.go, the record route's
+  through `RespondJSON` in liveswap/handler.go, the record route's
   `respondFiltered`, the stream's lines, the record store's write).
   The
   response's audience is wider than its caller: the paved road prints
@@ -164,18 +203,18 @@ Properties that matter to the model:
   — because a filter with only the first test drifts toward blanking
   everything.
 - **Auth failures are throttled in the journal**
-  (liveswap/authlimit.go). Token *forgery* is infeasible (no private
+  (liveswap/deploytrust/limiter.go). Token *forgery* is infeasible (no private
   key), so this is not a guessing oracle; what
   an unauthenticated caller can do with failures is make hotserve
   write a Warn per request. Two sliding windows bound that, in one
   lock scope so a burst of concurrent requests cannot each see room:
-  per address, 10 failures a minute, after which further bad tokens
-  get 429 until the oldest ages out; process-wide, 100 failures a
-  minute are logged however many addresses a flood comes from. The
-  address budget decides the 429; the process budget decides what is
-  logged, the once-per-window "budget spent" lines included — so
-  under a spent process budget an address is throttled silently. The
-  logged `app` field is cut to
+  per address, 10 failures a minute are logged, and further ones are
+  not until the oldest ages out; process-wide, 100 failures a minute
+  are logged however many addresses a flood comes from. The budgets
+  decide what is logged, the once-per-window "budget spent" lines
+  included, and nothing else: every refusal answers the same flat 401
+  whatever they say, so a caller cannot see them and a client has no
+  reason to retry a refused token. The logged `app` field is cut to
   what a real name could be. The address is Caddy's `client_ip`
   (`trusted_proxies` honoured), IPv6 keyed by /64; the table is bounded
   at 4096 addresses (drained ones swept at most once a window, then an
@@ -185,9 +224,19 @@ Properties that matter to the model:
   pool, a proxy without `trusted_proxies` or a unix-socket listener all
   collapse clients onto one key, and the throttle must never be a
   deploy-denial primitive for whoever shares it. Verification cost is
-  therefore not bounded by the throttle — it is comparable to the TLS
-  handshake the request already paid, so the throttle is not what
-  bounds CPU. One limiter for the process, not per handler, so a
+  therefore not bounded by the throttle. Against a local key it is one
+  signature check, comparable to the TLS handshake the request already
+  paid; against an OIDC source it is the same for a token under a kid
+  the source holds a key for, and, for one under a kid it does not, a
+  fetch of the issuer's keys that each source makes at most once a
+  minute, every other such token meanwhile waiting on that fetch or
+  answered from its outcome (`keySet`, liveswap/deploytrust/jwks.go;
+  the wait is owed: #306). So the throttle is not what bounds CPU, and
+  once a source's discovery has succeeded, traffic does not set how
+  often the box fetches its issuer's keys; while discovery fails, each
+  verification tries it again (`oidcVerifier.ensure`,
+  liveswap/deploytrust/deploytrust.go), one at a time per source.
+  One limiter for the process, not per handler, so a
   reload hands out no fresh budget and a second mount does not double
   it. Body is capped at 64 KiB → 413
   (`maxPayloadBytes`, enforced in `Handler.deployURL`,
@@ -237,8 +286,11 @@ Properties that matter to the model:
   it answers no question about what is running. Artifact URLs *are*
   redacted before logs/errors (`redactURL`, liveswap/download.go), so
   query signatures do not leak.
-- **Replay / downgrade is bounded.** The bearer JWT is short-lived
-  (`exp`), so a captured request is replayable only within that window.
+- **Replay / downgrade is bounded.** The bearer JWT expires (`exp`) —
+  an OIDC token at the expiry its issuer set, a local one at most its
+  block's `max_token_ttl` after its `iat`, 24h unless the block sets
+  one (`localVerifier.verify`, liveswap/deploytrust/deploytrust.go) —
+  so a captured request is replayable only within that window.
   Versions are immutable: re-deploying an existing version (running or
   not) is refused 422, so replaying an *older* deploy's payload does not
   downgrade the app. A token-holder can still downgrade deliberately
@@ -262,8 +314,13 @@ closed-by-default.
 `https` only unless `allow_insecure_http` (`downloadArtifact`,
 liveswap/download.go), re-enforced on **every redirect hop** by the
 `CheckRedirect` closure in `newDownloadClient` — closing Go's default
-https→http downgrade. `auth_header` is stripped by stdlib on cross-host
-redirects but **not** same-host (also `downloadArtifact`). Size:
+https→http downgrade. `auth_header` is set on the first request only
+(also `downloadArtifact`), and Go's client carries it across a redirect
+only while the hop's host is the first hop's or a subdomain of it, on
+any port (`shouldCopyHeaderOnRedirect` in net/http); from the first hop
+outside that domain it is dropped for good. So the credential reaches
+the allowlisted host and its subdomains, and nothing past a redirect
+off them: GitHub's asset redirect to its storage host drops it. Size:
 Content-Length pre-check plus streaming `LimitReader`, default 100 MB
 (`downloadArtifact`; the default is set in `AppConfig.applyDefaults`,
 liveswap/liveswap.go).
@@ -397,8 +454,9 @@ same file), `RuntimeDirectoryMode=0750` owned by the service user
 cannot reach `/run/hotserve` at all (the path is not in its view), so
 the gate holds against apps and only hotserve itself can connect. The
 commented-out `deploy.example.com` example is a public TLS vhost with
-`liveswap_webhook` behind `deploy_trust`; the handler's own per-address
-auth-failure throttle is the only rate limiting in front.
+`liveswap_webhook` behind `deploy_trust`; nothing rate-limits requests
+in front of it, and the handler's own per-address auth-failure throttle
+bounds only what it writes to the journal.
 
 **penaltybox** is a response-phase rate-limit-hint enforcer; it touches
 untrusted input only narrowly (the client key defaults to
@@ -426,11 +484,255 @@ inheritance of ACME tokens and any other supervisor secret
 closed twice over (non-dumpable supervisor; cross-namespace refusal);
 the filesystem routes are closed by absence.
 
+**Where `env_file` values sit once the app runs.** hotserve reads the
+file itself and hands the pairs to the manager as the transient unit's
+inline `Environment=` property (`unitProperties`,
+liveswap/systemd_dbus.go), never `EnvironmentFile=`. From then on the
+`hotserve` uid — the trust domain that read the file — holds them by
+four routes, and nothing else holds them by any; a fifth, a core dump,
+is closed by the unit's limit — enforced by the kernel under a file
+`core_pattern`, and under a piped one by the collector honouring it:
+
+- **The unit's property**, for as long as the unit exists:
+  `systemctl --user -M hotserve@ show -p Environment <unit>` (as that
+  uid or as root; a bare `--user` targets the caller's own manager). A
+  key that inline `env` or the injected `SOCKET` also sets is not
+  here: `buildEnvFull` (liveswap/app.go) emits both and the manager
+  keeps the last.
+- **The transient unit file** the manager writes under
+  `/run/user/<uid>/systemd/transient/`, which carries the un-merged
+  `Environment=` line — overridden values included — until the unit
+  is garbage-collected.
+- **The running app's `/proc/<pid>/environ`.** The user-namespace
+  closure measured on the spike ("The shared-UID rule", below) runs
+  the other way, app to supervisor; this direction follows from the
+  same `ptrace_may_access` rule, since the app's namespace is owned by
+  the hotserve uid, which holds `CAP_SYS_PTRACE` in it. Not measured.
+- **hotserve's own memory**, which keeps every value it has read — for
+  a launch, or for the response filter, which reads the file without
+  one (`managedApp.secrets` and `redactorFor`, liveswap/app.go) — for
+  as long as the app stays configured, behind the non-dumpable floor.
+- **Not a core dump.** App units run with `LimitCORE=0` on both the
+  soft and the hard limit (`unitProperties`, liveswap/systemd_dbus.go),
+  so a crash writes no dump of the app's memory, and the app cannot
+  raise the limit back. Without it the manager's defaults apply, soft
+  0 under an unlimited hard limit (measured on Debian 13, systemd
+  257.13, 2026-10-13, #234): one `setrlimit` from a dump. Nothing
+  makes an app non-dumpable (the floor under "A non-dumpable
+  supervisor is the floor" is the supervisor's own); the dump itself
+  is what is closed, since it would outlive the unit where the same
+  uid and root could read it later. Who enforces the limit depends on
+  the host's `core_pattern`: with a file pattern — Debian 13's
+  default, `core`, in the crashing process's working directory, the
+  release dir unless the app moved — the kernel writes nothing; with a
+  pipe pattern the kernel hands the process to the helper whatever the
+  limit, and it is systemd-coredump (not installed by default) that
+  declines to store a dump when the limit is 0, its own "resource
+  limits disable core dumping" rule. The cost is that no app can write
+  a core dump for debugging; there is no per-app opt-in.
+
+No account gains a read it did not already have: the file is
+root:hotserve 0640 by the tutorial's install line (nothing in hotserve
+enforces that), or, for a file the `box` applier writes, by the
+applier's own mode and the setgid directory it writes into, `/run/user` — the manager's socket and the transient
+file alike — is outside every view (`sandboxNeverReachable`,
+liveswap/sandbox.go), and the PID namespace hides the process from
+siblings. Stated because the manager's two copies are not obvious from
+the file's mode. `LoadCredential=` delivery would take the values out
+of the unit's properties and environment, not out of the uid's reach,
+and what it closes under this sandbox is unmeasured: an open question,
+not a plan.
+
+### Config webhook — `box/`
+
+The second authenticated entry point, and the only one whose outcome
+is a root-owned file. [box/DESIGN-box.md](box/DESIGN-box.md) is
+authoritative for its behaviour; this section places it. Status:
+released in v0.3.0, and the secrets it carries (below) in v0.3.1.
+On a box set up from the
+template (`examples/box`; docs/first-deploy.md, step 3) root writes
+the file once, with `hotserve init`, and the config repository's
+signed pushes write it after that. A box with no `box` block has no
+config webhook, and its file is root's to edit.
+
+The operator's config repository is the only writer of
+`/etc/hotserve/Caddyfile`. Its workflow mints an OIDC token and POSTs
+a bundle — the Caddyfile, the raw commit object of `HEAD`, the tree
+objects on the path to the file, and the first-parent chain back to
+the commit the box runs — to `box_webhook`, a site directive beside
+`liveswap_webhook`. Two processes stand between that request and the
+file, and the boundary between them is the one that matters.
+
+**The handler** (uid hotserve, in the serving process) verifies the
+token against the `box` global option's `deploy_trust` through the
+same entry point liveswap's handler uses — same 401, same budgets,
+same `refused` line — so an unauthenticated caller learns nothing it
+could not learn from a deploy webhook. It parses the bundle from
+memory under fixed names and caps, binds the bundle's commit to the
+token's `sha` claim, pre-checks the signature, runs `hotserve
+validate` (and `hotserve-backup validate` where installed) as bounded
+children with their output redacted, and drops the bundle as one
+regular file for root. It answers by the first result it reads within
+a bounded wait: 202 if that is `verified`, which precedes the install,
+or the final result if root has already written it; 504 when it reads
+none (a push of the commit the box already runs is answered
+`no_change` at once). What that answer does not settle is polled,
+because root's part can take minutes, and a proxy in front of the box
+may cut a request held that long.
+
+**The applier** (`hotserve-box-apply.service`, root, one shot, started
+by a path unit watching the drop directory) trusts nothing the
+handler did. It reads the bundle once into memory and never from disk
+again; takes the signer list from the installed file's raw tokens
+(never from the running configuration, which the hotserve uid
+authors); requires the incoming file's `box_webhook` host to equal the
+installed one and the bundle's path to equal the path `init` recorded
+(the box's identity and which file is its: another box's equally
+signed file, or another file for this host elsewhere in the same
+tree, is refused); verifies the SSH signature with `ssh-keygen -Y` as uid
+65534 against that list, on `HEAD` and on every first-parent commit
+above the recorded baseline (an unsigned commit would otherwise ride
+in under the next signed one); proves the file is the committed file
+(commit, tree and blob hashes); requires first-parent descent from the
+recorded baseline; refuses a file that drops the `box` block, every
+signer, the `box_webhook` site or the key that signed it; and only
+then writes, reloads through `systemctl reload hotserve`, and rolls
+back — reloading again — on failure. It never runs Caddy's validate or
+adapter: both execute module code on the input and expand `{$VAR}`
+from root's environment.
+
+What this closes. No account on the box but root is given a way to
+change the config or write an env file: secrets ride this channel
+(below), and an administrator is an account in `adm`, for the journal
+alone. A leaked PAT, a
+stolen GitHub session or an OAuth app with `contents:write` can push
+to `main` and cannot produce the signature, so it cannot change the
+box with anything a signer did not sign: its own commit is refused on
+its own push and, because every commit on the chain is checked, cannot
+be carried in by the next signed one (the merge button cannot either:
+a squash is GitHub-GPG-signed, a rebase unsigned). What such a push
+*can* do is stop every later push until it is rebased away — loud and
+recoverable — and, the residual that remains, fast-forward onto `main`
+a branch every commit of which a signer already signed: a signer's
+own unmerged, signed configuration, which the box then applies because
+it is exactly what the rule asks for. The box repository's README
+therefore says that configuration not yet meant to run is committed
+unsigned or lives in a fork; an unsigned branch is one the chain rule
+refuses whoever lands it. A compromised action holding the
+repository's OIDC token can present only commits a signer already
+signed, cannot replay an older one — though replaying `HEAD` after a
+console edit reinstalls HEAD's file and so reverts that edit, which is
+the stated 3am contract — and cannot land a sibling
+box's file.
+
+What it changes for T5, honestly. The Caddyfile was root-owned before
+`box` and the hotserve uid never wrote it, so "a supervisor RCE cannot
+persist config" is not a gain — it held under `bin/push` too. The
+delta is the other way: `box` adds a root process that consumes input
+the supervisor controls — a tar reader, a commit and tree parser, a
+path walk, an `ssh-keygen` invocation, lock and rename handling — and
+what keeps T5 from reaching root through it is that the applier
+re-verifies everything from the bytes, reads them once into memory,
+parses under fixed names and small caps, runs `ssh-keygen` as uid
+65534, trusts the handler for nothing but a well-formed bundle, and
+refuses a Caddyfile with any `import` — an imported file is unsigned
+bytes, and one under a hotserve-writable path would be T5's way to
+make a change outlast a restart — including one spelled as a
+placeholder: Caddy expands `{$NAME:default}` before it tokenizes, so
+the applier refuses any `{$` at directive position, in a site address
+or in the `box` block, and checks the file again after expanding
+placeholders with an empty environment (box/DESIGN-box.md, "Reading
+the signed file"). What the workflow is *told* remains the serving
+process's word: the response and the result poll are served by
+hotserve, so a T5 can lie to CI; it cannot change root's record or
+root's file *itself*. What it can do through root is bounded by the
+signers, not closed: the token-to-commit binding is the handler's
+check, and root cannot repeat it (the token is not in the bundle, and
+verifying one offline would mean a root unit fetching issuer keys or
+trusting the handler's cache), so a supervisor RCE that drops a bundle
+straight into `in/` can have root install any configuration a signer
+signed that descends from the baseline and whose objects it holds —
+`HEAD` again, which undoes a console edit, or a signer's signed but
+unmerged branch. It cannot have root install anything a signer did not
+sign; dropping an unsigned or self-authored file is refused outright.
+Skipping the handler's validation, which root never repeats, is a
+remaining T5 capability bounded by the signature, identity, proof and
+descent checks: a signer-signed file that fails to load is rolled back,
+one that loads but `hotserve-backup validate` would have refused is
+installed. The box repository's
+README rule that unmerged configuration stays unsigned is what keeps
+that set to `main`'s own history.
+
+What it does not close. `systemctl reload`'s exit status is the
+hotserve uid's word; the `applied` phase trusts it, the file on disk
+does not depend on it, and `systemctl restart` is the remedy. Root's
+never-cut-the-branch guard checks presence, and the handler's
+reachability check covers only what the box server's protocols,
+listener wrappers, TLS policies and strict SNI check do to the
+workflow's connection and what stands before `box_webhook` on `/`: a
+`claim` typo passes both and strands the box until root fixes it on
+the box.
+The
+handler's validate is a courtesy, not a boundary. Plain `crypto/sha1`
+on the proof, not sha1dc. A signer's laptop is the operator; a
+software-held signing key makes its compromise total for the box,
+which a hardware-held (`sk-`) key reduces to "cannot sign unattended".
+
+**Secrets through the same channel** (box/DESIGN-box.md, "Secrets").
+Each value is an age file in the config
+repository, `<host>/secrets/<app>/<VAR>.age`, encrypted on a laptop to
+the box's own X25519 key and to readers — the signers' SSH keys, or an
+age key of a person's own. The bundle carries the ciphertext; the
+handler and root prove it against the signed commit as they prove the
+Caddyfile; root alone decrypts it, after every signature on the chain
+has verified, and writes `/etc/hotserve/secrets/<app>.env`. What
+changes:
+
+- **Nothing new for the hotserve uid or root.** T5 reads every env file
+  now, as it reads every hand-made one, and cannot read the box's key
+  (root 0600, in a 0700 root directory). It can answer the workflow's
+  `GET /` with any key; the workflow only compares that answer with
+  the repository's `recipients`, and the remedy it names, `make
+  rekey`, is a person's after reading the key from root over SSH —
+  and a substituted key would gain T5 only values it reads already.
+  Root decrypts nothing a listed signer did not commit, so a T5 bundle
+  dropped into `in/` cannot have root open hostile age input.
+- **Nothing new for a signer**, either: a signed commit could already
+  add a site that serves any file the hotserve uid reads, env files
+  included (examples/box/README.md, "Secrets").
+- **New: the values leave the box, encrypted.** GitHub, every clone and
+  every fork hold them for ever. A reader's private key with read
+  access to the repository decrypts every value encrypted to it, in
+  all of history, offline, and nothing on the box or at GitHub sees it
+  beyond the clone. The template makes every signer whose key age can
+  use a reader (box/DESIGN-box.md, "Layout in the repository"), so a
+  signer's software key now yields the values without a push. A
+  reader removed from `recipients` keeps what was encrypted to them:
+  age has no revocation, so a person leaving, or a leaked key, means
+  new values, not only new ciphertext.
+- **New: names and lengths are public to repository readers.** The
+  layout puts each variable's name in a file name, and age pads
+  nothing, so anyone with `contents:read` learns which apps have
+  secrets, what they are called, how long each value is, and when it
+  changed.
+- **New: harvest now, decrypt later.** The box's key is X25519, and
+  no reader key age takes from an SSH key is post-quantum either
+  (`ssh-ed25519` is wrapped through X25519, `ssh-rsa` with RSA-OAEP);
+  age's post-quantum hybrid keys cannot share a file with SSH-key
+  recipients. Ciphertext kept for ever is
+  open to a future quantum computer; the path is every reader on an
+  `age1pq` key and one rekey, which protects only new ciphertext: the
+  old stays in history, so a value that must stay secret is changed
+  too (box/DESIGN-box.md, Open questions).
+
 ### Install-time — `packaging/postinstall.sh`
 
 Runs as root at install; creates the `hotserve` user, chowns
 `/var/lib/{hotserve,liveswap}`, enables linger so the hotserve user
-manager runs without a session. Supply-chain attacks on hotserve's own
+manager runs without a session, and installs or replaces the starter
+config at `/etc/hotserve/Caddyfile` only as asset 5 says: where nothing
+stands, or while the file is byte-identical to the starter recorded in
+root's own `/var/lib/hotserve-package`. Supply-chain attacks on hotserve's own
 build land here, but they run in CI, not from a deployed app — out of
 scope for the runtime model, in scope for release signing (roadmap).
 
@@ -453,18 +755,44 @@ scope for the runtime model, in scope for release signing (roadmap).
   pin. Controls status, redirect targets (any https host), timing —
   and the tarball bytes, unless the pull carries `sha256`, which the
   example workflows do: then other bytes are a 422, and what remains
-  is withholding. Faces `extract.go` and the first-hop SSRF gap.
+  is withholding. The pin is kept in the version's deploy record, for
+  as long as the record is, unless the filter would redact it (it
+  equals or holds an `env_file` value, or those values could not be
+  read whole); liveswap/README.md, Deploy records, has the exceptions. Faces `extract.go` and the first-hop SSRF gap.
 - **T4 — Unauthenticated network attacker** on the public webhook/proxy.
   Faces the token gate — forgery needs a private key, so there is no
-  guessing oracle; the realer wins are log-amplification, the CPU cost of
-  JWT/JWKS verification (no rate limit), and any pre-auth proxy/Caddy
-  surface.
+  guessing oracle; the realer wins are log-amplification (bounded by
+  the auth-failure budgets: ten failures a minute per address and a
+  hundred process-wide are logged, then silence; the answer is the
+  flat 401 throughout), the CPU cost of JWT/JWKS verification (spent
+  on every request — the budgets bound the journal, not the work),
+  and any pre-auth proxy/Caddy surface.
 - **T5 — RCE in the supervisor itself** (a Caddy or liveswap bug). Low
   probability, catastrophic: it *is* the `hotserve` user, so it already
   holds every asset short of root. No app-isolation design prevents
   this; the design question is only how much *worse* it can get (does it
   reach root?) — which is why the supervisor holds no grant (see "The
   shipped mechanism").
+- **T6 — Compromised identity of the box's config repository.** Three
+  distinct holders, in descending likelihood: a credential that can
+  push to the repository (a leaked PAT, a stolen session, an OAuth or
+  GitHub App with `contents:write`); a compromised Action in that
+  repository, holding its OIDC token — or, where the `box` block trusts
+  a `deploy_trust local` key, whoever holds that key, who mints the
+  `sha` claim themselves and so needs no workflow and no `main`; a
+  compromised signer's laptop.
+  The asset is the configuration at rest — asset 5, the one that
+  survives a restart. The first can push and cannot sign: what it
+  writes is refused on every later push too, until removed, and what it
+  can land is only a branch a signer fully signed already (the README's
+  rule against signed unmerged config is the answer); the second can
+  present only what a signer signed, in order, for this box, including
+  `HEAD` again after a console edit; the third is the operator, bounded
+  only by a hardware key's touch. Faces `box/` ("Config webhook").
+  Once secrets ride the channel, the asset widens to asset 4's values:
+  any of the three that can read the repository learns the secrets'
+  names and lengths, and the third, or anyone holding a reader's key
+  file, decrypts them.
 
 For **T2**: deploy-arbitrary-code (a push is contained by nothing but
 the claim scope; a pull additionally by the allowlist); deliberate
@@ -475,7 +803,15 @@ post-write symlink resolution check); first-hop→any-https SSRF. For **T4**:
 log-amplification, bounded by the auth-failure throttle (online
 *token forgery* is infeasible).
 For **T5**: total, by definition — the containment question is
-root-vs-not-root.
+root-vs-not-root, and `box` adds a root process fed by the supervisor
+to that question (the "Config webhook" section says what keeps it
+closed). For **T6**: a push credential gets a red run and a stalled
+`main` until its commit is removed, or a signer's own signed branch
+landed early; an OIDC holder gets a replay of `HEAD` (a `no_change`,
+or the undoing of a console edit), one bundle in `in/` at a time with
+no age-out and one in root's hands, and the handler's validate on a
+signer's file; a signer's software key gets the box, and — with secrets
+in the repository — every value encrypted to it, offline.
 
 ## The shared-UID rule
 
@@ -610,16 +946,20 @@ or a minimal privileged helper, never as a system-manager transient
 grant.
 
 **The property set**, on every unit — `unitProperties` renders the
-lifecycle properties and appends `sandboxProperties` for the rest
-(liveswap/systemd_dbus.go):
+lifecycle properties and appends `sandboxProperties` for the rest, and
+`userManagerClient.StartTransientUnit` adds `LimitNOFILE=`
+(liveswap/systemd_dbus.go). The capability probe's unit (below) is a
+`oneshot` run from `/`, with no `BindPaths=` and no `ExecStopPost=`:
+it binds nothing of an app's and has no socket.
 
 - Namespaces: `PrivateUsers=yes`, `PrivatePIDs=yes`, `PrivateTmp=yes`,
   `PrivateDevices=yes`; `RestrictNamespaces=` (empty set — an app
   cannot create further namespaces).
 - View: `TemporaryFileSystem=/:ro` replaces the whole filesystem with
   an empty read-only tmpfs; `BindReadOnlyPaths=` puts back a named OS
-  base view and `BindPaths=` the app's release and `shared/` dirs.
-  Nothing else exists inside. There is no `InaccessiblePaths=` and no
+  base view and `BindPaths=` the release being started, the app's
+  `shared/` and the instance's own `run/<nonce>/`. Nothing else exists
+  inside. There is no `InaccessiblePaths=` and no
   `ProtectSystem=` because there is nothing left for either to act on
   — an unnamed path is absent, not merely unreadable. The view is
   deny-by-default, so nothing is derived from the running
@@ -632,12 +972,24 @@ lifecycle properties and appends `sandboxProperties` for the rest
   `LockPersonality=`, `NoNewPrivileges=`, `CapabilityBoundingSet=`
   (empty), `SystemCallFilter=@system-service` with
   `SystemCallErrorNumber=EPERM`, `RestrictAddressFamilies=AF_INET
-  AF_INET6 AF_UNIX AF_NETLINK` (netlink stays read-only for
-  `getifaddrs()`, which Node and Go frameworks call at startup).
+  AF_INET6 AF_UNIX AF_NETLINK` (netlink for `getifaddrs()`, which Node
+  and Go frameworks call at startup; the socket itself is not
+  read-only, but changing a link, an address or a route needs
+  `CAP_NET_ADMIN`, which nothing in the unit holds).
 - Lifecycle: `Restart=no` (the liveswap watchdog is the sole
   restarter of apps; hotserve.service itself is restarted by systemd
   after a crash, never after a refused start), `KillMode=control-group`,
+  `TimeoutStopSec=` (the app's `grace`), `ExecStopPost=` (removes the
+  instance's socket once the unit stops, however it stopped),
+  `LimitCORE=0` on both limits (no core dump of an app; "Where
+  `env_file` values sit", above), `LimitNOFILE=` on both limits at the
+  user manager's `DefaultLimitNOFILE` when the manager reports one (the
+  package raises it with a `user@<uid>.service.d` drop-in),
   `UnsetEnvironment=XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS`.
+- What it runs: `Type=simple` (`oneshot` for a `pre_start`),
+  `ExecStart=`, `WorkingDirectory=` (the release dir), `Environment=`,
+  `Description=`, `SyslogIdentifier=hotserve-<app>`,
+  `StandardOutput=journal`, `StandardError=journal`.
 
 **The probe stays.** At `App.Start` — every config activation —
 hotserve starts a real transient unit with this property set and reads
@@ -676,14 +1028,35 @@ only public material:
 - **OIDC (CI, primary):** the box verifies a per-run token against the
   provider's public JWKS and a claim allowlist (`deploy_trust github |
   gitlab | oidc`). Nothing high-value on the box, nothing stored in CI;
-  the token is minted per run, short-lived, and scoped to
-  `repository`/`ref`/`environment` claims.
+  the token is minted per run, short-lived, and scoped to the claims
+  the block pins. An identity claim (`repository`, `project_path`,
+  `sub`, …) is required at config load; a branch binding (`ref` —
+  `ref_path` on GitLab — `sha`, `workflow_ref`, a `ref_protected` not
+  pinned false, or a default-form `subject`, which carries one) is the
+  operator's to add, and a `github` or `gitlab` block some app
+  inherits or names without one is warned about at load
+  (`warnUnboundTrust`, liveswap/deploytrust.go; an `environment` alone
+  is noted, since it binds only as far as the provider's
+  deployment-branch rule for it; the generic `oidc` preset requires
+  `sub` and is not read): any ref of the pinned identity — any branch a
+  collaborator can push, with its workflow edited to deploy — would
+  otherwise do.
 - **Local key (non-CI / fallback):** the box trusts a public key
   (`deploy_trust local`); the operator mints tokens with the private
-  half (`hotserve deploy-token`). The signing key never touches the box.
+  half (`hotserve deploy-token`). The signing key never touches the
+  box. The block's `audience` names the box a token is for; without
+  one — warned about at load — a token minted for any box that trusts
+  the same key is accepted.
 
-Implementation: `liveswap/deploytrust.go` (verification via the vetted
-`go-oidc`/`go-jose`, never hand-rolled). Effects on the model:
+Implementation: `liveswap/deploytrust/` (signatures checked by the
+vetted `go-jose`, never hand-rolled; an OIDC token's standard claims by
+`go-oidc`, a local one's by go-jose's `ValidateWithLeeway`; then
+deploytrust's own checks, `localVerifier.verify` requiring a local
+token's `exp` and `iat` and holding it to `max_token_ttl`, and
+`matchClaims` holding either kind to the block's claim allowlist; the
+issuer's key set is fetched and cached by deploytrust's own `keySet`,
+liveswap/deploytrust/jwks.go, which bounds the refetch). Effects on
+the model:
 
 - **No deploy credential on the box.** `/proc/<supervisor>/environ`
   would yield ACME tokens, not a deploy key; the top asset is ACME
@@ -694,7 +1067,11 @@ Implementation: `liveswap/deploytrust.go` (verification via the vetted
 - **T4 has no online guessing:** forging a token needs the issuer's or
   operator's private key; there is nothing to brute-force. The
   per-address failure throttle bounds the log-amplification vector.
-- **Replay is bounded** by the token's `exp` (minutes).
+- **Replay is bounded** by the token's `exp`: for an OIDC token, the
+  one its issuer set; for a local one, at most its block's
+  `max_token_ttl` after its `iat` (24h unless the block sets one). The
+  box refuses a local token minted to live longer, or without an `iat`,
+  and `hotserve deploy-token` warns above an hour.
 
 What it does **not** do: ACME tokens and TLS keys still live on the box,
 so the sandbox is still required. Auth design shrinks the prize; it
@@ -708,7 +1085,46 @@ does not isolate the runtime.
   release signing is the roadmap answer, not a runtime control.
 - **T5 is contained, not prevented** — a supervisor RCE holds every
   asset short of root. It does not reach root because the supervisor
-  holds no grant; keep it that way.
+  holds no grant; keep it that way. The `box` applier is a root unit,
+  and the rule it holds is the same one from the other side: root
+  consumes nothing from the serving process except a bundle it
+  re-verifies from scratch, and the exit status of `systemctl reload`.
+- **The reload's exit status is the hotserve uid's word.** The `box`
+  applier marks a push `applied` on it. A compromised supervisor can
+  say "loaded" and keep serving the old configuration until a restart;
+  the file on disk is root's regardless, and `systemctl restart
+  hotserve` is the remedy. Reading the admin API from root to check
+  would be the same trust in another form, and was rejected.
+- **Root's never-cut-the-branch guard is presence; reachability is the
+  handler's.** A pushed Caddyfile that keeps a `box` block, a signer,
+  the `box_webhook` site and the signing key passes root's guard. The
+  handler also refuses one whose adaptation would answer a push to `/`
+  before `box_webhook`, or whose server would refuse the workflow's
+  connection first (its protocols, a listener wrapper, the host's TLS
+  connection policy, its strict SNI check), moves where that server
+  listens (`https_port`, a `bind`: the door compare), or sets a request
+  limit — the `servers` option's or a `timeouts` directive's — past
+  what a push can meet, a floor or the rate's ceiling (box/DESIGN-box.md, step
+  6) — a check a
+  supervisor RCE skips with the rest of the handler, and one `hotserve
+  init` does not run. Neither catches a mistyped `claim`, a host
+  without a certificate, or a key no laptop holds, any of which strands the box. The remedy is root on the box: `hotserve init`
+  again, or a hand edit the next signed push overwrites.
+- **A signer's software-held key is the box.** Nothing on the box
+  distinguishes a signature made by the operator from one made by
+  whoever holds the operator's key file. A hardware-held key (`sk-`
+  types, which the `signer` grammar accepts) reduces a laptop
+  compromise to "cannot sign without a touch". Stated so operators
+  choose knowingly.
+- **Secrets in the config repository are ciphertext for ever**
+  (box/DESIGN-box.md, "Secrets"). A reader's key file and a
+  clone decrypt every value ever encrypted to that key, offline and
+  unseen; removing a
+  reader does not take back what was encrypted to them, so the remedy
+  for a departure or a leak is new values. Names and lengths are
+  public to anyone who can read the repository. No key involved is post-quantum
+  (X25519, and RSA for `ssh-rsa` readers). Each is the price of a repository-held secret that
+  no CI and no service ever sees in plaintext.
 - **Sibling localhost ports** — closed for the contract: nothing
   hotserve runs listens on a port. Each instance binds a unix socket
   in a directory of its own (`<root>/<app>/run/<nonce>/app.sock`, the
@@ -764,7 +1180,15 @@ does not isolate the runtime.
   (liveswap/state.go is read on relaunch for the version and the
   unit, and checked before either is used: a version that is not one,
   a unit that is not this app's, a nonce that is not one — refused,
-  never a path). Normative and shipped: only the release
+  never a path). It is written and read by the functions the deploy
+  records are (liveswap/ownfile.go): a fresh temp file renamed over
+  the name, and a read that follows no link at the name, does not
+  block on a FIFO and refuses anything but a regular file of a state
+  file's size — at recovery, a permanent error naming the file, never
+  a reset. Unlike the records' directory (recordsDir), the app dir
+  above it is not checked by the read; the launch path checks it
+  (resolveBindSources), and every save follows a launch.
+  Normative and shipped: only the release
   being started, `shared/` and the OS base view are bound into the
   unit — the app dir root, `state.json`, `tmp/` (the upload staging
   dir: a running instance must not be able to rewrite the next
@@ -854,3 +1278,33 @@ Dated one-liners; the full text of each is in git.
   the download stream; T3 no longer chooses the bytes of a pinned
   pull. Actor and attribution claims in `deployed_by` (#111) landed
   the day before.
+- 2026-10-09 — `box` designed (box/DESIGN-box.md): the config
+  repository becomes the only writer of `/etc/hotserve/Caddyfile`,
+  through an OIDC-authenticated webhook and a root applier that
+  verifies an SSH commit signature, the file's membership in the
+  commit, and descent from the commit the box runs. The configuration
+  at rest joins the asset list (5); T6, the compromised config-repo
+  identity, joins the profiles; the `HOTSERVE_CONFIG` sudoers grant
+  leaves the model when the applier ships, the secrets grant when
+  secrets ride the same channel.
+- 2026-10-11 — `box` built: the handler (step 6 reachability
+  included), the root applier, `hotserve init` and the template that
+  applies by signed push (box/DESIGN-box.md, History). `bin/push` and the
+  `HOTSERVE_CONFIG` grant are gone from the template; the tutorial sets
+  up the config repository on day 0, an administrator is optional and
+  holds only the secrets grant, and root keeps key-only SSH as the way
+  back.
+- 2026-10-12 — Secrets through the config channel designed
+  (box/DESIGN-box.md, "Secrets"): age files in the repository, root
+  decrypts after every proof; new facts stated — a reader's key and a
+  clone decrypt, offline, every value encrypted to it; names and
+  lengths are public to repository readers; no key is post-quantum.
+- 2026-10-13 — The template's secrets grant is gone (box PR 7e2):
+  secrets are commits in the config repository, and an administrator
+  is an account in `adm`, for the journal alone.
+- 2026-10-16 (#234) — App units run with `LimitCORE=0` on both limits:
+  a crash writes no dump of the app's memory, env values included, so
+  the fifth route for `env_file` values is closed — by the kernel
+  under a file `core_pattern` (Debian's default), by the collector's
+  own limit check under a piped one. No app can write a core dump for
+  debugging.

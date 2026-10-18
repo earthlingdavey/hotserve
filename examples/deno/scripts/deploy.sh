@@ -5,12 +5,20 @@
 #   scripts/deploy.sh <app.tar.gz>       a local file: pushed in the request body
 #   scripts/deploy.sh --rollback <ver>   relaunches a version still on the box's disk
 #
-#   HOTSERVE_URL          the app's webhook, e.g. https://deploy.example.com/example  (required)
-#   VERSION               the release's version; defaults to the commit (12 hex
-#                         chars). Versions are immutable on the box, so the
-#                         default deploys once per commit: set VERSION for an
-#                         uncommitted build (VERSION=wip-3, say). Not used by
-#                         --rollback: that names its version itself
+#   HOTSERVE_URL          the app's webhook, e.g. https://deploy.example.com/example  (required;
+#                         https:// only, since the request carries the token)
+#   HOTSERVE_ALLOW_HTTP   1 (exactly) lets HOTSERVE_URL be http://, sending the
+#                         token in the clear: for a local test box only
+#   VERSION               the release's version: 1 to 64 letters, digits,
+#                         . _ -, not starting with . (the box's alphabet).
+#                         Defaults to the commit (12 hex chars), and
+#                         versions are immutable on the box, so the default
+#                         deploys once per commit. For a pushed file it is
+#                         refused while tracked files have uncommitted
+#                         changes when the script runs, rather than put the
+#                         commit's name on them: set VERSION for an
+#                         uncommitted build (VERSION=wip-3, say). Not used
+#                         by --rollback: that names its version itself
 #   HOTSERVE_TOKEN        a deploy token. Not needed in GitHub Actions: with
 #                         `permissions: id-token: write` one is minted per run.
 #   HOTSERVE_AUDIENCE     the audience the box's deploy_trust expects (default: hotserve)
@@ -39,19 +47,29 @@
 # In GitHub Actions the same output is also dressed for the job page:
 # the request's output in a collapsible group, a failure as an error
 # annotation naming the phase and the cause, and one line in the job
-# summary. Nothing else is sent or printed; a run from a laptop sees
-# none of it.
+# summary. A release the box refuses as built for another architecture
+# is followed by the repository variable that picks the runner. Nothing
+# else is sent or printed; a run from a laptop sees none of it.
 set -eu
+
+# The box's version alphabet (liveswap/names.go), checked for a deploy's
+# version and a rollback's alike, so a stray character is refused here
+# rather than mangling the request: in the query a `#` would drop the
+# rest of it and a `%31` would arrive as `1`, so the box would take
+# another version than the one printed. The box's 64-character limit is
+# left to the box, whose 422 says so. printf, not echo: the version is
+# the caller's, and dash's echo would read its backslashes.
+valid_version() {
+	case $1 in
+	''|.*|*[!A-Za-z0-9._-]*) printf "deploy.sh: '%s' is not a version (letters, digits, . _ -; not starting with .)\n" "$1" >&2; return 1 ;;
+	esac
+}
 
 rollback=
 if [ "${1:-}" = --rollback ]; then
 	rollback=${2:?--rollback needs the version to roll back to}
 	shift 2
-	# The box's version alphabet, so a stray character is refused here
-	# rather than mangling the query (a `#` would drop the rest of it).
-	case $rollback in
-	''|.*|*[!A-Za-z0-9._-]*) echo "deploy.sh: '$rollback' is not a version (letters, digits, . _ -; not starting with .)" >&2; exit 1 ;;
-	esac
+	valid_version "$rollback" || exit 1
 else
 	artifact=${1:?artifact URL or file, or --rollback <version>}
 	shift
@@ -73,14 +91,60 @@ if [ -n "${ARTIFACT_SHA256+set}" ]; then
 	fi
 fi
 url=${HOTSERVE_URL:?set HOTSERVE_URL to the app webhook, e.g. https://deploy.example.com/example}
+# The request carries the deploy token, and from the workflow
+# ARTIFACT_AUTH_HEADER (the job's GITHUB_TOKEN) too: over http both
+# would cross the wire in the clear before anything in front of the
+# box could redirect it, and curl guesses a plaintext scheme (http,
+# mostly) for a schemeless URL. So https:// only — the scheme in any
+# case, nothing before it — refused before the mint; the one way past
+# is HOTSERVE_ALLOW_HTTP=1 exactly, for a test box. printf, not echo:
+# the URL is the caller's, and dash's echo would read its backslashes.
+case $url in
+[Hh][Tt][Tt][Pp][Ss]://*) ;;
+*)
+	[ "${HOTSERVE_ALLOW_HTTP:-}" = 1 ] || { printf "deploy.sh: HOTSERVE_URL '%s' is not https://, and the request carries the deploy token; set it to the app webhook, e.g. https://deploy.example.com/example (HOTSERVE_ALLOW_HTTP=1 sends it anyway, for local testing only)\n" "$url" >&2; exit 1; }
+	;;
+esac
 # The app is the URL's last path segment; the box accepts a trailing
 # slash there, so drop any before taking it.
 app=$url
 while [ "${app%/}" != "$app" ]; do app=${app%/}; done
 app=${app##*/}
 if [ -z "$rollback" ]; then
-	version=${VERSION:-$(git rev-parse --short=12 HEAD 2>/dev/null || true)}
-	[ -n "$version" ] || { echo "deploy.sh: not in a git checkout; set VERSION" >&2; exit 1; }
+	if [ -n "${VERSION:-}" ]; then
+		version=$VERSION
+	else
+		version=$(git rev-parse --short=12 HEAD 2>/dev/null || true)
+		[ -n "$version" ] || { echo "deploy.sh: not in a git checkout; set VERSION" >&2; exit 1; }
+		# The default names the commit, and the box keeps that name for
+		# good: uncommitted changes pushed under it would be what
+		# `--rollback <commit>` relaunches, and the commit's own build
+		# would then be refused as a version that already exists. So a
+		# pushed file (built here) is refused the default while the
+		# checkout has uncommitted changes: every tracked file in the
+		# repository against HEAD, staged or not (the version names the
+		# repository's commit, not the app directory's; --no-relative, so
+		# a diff.relative config cannot narrow it to the directory the
+		# script runs in). This looks at the checkout now, not at the
+		# build: it keeps the commit's name off uncommitted changes, and
+		# cannot prove the tarball was built from the commit. A URL's
+		# artifact was built elsewhere, and edits here say nothing about
+		# it, so it is not checked. Untracked files do not count, since
+		# deploy.key or a .env may sit in the checkout. `git diff`
+		# refreshes the index first, so a file that was only touched is
+		# clean. Its 1 is caught, not left to set -e; any other status is
+		# git failing, and its own stderr says why.
+		if [ -f "$artifact" ]; then
+			dirty=0
+			git diff --quiet --no-relative HEAD -- || dirty=$?
+			case $dirty in
+			0) ;;
+			1) echo "deploy.sh: tracked files have uncommitted changes, and the default version would label them commit $version; commit them, or set VERSION (e.g. VERSION=wip-3) to deploy uncommitted changes" >&2; exit 1 ;;
+			*) echo "deploy.sh: git could not compare the checkout with commit $version (above); set VERSION" >&2; exit 1 ;;
+			esac
+		fi
+	fi
+	valid_version "$version" || exit 1
 fi
 
 if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
@@ -137,7 +201,18 @@ stream() { # <curl args...>: runs the request, prints it, keeps it
 	# set -e before its status is written.
 	{
 		rc=0
-		curl --fail-with-body --silent --show-error --no-buffer --max-time 600 \
+		# --max-time: the deploy's worst case with the box's defaults and
+		# a pre_start, plus the artifact's transfer. The pre_start's
+		# deadline (5m), the health gate's deadline (5m) and its overrun
+		# of one health_interval and two health_timeouts (9s), drain (5s)
+		# and grace (10s) come to 10m24s; 900 leaves 4m36s for the
+		# transfer. Raise it with any of those settings. Giving up before
+		# the cutover fails the deploy with the old version still
+		# serving; a running pre_start is not stopped but runs to its
+		# end, and a retry gets 409 until then (stopping its .prestart
+		# unit on the box ends it sooner). Giving up after the cutover
+		# reports a deploy the box completed as failed.
+		curl --fail-with-body --silent --show-error --no-buffer --max-time 900 \
 			-H "Authorization: Bearer $token" -H "Accept: application/x-ndjson" \
 			-D "$hdrs" "$@" || rc=$?
 		echo "$rc" >"$rcfile"
@@ -199,6 +274,13 @@ finish() { # <what>: dresses the outcome, exits on failure
 		case $why in 'invalid or missing deploy token'*) hint=$(refused) ;; esac
 	fi
 	[ -z "$hint" ] || printf '%s\n' "$hint"
+	# The box's pre-flight names the runner a release for its
+	# architecture is built on (liveswap/elf.go); the workflow takes its
+	# runner from a repository variable, which the box cannot know of.
+	if [ -n "$actions" ] && [ "$code" = 422 ]; then
+		runner=$(printf '%s' "$why" | sed -n 's/.*(runs-on: \([A-Za-z0-9._-]*\)).*/\1/p')
+		[ -z "$runner" ] || echo "The workflow's runner is the repository variable HOTSERVE_RUNS_ON: gh variable set HOTSERVE_RUNS_ON -R ${GITHUB_REPOSITORY:-<owner/repo>} --body $runner (or Settings → Secrets and variables → Actions → Variables), then deploy again."
+	fi
 	[ -n "$actions" ] && printf '::error title=%s::%s\n' "$(prop "hotserve: $what failed")" "$(msg "${phase:+in $phase: }${why:-see the response above}${hint:+; the log says what the box must trust}")"
 	if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 		printf '**hotserve:** %s failed%s, %s\n\n%s\n\n' "$what" "${phase:+ in \`$phase\`}" "$took" "${why:-see the log}" >>"$GITHUB_STEP_SUMMARY"

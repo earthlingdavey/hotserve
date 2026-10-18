@@ -1,19 +1,72 @@
 # Upgrading hotserve
 
 A release is a new `.deb`; installing it over the old one is the
-upgrade:
+upgrade. Everything on this page runs as root on the box
+(`ssh root@box.example.com`). This fetches the `.deb` for the box's
+architecture from the latest of the
+[releases](https://github.com/smallhoursorg/hotserve/releases), beside
+the one you are upgrading from, checks it, and installs it:
 
 ```sh
-# from the release page: the .deb for your architecture, and checksums.txt
-cd /var/local/hotserve              # next to the release you are upgrading from
-v=0.2.0                             # the version in the .deb's file name
+v=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/smallhoursorg/hotserve/releases/latest)
+v=${v##*/v}                         # the latest release's tag, without the v
 arch=$(dpkg --print-architecture)   # amd64 or arm64
-sha256sum -c --ignore-missing checksums.txt
-sudo apt install ./hotserve_${v}_${arch}.deb
+base=https://github.com/smallhoursorg/hotserve/releases/download/v$v
+cd /var/local/hotserve              # next to the release you are upgrading from
+curl -fsSLO "$base/hotserve_${v}_${arch}.deb" && curl -fsSLO "$base/checksums.txt" &&
+  sha256sum -c --ignore-missing checksums.txt &&
+  apt install ./hotserve_${v}_${arch}.deb
 ```
 
+The `&&`s stop the block at the first step that fails. Without them, a
+`checksums.txt` that did not download would leave the last release's
+in place, which checks the old `.deb`, passes, and lets the new one
+install unchecked.
+
+<details>
+<summary><b>To upgrade to a release candidate</b></summary>
+
+A release candidate's `.deb` has a dot where its tag has a hyphen —
+`hotserve_X.Y.Z.rcN_arm64.deb` under `vX.Y.Z-rcN` — so the block above
+does not fit it as it stands. This one does, with `<tag>` replaced by
+the tag the maintainer announced, without its `v`:
+
+```sh
+v='<tag>'                           # the announced tag, without the v
+arch=$(dpkg --print-architecture)   # amd64 or arm64
+deb=hotserve_$(echo "$v" | tr - .)_${arch}.deb
+base=https://github.com/smallhoursorg/hotserve/releases/download/v$v
+cd /var/local/hotserve              # next to the release you are upgrading from
+curl -fsSLO "$base/$deb" && curl -fsSLO "$base/checksums.txt" &&
+  sha256sum -c --ignore-missing checksums.txt &&
+  apt install "./$deb"
+```
+
+A candidate sorts below the release it leads to, so if `apt` says it
+will downgrade hotserve, answer `n` and stop here: the box already runs
+that release or a later one.
+
+The box's repository then needs its Actions variable
+`HOTSERVE_VERSION` set to the same `<tag>`: its workflow
+checks with the latest stable release unless told otherwise, and a
+release candidate is never that. On the laptop:
+`gh variable set HOTSERVE_VERSION -R your-org/boxes --body <tag>`.
+Once the release is out, upgrade to it with the first block on this
+page, and delete the variable so the workflow follows the latest
+stable release again: `gh variable delete HOTSERVE_VERSION -R your-org/boxes`.
+
+</details>
+
 The package keeps your `/etc/hotserve/Caddyfile` and restarts hotserve
-into the new binary. Your apps are not restarted: they run under
+into the new binary. An upgrade never asks about that file. The
+package installs its starter config there only when nothing is there,
+and replaces it only while it is byte-for-byte the starter the package
+itself last wrote. Any other file — one you edited, or one `hotserve
+init` or a push wrote — is never touched, and neither is a symlink.
+The test is the bytes, not who wrote them: a copy of the starter you
+put there yourself counts as the starter. A fresh copy of the starter
+is always at `/usr/share/hotserve/Caddyfile`. Your apps are not restarted: they run under
 hotserve's user manager rather than inside hotserve, so the new process
 finds each one in `state.json` and picks it up as it is — same process,
 no relaunch, no redeploy.
@@ -22,8 +75,9 @@ no relaunch, no redeploy.
 for about a tenth of a second, or longer while a slow request finishes:
 the old process gets up to 5 seconds to stop before the new one starts.
 So upgrade at a quiet moment. A
-config change does not need a restart: `sudo systemctl reload hotserve`
-swaps the config inside the running process, drops no requests, and
+config change does not need a restart: a reload — what an applied push
+from the box's repository does, or `systemctl reload hotserve` after a
+hand edit — swaps the config inside the running process, drops no requests, and
 never restarts a running app (an edited app definition applies the
 next time the app starts: its next deploy or rollback, or a relaunch
 after a crash, a sustained health failure, or a reboot).
@@ -63,10 +117,11 @@ shutdown is Caddy's own. The 503s are the one part that is hotserve's —
 the moment before liveswap has picked your apps back up.
 
 To check for a quiet moment, add `metrics` to the Caddyfile's global
-options, reload, and read how many requests are in flight:
+options (a push from the box's repository, which reloads), and read
+how many requests are in flight:
 
 ```sh
-sudo curl -fsS --unix-socket /run/hotserve/admin.sock http://localhost/metrics \
+curl -fsS --unix-socket /run/hotserve/admin.sock http://localhost/metrics \
   | grep '^caddy_http_requests_in_flight'
 ```
 
@@ -82,13 +137,13 @@ Before you upgrade:
 
 - **Check the new version accepts your config.** The `.tar.gz` on the
   release page holds the bare binary, and
-  `sudo ./hotserve validate --config /etc/hotserve/Caddyfile` runs its
+  `./hotserve validate --config /etc/hotserve/Caddyfile` runs its
   config check without touching anything that is running. A config it
   rejects would stop the upgraded hotserve from starting, and the site
   would stay down until you fixed the config or went back (systemd
   retries a crash, not a refusal).
 - **The `.deb` you are upgrading from is still in `/var/local/hotserve`.**
-  `sudo apt install --allow-downgrades ./hotserve_<old>_$(dpkg --print-architecture).deb`
+  `apt install --allow-downgrades ./hotserve_<old>_$(dpkg --print-architecture).deb`
   puts it back — the same restart, in reverse, and nothing to download
   first. On a VPS, a snapshot taken first is the fuller way back.
 - **Upgrade hotserve and the host separately.** hotserve measures what
@@ -96,6 +151,11 @@ Before you upgrade:
   that cannot deliver it ([liveswap/README.md](../liveswap/README.md#sandbox)),
   so a kernel update or reboot bundled with an upgrade leaves you
   guessing which change did it.
+
+The box repository's workflow checks config with the latest stable
+release, so it needs nothing after an upgrade — unless its
+`HOTSERVE_VERSION` repository variable pins a release, which then
+wants the new one.
 
 There is no APT repository yet, so nothing upgrades hotserve behind
 your back; the hosted repository on the [roadmap](../README.md#roadmap) is what
@@ -119,14 +179,16 @@ What a patch reaches depends on where the app's runtime came from:
   only. A newer Deno is a new file there, and a newer Node a new build;
   either still waits for the next launch.
 
-So after patching, relaunch each app by pushing a commit to its
-repository. An empty one is enough:
+So after patching, relaunch each app. In its repository, Actions →
+deploy → **Run workflow**, with the running version as the version to
+roll back to: a rollback to the running version relaunches it from
+the box's disk, through the same health gate and cutover as any
+deploy, with no build. Or push a commit — an empty one is enough —
+which deploys a new version the same way:
 
 ```sh
 git commit --allow-empty -m "Relaunch after patching" && git push
 ```
 
-The version running cannot be deployed or rolled back to again, and a
-new commit is a new version, so it goes through the same health gate
-and cutover as any deploy. Or reboot, which relaunches every app at
-once but takes the sites down while it does.
+Or reboot, which relaunches every app at once but takes the sites
+down while it does.

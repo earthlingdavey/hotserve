@@ -1,147 +1,150 @@
 # After the first deploy
 
-[Your first deploy](first-deploy.md) leaves a working box that root set
-up by hand. This page turns it into one a person administers: the
-config in git, an account that is not root, root login closed, and the
-leftover port shut. None of it touches the running app. Do the steps
-in this order: the second takes a file from the first, and the fourth
-locks you out without the second.
+[Your first deploy](first-deploy.md) leaves a working box whose config
+is in git. This page has what comes next, running it: changing the
+config, secrets, the way back from an upgrade, day to day, and what to
+do at 3am. [Hardening the box](hardening.md) — SSH by key only, the
+SSH port shut to everyone but you, and, if you want them, an
+administrator who is not root and Debian's updates installed on their
+own — has a page of its own.
 
-Names are the ones from the first page, plus `alice`, the
-administrator, and `box.example.com`, the box's own name (any name
-that resolves to it, `example.com` included).
+Names are the ones from the first page.
 
-## 1. Keep the Caddyfile in git
+## 1. Change the config
 
-The box's config is one file, and it is where the box's policy lives:
-which repo may deploy each app, and each Deno app's permission flags.
-In a repo of its own, a change to it is a diff someone reads before it
-is pushed, and the push script never leaves a bad file on the box.
+Edit `deploy.example.com/Caddyfile` in the box's repository, commit —
+signed, as every commit from that checkout is — and push to `main`.
+The run prints what the box did:
 
-On your laptop, take [examples/box](../examples/box) from a checkout of
-hotserve at the release the box runs, and make it a new **private**
-repository, separate from the app's:
-
-```sh
-git clone --depth 1 --branch v0.2.0 https://github.com/smallhoursorg/hotserve
-cp -r hotserve/examples/box example-box && cd example-box && git init
+```
+apply: deploy.example.com/Caddyfile → https://deploy.example.com/: the box runs 4f1c2a9; sending c6d0e81 (1 commit), push 018f3a…
+apply: deploy.example.com at c6d0e81, signed by alice@example.com; verified; installing
+--- installed
++++ pushed
+…
+apply: deploy.example.com at c6d0e81: loaded; running apps are not restarted; apps example
 ```
 
-Then, instead of editing its example `Caddyfile`, replace it with the
-one the box is already running:
+The box applied it because a key it lists signed the commit and every
+commit since the one it ran, the file is the one in that commit, and
+hotserve validates it; then it swapped the file in and reloaded. A
+reload that fails puts the previous file back. A push it refuses
+changes nothing, and the run says why.
+
+A reload never restarts a running app: a changed `app` block applies
+at the app's next launch — its next deploy or rollback, or a relaunch
+after a crash. A rollback to the running version gives it one now
+([When a value reaches the app](secrets.md#when-a-value-reaches-the-app)).
+
+<details>
+<summary><b>If the app is a Deno app</b></summary>
+
+Its permission flags live in this file, and a deploy launches with the
+flags the box has. So widen them *before* deploying code that needs
+them, and narrow them only after the code that needed them is gone.
+
+</details>
+
+A change someone else should read first goes on a branch and a pull
+request, where the workflow checks it, and lands from a signer's
+laptop — never with GitHub's merge button, which cannot make a commit
+the box applies:
 
 ```sh
-scp root@box.example.com:/etc/hotserve/Caddyfile Caddyfile
+git switch main && git pull --ff-only
+git merge --ff-only the-branch     # a branch of signed commits, rebased onto main
+git push origin main
 ```
 
-Set `HOTSERVE_VERSION` in `.github/workflows/check.yml` to the same
-release, the tag without its `v`, so CI validates every change with the
-binary the box has. Commit, and push the config once to prove the
-loop:
+Undoing a change is `git revert` and a push. The box README has the
+rest: [the rules](../examples/box/README.md#the-rules) that follow
+from what the box checks, [adding a signer](../examples/box/README.md#adding-a-signer),
+and [what to do when a push is refused](../examples/box/README.md#when-a-push-is-refused).
+
+## 2. Secrets, if the app has any
+
+Skip this if it does not; the examples do not. A secret is a commit,
+like the config. Each value is one small file in the box's repository,
+encrypted on your laptop with [age](https://age-encryption.org) to two
+kinds of key: the box's own, which hotserve made when it was
+installed, and the SSH key you sign commits with. GitHub and the
+workflow only ever hold ciphertext, and nothing is typed onto the box.
+
+Once, on the laptop: `brew install age` (Debian: `apt install age`).
+The first secret also needs the box's key, which root prints:
 
 ```sh
-make push BOX=root@box.example.com
+make secret APP=example VAR=DATABASE_URL BOX_KEY=$(ssh root@box.example.com hotserve box key)
 ```
 
-It answers that the box already runs this Caddyfile, which is the
-point: the repo now holds what the box runs, and every later change
-goes the other way — edit, pull request, merge, `make push`. The
-script validates the file on the box, shows the diff against what is
-live (including any edit made on the box by hand, which the push would
-undo), asks, swaps the file in, and reloads; if the reload fails it
-puts the previous file back. It runs every privileged step through
-`sudo -n`, which root passes without a password; step 2 gives it a
-user that is not root. The box README's
-[Change the config](../examples/box/README.md#change-the-config) is the
-full description.
+```
+value for example DATABASE_URL (typing is not shown):
+secret: made deploy.example.com/secrets/recipients: this box (age1qpzr…7k2d), alice@example.com
+secret: deploy.example.com/secrets/example/DATABASE_URL.age, encrypted to 2 keys, added to the commit
+secret: example's block does not read its secrets yet; add this line to it:
+secret:     env_file /etc/hotserve/secrets/example.env
+```
 
-## 2. Create the administrator
-
-This user is not root. The `sudoers` file in the repo you just made
-grants exactly the eight commands `make push` runs as root, plus
-creating and editing the apps' env files under `/etc/hotserve`
-(step 3), and nothing else; the `adm` group reads the logs. Everything else an
-administrator does — checking a config, reading it, `journalctl` —
-needs no privilege at all. Read the file: it is short, and it says
-what it grants.
-
-From the laptop, put it on the box:
+The value goes from the prompt straight into age, so it is never
+written to the laptop's disk or your shell's history. The prompt takes
+the line you paste or type exactly as it is, however long, up to the
+box's cap; since
+typing is not shown it takes no edits, so a Backspace or an arrow key
+refuses the value and you enter it again. A value you would rather not
+type comes in through a pipe instead: `pbpaste | make secret
+APP=example VAR=…` (on Linux, `xclip -o` or `wl-paste`). Add that
+`env_file` line to the app's block (the template's Caddyfile has it
+ready, commented out: uncomment it), then commit and push:
 
 ```sh
-scp sudoers root@box.example.com:/etc/sudoers.d/hotserve-admin
+git commit -am "example: database" && git push
 ```
 
-Then as root on the box:
-
-```sh
-chmod 0440 /etc/sudoers.d/hotserve-admin && visudo -c
-adduser alice
-install -d -m 0700 -o alice -g alice /home/alice/.ssh && cp ~/.ssh/authorized_keys /home/alice/.ssh/
-groupadd hotserve-admin && usermod -aG adm,hotserve-admin alice
+```
+apply: deploy.example.com at 9be0d44, signed by alice@example.com; verified; installing
+--- installed
++++ pushed
+…
+apply: deploy.example.com secrets: example: added DATABASE_URL
+apply: deploy.example.com at 9be0d44: loaded; running apps are not restarted; apps example
+apply: example reads its secrets at its next launch; a deploy of a new version launches it now
 ```
 
-Before you close the root session, from your laptop:
+The box decrypts the value with its own key, only after it has checked
+the commit's signature, and writes `/etc/hotserve/secrets/example.env`.
+hotserve reads that file each time the app launches, and no app can
+see it. A pull request shows which variables changed and never what
+they are, and the workflow checks the names before anything is
+merged.
 
-```sh
-ssh alice@box.example.com sudo -n systemctl reload hotserve
+The same command changes a value; once the box has a secret it needs
+no `BOX_KEY`. A push that changes only secrets reloads nothing:
+
+```
+apply: deploy.example.com secrets: example: changed DATABASE_URL
+apply: deploy.example.com at 3c1d0e8: secrets updated; the Caddyfile is unchanged, nothing reloaded; apps example
+apply: example reads its secrets at its next launch; a deploy of a new version launches it now
 ```
 
-That works silently or not at all, and it is the whole of what
-`make push BOX=alice@box.example.com` needs from now on.
+Who can read a value: the box, and every key in
+`deploy.example.com/secrets/recipients`, which `make signer` keeps in
+step with the signers. Removing a person stops them reading new
+values, not the ones they could already read, so change those. A Deno
+app also needs `--allow-env=` to name each variable it reads.
+[Secrets](secrets.md) has the rest: [the commands](secrets.md#tasks)
+to see the names, read a value back, remove one, bring in an env file
+made by hand, or let a new signer read them; a signing key age cannot
+use, a rebuilt box, a lost laptop, who can read what, and what GitHub
+sees.
 
-What this grants is the `hotserve` user's reach, not root's: whoever
-can write the Caddyfile can make hotserve serve any file it can read,
-its TLS keys and every app's data included. `adm` reaches a little
-wider — the whole system journal, not only hotserve's lines. Give the
-account to the people who may change what the box serves.
-
-## 3. Secrets, if the app has any
-
-Skip this if it does not; the examples do not. When it does, the
-values go in a file on the box that only root and the `hotserve` user
-can read, never in a repo, and the app's block names it with
-`env_file`. This is `alice`'s job, now or whenever an app first needs
-one: the sudoers file admits exactly one way to create the file and
-one way to edit it.
-
-```sh
-sudo install -m 0640 -o root -g hotserve -T /dev/null /etc/hotserve/example.env   # once: empty, root:hotserve
-sudoedit /etc/hotserve/example.env      # one KEY=VALUE per line
-```
-
-Then add `env_file /etc/hotserve/example.env` to the app's block.
-hotserve reads the file at each launch, so a change applies at the
-app's next deploy. A Deno app also needs `--allow-env=` to name each
-variable it reads. The box README's
-[Secrets](../examples/box/README.md#secrets) section has more.
-
-## 4. Close root login
-
-Once step 2's check passed and nothing else needs root:
-
-```sh
-printf 'PermitRootLogin no\nPasswordAuthentication no\n' > /etc/ssh/sshd_config.d/10-hardening.conf
-sshd -t && systemctl reload ssh      # -t checks the config first: a bad one would lock you out
-```
-
-Log out. From here everything is `alice`, and anything that does need
-root again — a package install, say — is the provider's console.
-
-## 5. Shut the port you are not using
-
-At the provider's firewall, allow **22 only from your own address**
-(home, VPN). 80 and 443 stay open to the world; nothing else on the
-box listens on a port, since every app is reached over a unix socket.
-
-## 6. Know the way back
+## 3. Know the way back
 
 The `.deb` you installed from is still in `/var/local/hotserve`, and
-`apt install --allow-downgrades` of it is the way back from an upgrade
-that does not suit you; download each later release into the same
-directory. [Upgrading](upgrading.md) has
-the rest: checking a new version accepts your config before you install
-it, what visitors see during the restart, and how to pick a quiet
-moment for it.
+`apt install --allow-downgrades` of it, as root, is the way back from
+an upgrade that does not suit you; download each later release into
+the same directory. [Upgrading](upgrading.md) has the rest: checking a
+new version accepts your config before you install it, what visitors
+see during the restart, and how to pick a quiet moment for it.
 
 ## Day to day
 
@@ -150,27 +153,38 @@ moment for it.
   version to go back to: a commit's first 12 characters, as the
   releases page lists them, and one of the newest five, which is what
   the box still holds ([examples/node](../examples/node/README.md#rolling-back)).
+- **Change the box** — an app's flags, a second app, a new site, a new
+  signer, a secret — by a signed push to the box's repository (steps 1
+  and 2). The run's output is what changed.
 - **Logs:** `journalctl -t hotserve-example` for the app's own output,
-  `journalctl -u hotserve` for hotserve's, both without sudo as `alice`.
+  `journalctl -u hotserve` for hotserve's, `journalctl -u
+  hotserve-box-apply` for what the box did with a push — as root, or as
+  the administrator, if there is one
+  ([Hardening](hardening.md#3-an-administrator-if-you-want-one)),
+  without sudo.
 - **If hotserve crashes** — a SIGKILL, out of memory, a bug — systemd
   starts it again a second later and it picks the running apps back up.
   A plain `kill` (SIGTERM) is a clean stop, like `systemctl stop`, and
-  stays stopped; so does a start it *refuses*: `journalctl -u hotserve -n 50`
-  says why; fix it, then `sudo systemctl start hotserve` (after "start
-  request repeated too quickly", `sudo systemctl reset-failed hotserve`
-  first). A restart loads whatever is in `/etc/hotserve/Caddyfile`, so
-  an edit you have not reloaded goes live then — or, if it does not
-  validate, keeps hotserve down.
-- **A second app:** another `app` block and site in the Caddyfile,
-  pushed from the box repo; another copy of the example, with its own
-  `HOTSERVE_URL`. The Caddyfile is the only thing on the box that
-  changes.
-- **A changed `app` block** applies at the app's next launch — its next
-  deploy or rollback, or a relaunch after a crash — never to the one
-  running. Widen a Deno app's permissions before deploying code that
-  needs them; narrow after the code that needed them is gone.
-- **Patching the box** (`apt upgrade`) reaches an app only at its next
-  launch too; after patching, push a commit to each app or reboot
+  stays stopped; so does a start it *refuses*: `journalctl -u hotserve
+  -n 50 --no-pager` says why. Fix it, then, as root, `systemctl start
+  hotserve` (after "start request repeated too quickly", `systemctl
+  reset-failed hotserve` first). A stopped box takes no pushes, so a fix to the
+  config is made on the box too ([At 3am](#at-3am)). A restart loads
+  `/etc/hotserve/Caddyfile` as it stands: a pushed file that did not
+  load was put back, but a hand edit that was not reloaded goes live
+  then — or, if it does not load, keeps hotserve down.
+- **A second app:** another `app` block and site in the box's
+  Caddyfile, pushed; another copy of the example, with its own
+  `HOTSERVE_URL`. The Caddyfile, and the app's secrets if it has any
+  (step 2), are all that change on the box.
+- **A second box:** another directory in the box's repository, named
+  for that box's deploy host, and `hotserve init` from it once as root
+  on the new box. Every push goes to every box
+  ([More than one box](../examples/box/README.md#more-than-one-box)).
+- **Patching the box** (`apt upgrade`, as root, or on its own:
+  [Hardening](hardening.md#4-debians-updates-on-their-own-if-you-want-them),
+  step 4) reaches an app only at its next launch; after patching, push
+  a commit to each app or reboot
   ([Upgrading](upgrading.md#patching-the-host)).
 - **Backups:** the package ships `hotserve-backup` and its timers;
   setting them up, checking on them and restoring are
@@ -179,3 +193,26 @@ moment for it.
   needs no privilege.
 - **Everything else:** [liveswap/README.md](../liveswap/README.md) is the
   reference for every option, status code and edge.
+
+## At 3am
+
+If a pushed change broke the deploy host itself, the next push cannot
+reach the box. The way back is root over SSH (the provider's console
+only if SSH itself is down), in one of two ways:
+
+- Edit `/etc/hotserve/Caddyfile` and `systemctl reload hotserve`, then
+  make the same fix a commit and push it. The next signed push
+  overwrites a hand edit — its run warns that it did — because the
+  repository is the truth and the edit is a bridge back to it.
+- Or commit the fix first, and run `hotserve init` with that commit
+  from its directory, copied over as the first page did it.
+
+A change that loads but misbehaves is reverted like any commit: `git
+revert`, push.
+
+A secret that has leaked is changed like any other (`make secret`, a
+push), and reaches the app at its next launch: roll back to the
+running version, or deploy a new one ([When a value reaches the
+app](secrets.md#when-a-value-reaches-the-app)). A hand edit of an
+env file under `/etc/hotserve/secrets/` is overwritten by the next
+push, as a hand edit of the Caddyfile is.

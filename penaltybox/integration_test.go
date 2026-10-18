@@ -3,10 +3,15 @@
 package penaltybox
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +67,7 @@ func get(t *testing.T, tester *caddytest.Tester, client, level string) *http.Res
 		t.Fatal(err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp
 }
 
@@ -150,6 +155,7 @@ func TestIntegrationHeaderStripped(t *testing.T) {
 	assertNoHintHeader(t, get(t, tester, "carol", "1"), "ignored (level 1)")
 	assertNoHintHeader(t, get(t, tester, "carol", ""), "absent header")
 	assertNoHintHeader(t, get(t, tester, "carol", "banana"), "garbage level")
+	assertNoHintHeader(t, get(t, tester, "", "3"), "empty key (fails open)")
 
 	// Box carol and check the 429 too.
 	get(t, tester, "carol", "3")
@@ -174,6 +180,10 @@ func TestIntegrationStripDisabled(t *testing.T) {
 	resp := get(t, tester, "dave", "2")
 	if got := resp.Header.Get("X-Rate-Limit-Level"); got != "2" {
 		t.Fatalf("with strip false the header must pass through, got %q", got)
+	}
+	resp = get(t, tester, "", "2")
+	if got := resp.Header.Get("X-Rate-Limit-Level"); got != "2" {
+		t.Fatalf("with strip false the header must pass through on the empty-key path too, got %q", got)
 	}
 }
 
@@ -293,6 +303,36 @@ func TestIntegrationMinLevelDefaultIgnoresLevel1(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		if resp := get(t, tester, "grace", "1"); resp.StatusCode != 200 {
 			t.Fatalf("default min_level must ignore level-1, got %d on request %d", resp.StatusCode, i)
+		}
+	}
+}
+
+// A max_keys that leaves one slot per shard loads, and Provision logs
+// the warning through the real Caddy logger; one that leaves two slots
+// per shard logs nothing.
+func TestIntegrationSmallMaxKeysWarns(t *testing.T) {
+	for _, tc := range []struct {
+		maxKeys int
+		warns   bool
+	}{{100, true}, {128, false}} {
+		logFile := filepath.Join(t.TempDir(), "caddy.log")
+		logBlock := "grace_period 1ns\n\tlog {\n\t\toutput file " + logFile + "\n\t\tformat json\n\t\tlevel WARN\n\t}\n"
+		config := strings.Replace(testConfig(fmt.Sprintf(`hint_penaltybox {
+			key {header.X-Test-Client}
+			max_keys %d
+		}`, tc.maxKeys)), "grace_period 1ns\n", logBlock, 1)
+		tester := caddytest.NewTester(t)
+		tester.InitServer(config, "caddyfile")
+
+		if resp := get(t, tester, "a", "2"); resp.StatusCode != 200 {
+			t.Fatalf("max_keys %d: config must serve, got %d", tc.maxKeys, resp.StatusCode)
+		}
+		logged, err := os.ReadFile(logFile)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(logged), "max_keys leaves one slot per shard"); got != tc.warns {
+			t.Errorf("max_keys %d: warning logged = %v, want %v; log:\n%s", tc.maxKeys, got, tc.warns, logged)
 		}
 	}
 }

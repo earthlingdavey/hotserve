@@ -6,8 +6,8 @@ COMPOSE ?= docker compose
 # the root module — nested modules are excluded from a parent module's
 # pattern even in workspace mode — so test/vet name each module's tree
 # explicitly.
-MODULES ?= . backups liveswap penaltybox
-PKGS = ./... ./backups/... ./liveswap/... ./penaltybox/...
+MODULES ?= . backups box liveswap penaltybox
+PKGS = ./... ./backups/... ./box/... ./liveswap/... ./penaltybox/...
 
 # Release version: the tag when present (release.yml passes it in),
 # else a digit-leading dev placeholder that deb version rules accept.
@@ -16,7 +16,7 @@ VERSION ?= $(shell (git describe --tags --exact-match 2>/dev/null || echo v0.0.0
 # Distro image for the package install smoke test (install-test).
 DISTRO ?= debian:13
 
-.PHONY: test test-integration vet tidy lint fuzz fuzz-list vulncheck secretscan build package install-test e2e e2e-backup soak e2e-logs clean
+.PHONY: test test-integration vet tidy tidy-check lint fuzz fuzz-list vulncheck secretscan usage usage-check build package clean-debs install-test e2e e2e-backup soak e2e-logs clean
 
 test:
 	$(COMPOSE) run --rm dev go test -race -cover $(PKGS)
@@ -36,8 +36,9 @@ endef
 # Runs inside the dev-systemd container (systemd as PID 1, root's user
 # manager started by test/systemd/ready.sh): liveswap's runner creates
 # real transient units, and the caddytest scenarios deploy a real app
-# through them. -p 1: the modules' caddytest suites all pin admin :2999
-# / http :9080, so their test binaries must not run in parallel.
+# through them; the box applier asks the real systemctl. -p 1: the
+# modules' caddytest suites all pin admin :2999 / http :9080, so their
+# test binaries must not run in parallel.
 # -count=1: these tests hold what systemd, restic and sqlite3 do, and
 # Go's test cache knows none of them — given the same test binary and
 # flags it replays the last result, a pass included, after the program
@@ -51,7 +52,7 @@ test-integration:
 	$(COMPOSE) exec -T dev-systemd /bin/sh /src/test/systemd/ready.sh || status=1; \
 	if [ $$status -eq 0 ]; then \
 		$(COMPOSE) exec -T -e XDG_RUNTIME_DIR=/run/user/0 dev-systemd \
-			go test -count=1 -race -tags integration -v -run Integration -p 1 ./backups/... ./liveswap/... ./penaltybox/... || status=1; \
+			go test -count=1 -race -tags integration -v -run Integration -p 1 ./backups/... ./box/... ./liveswap/... ./penaltybox/... || status=1; \
 	fi; \
 	if [ $$status -ne 0 ]; then $(COMPOSE) exec -T dev-systemd journalctl --no-pager -n 100 || true; fi; \
 	$(COMPOSE) rm -sf dev-systemd >/dev/null; \
@@ -68,42 +69,72 @@ vet:
 tidy:
 	for m in $(MODULES); do $(COMPOSE) run --rm -w /src/$$m dev go mod tidy || exit 1; done
 
+# The PR-CI half of tidy: `go mod tidy -diff` writes nothing, prints
+# the diff tidy would make and exits non-zero when there is one, so a
+# missing go.sum line or a leftover require fails the PR that left it.
+# It checks each module's go.mod/go.sum only: go.work is ignored and
+# go.work.sum is not checked (that would be a separate check).
+tidy-check:
+	for m in $(MODULES); do $(COMPOSE) run --rm -T -w /src/$$m dev go mod tidy -diff || exit 1; done
+
+# Both tag sets, as for vet: a bare run never compiles the
+# integration-tagged files, so neither the linters nor gofmt see them.
+# A single `run.build-tags: [integration]` in .golangci.yml would not
+# do: it drops the `!integration` goleak TestMain files instead.
 lint:
-	for m in $(MODULES); do $(COMPOSE) run --rm -w /src/$$m lint golangci-lint run || exit 1; done
+	for m in $(MODULES); do \
+		$(COMPOSE) run --rm -w /src/$$m lint golangci-lint run || exit 1; \
+		$(COMPOSE) run --rm -w /src/$$m lint golangci-lint run --build-tags integration || exit 1; \
+	done
 
 # Real fuzzing of the untrusted-input surfaces (seed corpora already
 # run inside `make test`). One target at a time — Go allows a single
 # -fuzz pattern per invocation. The corpus accumulates in the
 # gobuildcache volume across runs.
-FUZZTIME ?= 2m
-FUZZ_MODULES = liveswap penaltybox
+# FUZZTIME (default 2m) is read by the shell, never declared as a make
+# variable: fuzz.yml passes a workflow_dispatch input through the
+# environment, and a make variable would expand $(shell ...) in it.
+FUZZ_MODULES = box liveswap penaltybox
 
-# Fuzz targets are discovered (`go test -list '^Fuzz'`), never listed by
-# hand, so a new target cannot be left out of the weekly run. fuzz-list
-# is the deterministic half, run in every PR: it prints what fuzz will
-# run, fails if a module has no targets, and fails if a committed
-# testdata/fuzz/<Target> corpus (a crasher kept as a regression input)
-# no longer has a target to replay it — dead corpora test nothing.
-# The seed corpora themselves run in `make test`.
+# Fuzz targets are discovered (`go test -list '^Fuzz'` in every package
+# of the module — box keeps its proof core in a subpackage), never
+# listed by hand, so a new target cannot be left out of the weekly run.
+# fuzz-list is the deterministic half, run in every PR: it prints what
+# fuzz will run, fails if a module has no targets, and fails if a
+# committed testdata/fuzz/<Target> corpus (a crasher kept as a
+# regression input) no longer has a target in its package to replay it
+# — dead corpora test nothing. The seed corpora themselves run in
+# `make test`.
 fuzz-list:
 	@for m in $(FUZZ_MODULES); do \
-		targets=$$($(COMPOSE) run --rm -T -w /src/$$m dev go test -list '^Fuzz' . | grep '^Fuzz'); \
-		[ -n "$$targets" ] || { echo "no fuzz targets found in $$m"; exit 1; }; \
-		for t in $$targets; do echo "$$m $$t"; done; \
-		for d in $$m/testdata/fuzz/*/; do \
-			[ -d "$$d" ] || continue; \
-			n=$$(basename "$$d"); \
-			echo "$$targets" | grep -qx "$$n" || { echo "$$d has no matching Fuzz target"; exit 1; }; \
+		found=0; \
+		pkgs=$$($(COMPOSE) run --rm -T -w /src/$$m dev go list -f '{{.Dir}}' ./...) || { echo "$$pkgs"; echo "go list failed in $$m"; exit 1; }; \
+		for p in $$pkgs; do \
+			rel=$${p#/src/}; \
+			listed=$$($(COMPOSE) run --rm -T -w $$p dev go test -list '^Fuzz' .) || { echo "$$listed"; echo "go test -list failed in $$rel"; exit 1; }; \
+			targets=$$(echo "$$listed" | grep '^Fuzz'); \
+			for d in $$rel/testdata/fuzz/*/; do \
+				[ -d "$$d" ] || continue; \
+				n=$$(basename "$$d"); \
+				echo "$$targets" | grep -qx "$$n" || { echo "$$d has no matching Fuzz target"; exit 1; }; \
+			done; \
+			[ -n "$$targets" ] || continue; \
+			found=1; \
+			for t in $$targets; do echo "$$rel $$t"; done; \
 		done; \
+		[ $$found -eq 1 ] || { echo "no fuzz targets found in $$m"; exit 1; }; \
 	done
 
 fuzz:
 	for m in $(FUZZ_MODULES); do \
-		targets=$$($(COMPOSE) run --rm -T -w /src/$$m dev go test -list '^Fuzz' . | grep '^Fuzz'); \
-		[ -n "$$targets" ] || { echo "no fuzz targets found in $$m"; exit 1; }; \
-		for t in $$targets; do \
-			$(COMPOSE) run --rm -w /src/$$m dev \
-				go test -run '^$$' -fuzz "^$$t$$" -fuzztime $(FUZZTIME) . || exit 1; \
+		pkgs=$$($(COMPOSE) run --rm -T -w /src/$$m dev go list -f '{{.Dir}}' ./...) || { echo "$$pkgs"; echo "go list failed in $$m"; exit 1; }; \
+		for p in $$pkgs; do \
+			listed=$$($(COMPOSE) run --rm -T -w $$p dev go test -list '^Fuzz' .) || { echo "$$listed"; echo "go test -list failed in $${p#/src/}"; exit 1; }; \
+			targets=$$(echo "$$listed" | grep '^Fuzz'); \
+			for t in $$targets; do \
+				$(COMPOSE) run --rm -w $$p dev \
+					go test -run '^$$' -fuzz "^$$t$$" -fuzztime "$${FUZZTIME:-2m}" . || exit 1; \
+			done; \
 		done; \
 	done
 
@@ -121,14 +152,57 @@ vulncheck:
 # Full-history secret scan — the same engine and image as CI's gitleaks
 # gate (the image is pinned in docker-compose.yml, where Dependabot
 # watches it), so local and CI can never drift.
+#
+# Inside the container the history is readable only when .git is a
+# directory: a git worktree's .git is a file naming a gitdir outside
+# the /src mount, and there gitleaks logs "not a git repository",
+# scans 0 commits and exits 0 with "no leaks found" — a false pass. So
+# a worktree gets --no-git and the scan covers the working tree
+# instead: every file on disk (ignored build output included), not
+# the branch's commits — those CI's git-mode run covers. A plain
+# checkout (and CI's) is unchanged.
+secretscan: GITLEAKS_FLAGS = $(shell test -d .git || echo --no-git)
 secretscan:
-	$(COMPOSE) run --rm gitleaks detect --source /src --redact -v
+	$(COMPOSE) run --rm gitleaks detect --source /src --redact -v $(GITLEAKS_FLAGS)
+
+# hotserve's release, linked in as Caddy's CustomVersion. Caddy puts it
+# in front of its full version (`hotserve version`, `--version`,
+# `environ`), which otherwise names only the Caddy built in. The short
+# version, in Caddy's ACME User-Agent, metrics, tracing and FastCGI
+# SERVER_SOFTWARE, stays Caddy's own.
+GO_LDFLAGS = -s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v$(VERSION)
+
+# The public ledger of what building hotserve costs: Claude Code
+# sessions, Actions runner minutes and Copilot credits as month-level
+# facts in usage/*.csv, rendered to docs/footprint.md. Reads the
+# transcripts under ~/.claude/projects (the compose service mounts them
+# read-only) and the Actions API with your gh login — the token gh
+# hands over carries the login's full scope, though public run data
+# needs only its rate-limit identity. Run it monthly — GitHub keeps run
+# records for 90 days — fill in usage/copilot.csv from GitHub billing
+# (its note column is public too), and commit what changed. --user: the
+# files it writes stay yours on a Linux host (the container is root).
+USAGE_REPO ?= smallhoursorg/hotserve
+usage:
+	GH_TOKEN=$$(gh auth token) $(COMPOSE) run --rm --user "$$(id -u):$$(id -g)" usage \
+		python3 -I .github/scripts/usage.py collect-claude collect-actions render --repo $(USAGE_REPO)
+
+# The PR-CI half of usage, like tidy-check: runs the merge rule's tests,
+# then re-renders docs/footprint.md from the committed CSVs (no
+# transcripts, no token) and fails when the page no longer matches them.
+# It is also the only lane that runs the python image, so Dependabot's
+# bumps of that pin are exercised.
+usage-check:
+	$(COMPOSE) run --rm -T --user "$$(id -u):$$(id -g)" usage python3 -I -B .github/scripts/usage_test.py
+	$(COMPOSE) run --rm -T --user "$$(id -u):$$(id -g)" usage python3 -I .github/scripts/usage.py render
+	git diff --exit-code -- docs/footprint.md
 
 # Cross-compiles the product binary for the release targets. GOFLAGS is
-# cleared so -buildvcs is back on: caddycmd stamps the version from the
-# checked-out tag via build info (the dev service disables it for test
-# cache friendliness). safe.directory is needed because /src is a bind
-# mount owned by a different uid than the container's root.
+# cleared so -buildvcs is back on: Go records the commit, and on a tag
+# the release, in the build info `hotserve build-info` prints (the dev
+# service disables it for test cache friendliness). safe.directory is
+# needed because /src is a bind mount owned by a different uid than the
+# container's root.
 # The trailing chmod is for Linux CI runners: the container runs as
 # root, so without it the bind-mounted build/ is unwritable to the
 # host user and package's cp/rm staging fails (macOS masks this).
@@ -137,8 +211,8 @@ secretscan:
 build:
 	$(COMPOSE) run --rm -e GOFLAGS= -e CGO_ENABLED=0 dev sh -c '\
 		git config --global --add safe.directory /src; \
-		GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o build/hotserve-linux-amd64 ./cmd/hotserve & p1=$$!; \
-		GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o build/hotserve-linux-arm64 ./cmd/hotserve & p2=$$!; \
+		GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(GO_LDFLAGS)" -o build/hotserve-linux-amd64 ./cmd/hotserve & p1=$$!; \
+		GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(GO_LDFLAGS)" -o build/hotserve-linux-arm64 ./cmd/hotserve & p2=$$!; \
 		(cd backups && GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../build/hotserve-backup-linux-amd64 ./cmd/hotserve-backup) & p3=$$!; \
 		(cd backups && GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../build/hotserve-backup-linux-arm64 ./cmd/hotserve-backup) & p4=$$!; \
 		wait $$p1 || exit 1; wait $$p2 || exit 1; wait $$p3 || exit 1; wait $$p4 || exit 1; \
@@ -152,14 +226,18 @@ build:
 # fallback runner, so an Alpine/OpenRC package would install a hotserve
 # that serves but refuses any Caddyfile defining an app — see
 # packaging/nfpm.yaml. The packages carry the systemd unit, the starter
-# /etc/hotserve/Caddyfile and the data dirs, and hotserve-backup with
-# its two timers; postinstall creates the hotserve and hotserve-backup
-# system users. Both arches are staged and packaged inside ONE nfpm
-# container: staged on the host between two containers, a binary
-# replaced in place kept its old size in Docker Desktop's bind-mount
-# attribute cache, and nfpm wrote a tar header of the amd64 size over
-# the arm64 content ("missed writing 286720 bytes").
-package: build
+# config (in /usr/share/hotserve) and the data dirs, and hotserve-backup
+# with its two timers; postinstall creates the hotserve and
+# hotserve-backup system users and installs the starter at
+# /etc/hotserve/Caddyfile. Both arches are staged and packaged inside
+# ONE nfpm container: staged on the host between two containers, a
+# binary replaced in place kept its old size in Docker Desktop's
+# bind-mount attribute cache, and nfpm wrote a tar header of the amd64
+# size over the arm64 content ("missed writing 286720 bytes").
+#
+# clean-debs runs before build, so a run that fails anywhere leaves no
+# .deb behind for install-test to certify in place of this one.
+package: clean-debs build
 	mkdir -p dist
 	$(COMPOSE) run --rm --entrypoint sh -e NFPM_VERSION=$(VERSION) nfpm -c '\
 		set -e; \
@@ -172,6 +250,9 @@ package: build
 			done; \
 		done; \
 		rm -f build/hotserve build/hotserve-backup'
+
+clean-debs:
+	rm -f dist/hotserve_*.deb
 
 # Installs the freshly built .deb inside a systemd container (DISTRO
 # picks the base image) and runs the staged smoke test: install, unit
@@ -210,8 +291,9 @@ install-test:
 # refused start staying down, cgroup teardown of a worker tree, crash
 # cleanup, journal output. The recovery suite is the runner's view
 # after all that: still serving, deploys still work. Last, the box
-# suite drives examples/box's bin/push from the host against the
-# container, and puts the e2e config back.
+# apply suite runs inside the container: signed commits and secrets
+# pushed through box_webhook to the root applier, with the box
+# template's own commands, and the e2e config put back.
 e2e:
 	$(cgroup2_preflight)
 	$(COMPOSE) up --build -d e2e-hotserve e2e-upstream e2e-artifacts
@@ -221,8 +303,8 @@ e2e:
 	$(COMPOSE) exec -T e2e-hotserve /bin/sh /suite-systemd.sh || status=1; \
 	echo "════ recovery suite: the runner's view after hotserve's unclean death ════"; \
 	$(COMPOSE) run --rm --entrypoint "/bin/sh /suite-recovery.sh" e2e-runner || status=1; \
-	echo "════ box suite: examples/box's bin/push against the e2e box ════"; \
-	COMPOSE="$(COMPOSE)" sh e2e/box-push.sh || status=1; \
+	echo "════ box apply suite: signed pushes through box_webhook to the root applier ════"; \
+	$(COMPOSE) exec -T e2e-hotserve /bin/sh /suite-box.sh || status=1; \
 	if [ $$status -ne 0 ]; then \
 		$(COMPOSE) logs e2e-upstream e2e-artifacts; \
 		$(COMPOSE) exec -T e2e-hotserve journalctl --no-pager -n 300 || true; \
@@ -313,5 +395,7 @@ e2e-logs:
 	$(COMPOSE) logs e2e-upstream e2e-artifacts
 	$(COMPOSE) exec -T e2e-hotserve journalctl --no-pager -n 300
 
+# --rmi local: the images this checkout built (no custom tag), one set
+# per compose project; pulled images are kept.
 clean:
-	$(COMPOSE) down -v --remove-orphans
+	$(COMPOSE) down -v --remove-orphans --rmi local

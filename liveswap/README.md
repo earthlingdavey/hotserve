@@ -36,8 +36,11 @@ The diagram shows a **URL pull**; the same pipeline serves two more
 sources (see [Webhook API](#webhook-api)): a **push** streams the
 tarball in the request body (skips `downloading`), and a **rollback**
 relaunches an on-disk release (skips `downloading`/`extracting`, and
-`preparing` runs no `pre_start`). Versions are immutable — a re-deploy of an existing
-version is rejected; rollback is how you relaunch one.
+`preparing` runs no `pre_start`). Versions are immutable — a deploy of an
+existing version with other bytes is rejected; rollback is how you
+relaunch one, the running version included, and a deploy of the
+running version with the same artifact relaunches it too (see
+[Relaunching the running version](#relaunching-the-running-version)).
 
 The cutover is an atomic pointer swap inside a `reverse_proxy` dynamic
 upstream source — no config reload, no socket juggling, and every
@@ -135,6 +138,7 @@ most container hosts will not give you.
 			deploy_trust github {                 # its own repo, its own block
 				audience hotserve
 				claim repository your-org/api
+				claim ref        refs/heads/main
 			}
 		}
 	}
@@ -193,6 +197,14 @@ covers both:
 server.listen(process.env.SOCKET ?? 3000);
 ```
 
+A Node app that already passes `process.env.PORT` to `listen()` as it
+is (`server.listen(process.env.PORT)`, or Express's
+`app.listen(process.env.PORT || 3000)`) needs no change:
+`env PORT {socket}` in its block sets `PORT` to the socket's path
+([Placeholders](#placeholders)), and `listen()` binds a path it is
+given; one that makes `PORT` a number first, as
+`parseInt(process.env.PORT)` does, fails to listen.
+
 ```ts
 // Deno: the `deno serve` CLI is port-only; call Deno.serve yourself.
 const sock = Deno.env.get("SOCKET");
@@ -210,8 +222,14 @@ log.Fatal(http.Serve(ln, mux))
 
 Bun: `Bun.serve({ unix: process.env.SOCKET, fetch })`. Hono on Node:
 `createAdaptorServer(app).listen(process.env.SOCKET)`. Python:
-`gunicorn --bind unix:$SOCKET`, `uvicorn --uds $SOCKET`. Ruby: `puma
--b unix://$SOCKET`. Rust: axum/hyper on a `tokio::net::UnixListener`.
+`gunicorn --bind unix:{socket}`, `uvicorn --uds {socket}`. Ruby: `puma
+-b unix://{socket}`. Rust: axum/hyper on a `tokio::net::UnixListener`.
+Where the path goes on the command line, as in those three, write the
+`{socket}` placeholder (see [Placeholders](#placeholders)) in
+`command`, not `$SOCKET`: `command` and `pre_start` run without a
+shell and without systemd's `$VAR` substitution, so every word reaches
+the app as written and `$SOCKET` arrives as those seven characters. A
+command that needs a variable's value reads it from its environment.
 
 Framework CLIs that only bind TCP (`next start`, Astro's node adapter)
 need a small custom server that calls the framework's request handler
@@ -257,7 +275,7 @@ resolved at config load.
 | `env`, `env_file` | — | Extra environment |
 | `health_path` | `/health` | 2xx = healthy; `off` = process-liveness only |
 | `health_interval` / `health_timeout` | `5s` / `2s` | Probe cadence |
-| `soak` | `15s` | Continuous health required before cutover |
+| `soak` | `15s` | Continuous health required before cutover. `0` is no soak: traffic moves on the first healthy probe. Refused with `health_path off`, where nothing is probed and the gate would look once, straight after the process starts (#305 tracks allowing it once the gate checks the socket) |
 | `deadline` | `5m` | Bound on pre_start and, separately, on the health gate (soak included, so `soak` cannot exceed it). The gate is judged once per `health_interval`, so it can run over by one interval plus two `health_timeout`s (the probe before the last tick and the one on it); a soak that falls due on that first tick past the deadline still passes |
 | `drain` | `5s` | In-flight grace after cutover, before SIGTERM |
 | `grace` | `10s` | SIGTERM → SIGKILL window |
@@ -271,6 +289,11 @@ resolved at config load.
 | `max_artifact_size` | `100MB` | Download cap; decompressed cap is 10× |
 | `max_artifact_entries` | `100000` | Cap on the files, directories and links one artifact creates (implied parent directories included). The byte cap does not bound what extraction *consumes* — every object costs an inode and most a disk block — so this is what keeps one hostile artifact from filling the disk for everything else on the box. A CI-built artifact is thousands; a Next.js standalone output is ~5–20k |
 | `backup { … }` | — | Declares what under the app's `shared/` is worth backing up: `sqlite` names database files, `files` names files and directories (`.` is all of `shared/`). See [Declaring backups](#declaring-backups) |
+
+Every duration, count and size above must be more than `0`, except `soak`
+and `deploy_log_lines`, where `0` is a setting. A `0` elsewhere is
+refused when the config loads, naming the option and its minimum;
+leave an option out to get its default.
 
 Both caps are cliffs an app can grow into, so each successful deploy
 logs the artifact's entry count and decompressed size and, past **75%**
@@ -400,6 +423,11 @@ The status JSON's `watchdog` object reports `state`
 (`grace|watching|backoff|throttled|disabled|idle`),
 `consecutive_failures`, `restarts_in_window`, `last_restart_at`,
 `last_restart_cause` (`crash|health`) and `last_failure`.
+`restarts_in_window` is what the budget counts: it includes a restart
+still waiting out its `backoff` (dropped again if that restart is
+called off), and a relaunch that failed to start, while
+`last_restart_at` and `last_restart_cause` describe the last restart
+that started an instance.
 
 If your health endpoint can be slow under load, raise `health_timeout`
 (probe timeouts count as failures). If it redirects — a `/health` →
@@ -411,7 +439,7 @@ deploy gate alike.
 
 Every instance runs inside systemd's own per-unit sandbox. There is
 one sandbox, no setting that turns it off or widens it, and a host
-either delivers it or hotserve does not start:
+either delivers it or hotserve does not start with an app configured:
 
 | What every unit gets |
 |---|
@@ -421,8 +449,9 @@ either delivers it or hotserve does not start:
 | hotserve's keys and sockets, other apps, and every path nothing named — **absent**, not merely unreadable |
 | Private `/tmp`, minimal `/dev`, read-only cgroupfs, no capabilities, `@system-service` syscall filter, `AF_INET`/`AF_INET6`/`AF_UNIX`/`AF_NETLINK` only, no nested namespaces |
 
-`PrivatePIDs=` needs systemd 256; Debian 13 — the supported host —
-ships 257. Where the namespaces cannot be had at all (a container, an
+`PrivatePIDs=` needs systemd 257, which Debian 13 — the supported
+host — ships, and the `.deb` refuses to install on anything older.
+Where the namespaces cannot be had at all (a container, an
 LXC VPS, a kernel built without user namespaces, an LSM that refuses
 them) hotserve refuses to start, naming what the host lacks. It is
 deliberately not a ladder, and there is deliberately no mode that runs
@@ -433,9 +462,9 @@ runs as the hotserve user, so one bare app could read every sibling's
 data and hotserve's own keys. That is why there is no per-app opt-out
 either.
 
-**An app sees its release dir, its `shared/`, a private `/tmp`, the OS
-runtime. Nothing else on the host
-exists in its view.**
+**An app sees its release dir, its `shared/`, its instance's
+`run/<nonce>/`, a private `/tmp`, the OS runtime. Nothing else on the
+host exists in its view.**
 
 That is the whole guarantee. The view is built deny-by-default
 (`TemporaryFileSystem=/:ro` plus explicit binds), so it is a policy
@@ -459,9 +488,10 @@ actually has — a dozen or so — and `ls /var/lib` shows exactly one,
 the liveswap root.
 
 The working directory is the release dir and `HOME` defaults to
-`shared/`; both are writable. `HOME` is applied before `env_file` and
-inline `env`, so you can point it elsewhere — inside the release dir,
-say. Point it somewhere the sandbox does not bind and
+`shared/`. Those two and the instance's `run/<nonce>/`, where it binds
+its socket, are the writable binds (`BindPaths=`). `HOME` is applied
+before `env_file` and inline `env`, so you can point it elsewhere —
+inside the release dir, say. Point it somewhere the sandbox does not bind and
 the app gets a `HOME` that does not exist inside its unit; liveswap
 warns at every launch rather than refusing, since you asked for it.
 The network namespace is shared by design — apps make outbound calls
@@ -534,7 +564,10 @@ you add tomorrow is already absent from every unit running today,
 because nothing ever bound it.
 
 **Keep env files outside every app's view.** `/etc/hotserve` is the
-documented location and no app may name it. hotserve refuses a config
+documented location and no app may name it. The box writes each app's
+secrets from its repository to `/etc/hotserve/secrets/<app>.env`
+([docs/secrets.md](../docs/secrets.md)); a file made by hand elsewhere
+under `/etc/hotserve` works the same way. hotserve refuses a config
 in which one app's `env_file` sits inside another app's own dirs,
 or anywhere in the OS base view (`/usr`, the named `/etc` entries) —
 both would put one app's secrets in another app's sandbox, and the
@@ -545,10 +578,19 @@ file and so choose its own next launch's environment.
 
 hotserve reads the file itself, as the `hotserve` user, each time the
 app launches (a deploy, a rollback, a relaunch after a crash or a
-reboot); loading the config does not open it. So create it readable by
-that user and nobody else —
-`sudo install -m 0640 -o root -g hotserve blog.env /etc/hotserve/` —
-and keep it in place: a missing or unreadable file fails that launch.
+reboot); loading the config does not open it. So it must be readable
+by that user and nobody else: the box writes its files 0640
+`root:hotserve`, and a file made by hand needs the same, as root —
+`install -m 0640 -o root -g hotserve -T /dev/null /etc/hotserve/blog.env`,
+then edit it — and keep it in place: a missing or unreadable file
+fails that launch.
+A world-readable or world-writable file is warned about — at config
+load (`hotserve validate` shows it when run as an account that can
+reach the file, and says so when it cannot) and again at each launch,
+from the file the launch actually read — never refused: the launch
+still runs, and a mode changed between loads is not what takes an app
+down on a relaunch. The owner and group are not checked; the
+`install` line above sets them.
 
 **The sandbox is not containment for what an app did before it had
 one.** It restricts what an app can *reach*; it cannot un-copy. An
@@ -566,8 +608,8 @@ already had.
 `ENOENT` for something that exists on the host: a database's unix
 socket, a data directory outside the app's own, a runtime under
 `/opt`. **There is no way to widen a view.** An app sees the OS base
-view, its own release dir and its own `shared/`. That is the whole
-list, and it is fixed.
+view, its own release dir, its own `shared/` and its instance's
+`run/<nonce>/`. That is the whole list, and it is fixed.
 
 That is a deliberate limit, not an oversight. The one mechanism that
 would widen a view is also the one that has to be correct against
@@ -591,9 +633,10 @@ Practical consequences worth planning around:
   every unit. A vendored runtime under `/opt`, or an `nvm`/`asdf` shim
   under a home directory, is not — ship it inside the release instead.
 
-An app's own `releases/<version>` and `shared/` must **be** the
-directories they name. hotserve resolves them immediately before the
-unit is created and refuses to launch if either points somewhere else,
+An app's own `releases/<version>`, `shared/` and `run/<nonce>/` must
+**be** the directories they name. hotserve resolves them immediately
+before the unit is created and refuses to launch if any points
+somewhere else,
 because the app dir is writable by the app: a symlink placed there
 cannot be told from one you meant. To put an app's data on another
 disk, bind-mount it at the same path (`mount --bind /mnt/blog-data
@@ -734,14 +777,26 @@ Presets:
   `issuer https://gitlab.example.com` for self-hosted.
 - `deploy_trust oidc { issuer <url>; audience <a>; … }` — any OIDC
   provider (CircleCI, Buildkite, k8s, …).
-- `deploy_trust local { public_key <path> }` — a key you control, for
-  non-CI deploys. Generate it with `hotserve deploy-keygen`, mint
-  tokens with `hotserve deploy-token`.
+- `deploy_trust local { public_key <path>; audience <a> }` — a key you
+  control, for non-CI deploys. Generate it with `hotserve
+  deploy-keygen`, mint tokens with `hotserve deploy-token`.
 
 Sub-directives: `audience` (required for OIDC — never trust an
-unaudienced token), `claim <name> <value>` (exact-match, repeatable —
-pin `repository`, `ref`, `environment`, etc.), `subject` (sugar for
-`claim sub`), `issuer` (oidc/gitlab), `public_key` (local).
+unaudienced token; for `local`, the name of this box, see below),
+`claim <name> <value>` (exact-match, repeatable — pin `repository`,
+`ref`, `environment`, etc.; a claim named `@id` is refused, because
+Caddy deletes that key from the config before hotserve reads it),
+`subject` (sugar for `claim sub`),
+`issuer` (oidc/gitlab), `public_key` and `max_token_ttl` (local).
+
+A `local` token is a bearer credential for as long as it lives, and
+nothing on the box revokes one short of removing its key. So a
+`local` block accepts a token only while its lifetime, `exp - iat`, is
+at most `max_token_ttl <duration>` (default `24h`): a token without
+`iat`, or minted to live longer, is refused, and the journal's
+`refused` names the directive. `hotserve deploy-token` mints for
+`--ttl` (default `5m`) and warns above an hour. Mint one per deploy;
+a job that cannot raises the bound on its block.
 
 The OIDC presets also **require an identity claim** — one of
 `repository`/`repository_id`/… (github), `project_path`/`project_id`/…
@@ -749,6 +804,33 @@ The OIDC presets also **require an identity claim** — one of
 repo/project on the issuer can mint a token for any audience, so a
 source with only an audience would authorize the whole issuer. Config
 load fails without one.
+
+Two shapes load but are wider than they read, and config load warns
+about each (`hotserve validate` shows it). A `github` or `gitlab`
+block that pins an identity but no branch accepts a token minted on
+**any** branch the identity admits — one repository's, or every
+repository's under a pinned owner or namespace — a workflow edited on
+a feature branch deploys as readily as `main` — so pin the branch: `claim ref
+refs/heads/main` on GitHub, `claim ref_path refs/heads/main` on
+GitLab, where a bare `ref` is a name a branch and a tag can share and
+so counts only beside a `claim ref_type` (`branch`, or `tag` to pin a
+tag). What else counts as
+that binding: `sha` (one commit), `workflow_ref` (GitHub, which
+embeds the caller's ref), a `ref_protected` not pinned `false`, or a
+`subject` in the provider's default form (which carries the ref). An
+`environment` on its own — or GitLab's `environment_protected`, which
+says who may deploy to one, not from where — is noted at info level
+rather than warned about: it binds only as far as that environment
+restricts its deployment branches on the provider side, which the box
+cannot read; a job on any branch may declare one otherwise. A claim whose
+placeholder resolved empty admits no token at all, and is warned
+about as that. The generic `oidc` preset is not read: it requires
+`sub`, whose shape is the issuer's. A global block that every app
+overrides is not read either: it then backs only the unknown-app
+path, through which nothing deploys. A `local` block without an
+`audience` accepts a token minted for any box that trusts the same
+key, so give each box its own audience and mint with `--audience` to
+match.
 
 `Authorization: Bearer` is the only accepted transport — Caddy redacts
 it from access logs automatically.
@@ -770,9 +852,12 @@ liveswap {
 	}
 	# Break-glass: each dev registers their own public key (they keep
 	# the private half on their laptop). Revoke one by deleting its
-	# block; no shared secret, no effect on the others.
-	deploy_trust local { public_key /etc/hotserve/alice.pub  subject alice }
-	deploy_trust local { public_key /etc/hotserve/bob.pub    subject bob }
+	# block; no shared secret, no effect on the others. The audience
+	# names this box (its deploy hostname), so a token minted for
+	# another box that trusts the same key is refused here; mint with
+	# `--audience blog.example.com`.
+	deploy_trust local { public_key /etc/hotserve/alice.pub  audience blog.example.com  subject alice }
+	deploy_trust local { public_key /etc/hotserve/bob.pub    audience blog.example.com  subject bob }
 
 	app blog { command node server.js }
 }
@@ -808,8 +893,9 @@ repository can mint a token for audience `hotserve`, so an answer that
 named the failed check would tell them which apps exist and what each
 block pins. The `webhook auth failed` line carries `refused`: one
 entry per source, in config order, each the source's label and what
-it refused — the signature, `exp`, the audience, or a `claim` that did
-not match, with the identity the token presented:
+it refused — the signature, `exp`, a local token's lifetime over
+`max_token_ttl`, the audience, or a `claim` that did not match, with
+the identity the token presented:
 
 ```
 "refused":"oidc:https://token.actions.githubusercontent.com: claim \"repository\" mismatch, presented repository=your-org/other ref=refs/heads/main actor=alice; local:/etc/hotserve/alice.pub: go-jose/go-jose: error in cryptographic primitive"
@@ -819,14 +905,27 @@ A request with no bearer token says so instead, as does an app with
 no source at all. The box failing to consult the issuer — OIDC
 discovery on first use, or fetching its signing keys — lands here as
 well: still a 401 to the caller, with the network error in the
-journal. Each entry's reason is one line, cut at 300 bytes plus an
-ellipsis — an issuer's error quotes what the token carried, and a
-presented identity can be anything the issuer signed; the reason
+journal. An OIDC source fetches the issuer's keys only for a token
+signed under a key it does not hold yet, and at most once a minute:
+within a minute of its last fetch such a token is refused, with that
+fetch's error if it failed. So the first deploy after the issuer
+rotates its key, or comes back from an outage, can be refused for up
+to a minute; its retry goes through. A forged token under a key the
+box does hold costs it no request to the issuer, which is also why an
+issuer that replaces a key but keeps its kid is not picked up: tokens
+under the new key are refused, with `signature does not match the key
+held for kid "<kid>"; if the issuer replaced that key, systemctl
+reload hotserve` in `refused`, until the source fetches for another
+kid or that reload starts every source with an empty key set. Each
+entry's reason
+is one line, cut at 300 bytes plus an ellipsis — an issuer's error
+quotes what the token carried, and a presented identity can be
+anything the issuer signed; the reason
 comes before the identity, so the cut never takes it — after the
 source's label, which is your config and is not cut. The line count
 is bounded by the throttle below: past an address's ten failures a
-minute the answer is 429 and this line is not written; past the
-process's hundred, a 401 with this line not written. A source the box
+minute, or the process's hundred, this line is not written; the
+answer is the same 401 either way. A source the box
 could not consult has a line of its own outside those budgets:
 `webhook auth could not consult a trust source`, once a minute per
 source while it lasts, whether the token was then refused or another
@@ -852,16 +951,24 @@ release, all through the same endpoint and the same auth:
 ```
 
 `auth_header` is optional and is sent verbatim as `Authorization` on
-the artifact download (dropped automatically on cross-host redirects,
-so GitHub's S3 redirect works). The URL must pass `artifact_allowlist`.
+the artifact download. A redirect carries it only while each hop's
+host is the URL's host or a subdomain of it; the first hop outside
+that domain drops it for good, so GitHub's S3 redirect works. The URL
+must pass `artifact_allowlist`.
 
 `sha256` is optional too: the tarball's digest, 64 hex characters
 (`sha256sum blog.tar.gz`). The box hashes the download as it streams
 and refuses a mismatch with a `422` naming both digests, so a host
 that serves other bytes than CI built cannot deploy them. Without it,
 the download is trusted on the strength of the allowlist and the
-token alone. The example workflows send it; a push carries no pin,
-because its bytes are the request itself.
+token alone. The example workflows send it; a push takes no pin,
+because its bytes are the request itself — the box hashes them as
+they land, and that digest is the push's pin. The pin is kept as `sha256`
+in the version's deploy record and in `last_deploy` (see
+[Deploy records](#deploy-records)), so "are the bytes serving the ones
+CI built?" can still be answered after the journal has rotated, for as
+long as the record is kept — with the exceptions listed there (a pin
+the filter redacts, and a rollback onto a re-deployed version).
 
 **2. Push an uploaded tarball** — no artifact host needed. Stream the
 `.tar.gz` as the request body with a gzip content type; the version is
@@ -898,9 +1005,12 @@ and `deploys`, what each recorded version's latest deploy came to
 
 **Versions are immutable.** A deploy (URL or push) never overwrites an
 existing on-disk release, so a version you can roll back to can't be
-silently replaced — re-deploying an existing version is a `422`. Use a
-new version, or roll back to relaunch an existing one. (A deploy that
-*fails* before cutover is cleaned up, so that version stays retriable.)
+silently replaced — re-deploying an existing version with other bytes
+is a `422`. Use a new version, or roll back to relaunch an existing
+one. (A deploy that *fails* before cutover is cleaned up, so that
+version stays retriable.) The running version is the one exception,
+relaunched rather than refused when the artifact is the same — see
+[Relaunching the running version](#relaunching-the-running-version).
 
 The response is synchronous:
 
@@ -908,13 +1018,12 @@ The response is synchronous:
 |---|---|
 | 200 | Deployed; body is the app's status JSON. Also every streamed deploy (below), whatever its outcome |
 | 400 | The body could not be read, or is not valid JSON |
-| 401 | Bad or missing token — or an unknown app, until the token authenticates against the global sources. The same flat answer whatever the reason; the journal's `webhook auth failed` line says why (above) |
+| 401 | Bad or missing token — or an unknown app, until the token authenticates against the global sources. The same flat answer whatever the reason and however often the address has failed; the journal's `webhook auth failed` line says why (above), within the throttle's budgets ([Secrets and logs](#secrets-and-logs)) |
 | 404 | Unknown app, once authenticated against the global sources (unauthenticated, an unknown app is the 401 above) |
 | 405 | A method other than `GET` or `POST` |
 | 409 | A deploy is already running for this app (retry) |
 | 413 | Pushed upload exceeded `max_artifact_size`, or a JSON body exceeded 64 KiB |
-| 422 | Bad request — missing/invalid version, version already running, **version already exists** (versions are immutable — deploy a new version or roll back to relaunch it), a rollback target no longer on disk, a pre-flight refusal (the command or `pre_start` does not resolve inside the sandbox view, or is an executable built for another machine — the body names the box's architecture and the `runs-on` to build on), or (URL path) an artifact url refused by `artifact_allowlist` (host, path, port, or an undeclared query parameter; the body names exactly what tripped and how the entry would declare it) |
-| 429 | This token failed, and the address has already failed 10 times this minute; `Retry-After` says when the oldest failure ages out. A *valid* token from the same address is never refused — see [Secrets and logs](#secrets-and-logs) |
+| 422 | Bad request — missing/invalid version, the running version asked for again without a matching digest (see [Relaunching the running version](#relaunching-the-running-version)), **version already exists** (versions are immutable — deploy a new version or roll back to relaunch it), a rollback target no longer on disk, a pre-flight refusal (the command or `pre_start` does not resolve inside the sandbox view, or is an executable built for another machine — the body names the box's architecture and the `runs-on` to build on), or (URL path) an artifact url refused by `artifact_allowlist` (host, path, port, or an undeclared query parameter; the body names exactly what tripped and how the entry would declare it) |
 | 5xx | Deploy failed — **the old version, if there was one, is still serving**; body says why. An artifact over `max_artifact_entries` or the decompressed byte cap fails here, before anything is written |
 
 Because the response is synchronous through the whole pipeline, the
@@ -926,7 +1035,17 @@ gate is judged once per interval, and the tick that completes the soak
 still probes), plus drain and grace — and a second `deadline` when
 `pre_start` is configured, since the pre_start step gets a full
 `deadline` of its own before the health gate starts. Expect a
-concurrent deploy to 409 until the first one finishes.
+concurrent deploy to 409 until the first one finishes. A client that
+hangs up (a cancelled job, a step timeout) does not stop a running
+`pre_start`: a migration stopped midway would leave the app's data
+half-changed, so it runs to its end, still bounded by `deadline`, and
+the deploy then fails before any traffic moves. Until then a retry,
+a rollback included, gets the 409. To end a migration that hangs
+sooner than its `deadline`, stop its unit yourself; it is named
+`hotserve-<app>.<version>.<nonce>.prestart.service`. For example:
+`sudo -u hotserve XDG_RUNTIME_DIR=/run/user/$(id -u hotserve)
+systemctl --user stop 'hotserve-blog.*.prestart.service'`. The deploy
+then fails as a failed `pre_start`.
 
 **A failed deploy says why, from the app's side.** The 5xx body's
 `status.last_deploy` carries the phase it stopped in, `phases` — each
@@ -983,9 +1102,10 @@ deploy, a rollback, or a relaunch after a crash, a sustained health failure, or 
 the unit runs an absolute resolved path with the placeholders already
 substituted. Compare it against the release it should be running, not
 against the directive. Anything you put in `command` is readable by
-anyone who can read status, so keep secrets in `env`, which status
-does not report. Then: last deploy result (including `deployed_by` and
-the artifact's `artifact_entries` / `artifact_bytes` against the caps),
+anyone who can read status, so keep secrets out of it: they belong in
+`env_file`. The environment, inline `env` included, is not in status. Then: last deploy result (including `deployed_by`,
+the `sha256` it was pinned to, and the artifact's `artifact_entries` /
+`artifact_bytes` against the caps),
 the watchdog's state (restart counts, last restart cause), and
 `available_versions` — the on-disk releases you can roll back to,
 newest-first.
@@ -1020,6 +1140,37 @@ code. Every line passes the response filter. The examples'
 `scripts/deploy.sh` streams, prints each line as it arrives, and exits
 on the last line's code — or on the real one when nothing streamed.
 
+### Relaunching the running version
+
+A rollback to the version that is running, or a deploy of it that is
+for the same artifact, relaunches it: the same pipeline from
+`preparing` on, with no download or extraction and no `pre_start` — a
+second instance of the installed release on a fresh socket, soaked,
+promoted, the first drained and stopped. Zero downtime, as any deploy,
+and how a changed `env_file` value or app definition reaches the app
+without a new version (a reload never restarts a running app). "The
+same artifact" is decided by digest, with nothing fetched: a URL
+deploy's `sha256` pin, or the digest of a push's upload, must equal
+the `sha256` in the version's deploy record. A request without a
+digest, a version whose record has none (an unpinned pull, or a push
+made by a hotserve older than this one, before pushes were hashed), or
+a different digest is a `422` saying so and naming the way in — a
+rollback to the running version needs no digest, since it is the same
+release by definition. A URL deploy's `url` still has to pass the
+scheme and `artifact_allowlist` checks a fetch gives it, though
+nothing is fetched. The response is the status as for any deploy,
+with `last_deploy.note` set: `relaunched v1.4.2 (same artifact); it
+reads its env file now` (the second clause when the app has an
+`env_file`). A relaunch is not a new deploy: the version's record
+keeps the deploy that put it there, with its pin and times, and
+`deploys` gains no entry. The cost is the cost of any deploy —
+in-memory state goes — now also paid by an accidental re-run or a CI
+retry that sends the same artifact again; and for the overlap the two
+instances share the release dir (it is the working directory, bound
+read-write), as two versions already share `HOME`, so an app that
+keeps state in its release dir rather than under `HOME` may see its
+two instances contend there.
+
 ### Deploy records
 
 Every deploy writes its outcome — the same `last_deploy` object, with
@@ -1032,12 +1183,26 @@ curl --fail-with-body -H "Authorization: Bearer $JWT" \
 ```
 
 The record is the latest deploy of that version (a rollback to it
-replaces it; a request refused before any phase — the version already
-running, or already on disk — writes none); a version never deployed
-is a `404`. `GET /<app>` lists
+replaces it, unless it is the version running: a relaunch keeps the
+record of the deploy that put it there; a request refused before any
+phase — a version already on disk, or the running one asked for with
+another artifact or none to compare — writes none); a version never
+deployed is a `404`. `GET /<app>` lists
 every recorded version's outcome in `deploys`, newest first:
-`version`, `status`, the failing `phase`, `deployed_by`, and the
-times. Records are kept for every version still on disk plus the
+`version`, `status`, the failing `phase`, `deployed_by`, the `sha256`
+the deploy was pinned to, and the times. `sha256` is what the
+deployer asserted and the download was checked against, or the digest
+of the bytes a push uploaded; absent for an unpinned pull (and for a
+push made by a hotserve older than this one). A rollback copies the
+pin from the record it replaces: a version's release cannot be
+replaced while it is on disk, and its record is normally written
+with it. Not always — a version whose release GC pruned can be
+deployed again, and if that deploy left bytes on disk without
+rewriting the record (the record write failed, or a cleanup did),
+a rollback carries the old pin onto the new bytes. A pin equal to an
+`env_file` value is redacted like any other, and a rollback then
+records none. It is never a hash the box took of an unpinned
+download. Records are kept for every version still on disk plus the
 newest `keep` others (failed deploys, whose release is removed at
 once, and versions release GC has pruned), so the set is bounded by
 about twice `keep`. They are written as the response filter left them
@@ -1046,7 +1211,7 @@ when read, like every body. One consequence: a version name equal to
 an `env_file` value is that value wherever it appears —
 `current_version`, `available_versions`, `last_deploy`, `deploys`, a
 record — and shows as `[redacted:KEY]`, and such a version's record
-is only the envelope (version, outcome, times, and why); so do not
+is only the envelope (version, outcome, times, the pin, and why); so do not
 name versions (or apps) after `env_file` values; a release identifier
 an app needs belongs in inline `env`. The outcome words — `succeeded`, `failed`,
 the phase names — are never redacted where they stand as an outcome,
@@ -1099,13 +1264,15 @@ What liveswap does for you:
   Nobody can guess a token — forging one needs a private key — so the
   throttle is not about guessing; it bounds what an unauthenticated
   flood can write to your journal. Per client address, 10 failures a
-  minute; further bad tokens from that address get `429` until the
+  minute are logged; further ones from that address are not, until the
   oldest failure ages out, and one line records that the address is
   throttled. Process-wide, 100 failures a minute
   are logged however many addresses a flood comes from, again with one
   line saying the budget is spent; that process budget governs every
   line about a refusal, so once it is spent an address is throttled
-  silently. The one line outside both budgets names a trust source
+  silently. The throttle never changes the answer: every refusal is
+  the same flat 401, so there is nothing for a client to wait out.
+  The one line outside both budgets names a trust source
   the box could not consult, once a minute per source: that is the
   box's failure, bounded by your config, not by callers. The
   address is Caddy's `client_ip`
@@ -1141,7 +1308,7 @@ What's yours to handle:
 
 No deploy secret to store — the job mints an OIDC token per run
 (matching a `deploy_trust github { audience hotserve; claim repository
-your-org/blog }` block on the box):
+your-org/blog; claim ref refs/heads/main }` block on the box):
 
 ```yaml
 permissions:
@@ -1170,7 +1337,7 @@ steps:
       "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=hotserve" | jq -er .value)
     echo "::add-mask::$JWT"
     SHA256=$(sha256sum blog.tar.gz | cut -d' ' -f1)
-    curl --fail-with-body --max-time 600 -X POST \
+    curl --fail-with-body --max-time 900 -X POST \
       -H "Authorization: Bearer $JWT" \
       -d '{
         "url": "'"$ASSET_URL"'",
@@ -1207,9 +1374,16 @@ the job log, and until it expires anyone who reads the log can deploy;
 if a later step must have it, pass it through `env:` and keep the
 `::add-mask::`.
 
-A version the box already has gets a `422` — versions are immutable —
-so a re-run of a job that deployed fails at this step rather than
-deploying twice. A URL or push deploy that fails has its extracted
+A re-run of a job that deployed sends the same version again. With
+the same tarball — its digest equals the one on record — the box
+relaunches the running version from its disk ([Relaunching the
+running version](#relaunching-the-running-version)); with other bytes
+under that version it is a `422` — versions are immutable — so a
+re-run never deploys other bytes under a version the box has. The
+example workflows rebuild the tarball on a re-run, and `tar -czf`
+stamps it with the build time, so their re-run is the `422`; to
+relaunch the running version from the Actions tab, **Run workflow**
+with it as the rollback target. A URL or push deploy that fails has its extracted
 release removed, so its version can be deployed again (a failed
 rollback leaves its on-disk release alone) — unless the 5xx body says
 `release <version> left
@@ -1226,7 +1400,7 @@ a new version.
 deploy:
   stage: deploy
   id_tokens:
-    HOTSERVE_JWT:               # verified by `deploy_trust gitlab { audience hotserve; claim project_path your-org/blog }`
+    HOTSERVE_JWT:               # verified by `deploy_trust gitlab { audience hotserve; claim project_path your-org/blog; claim ref_path refs/heads/main }`
       aud: hotserve
   script:
     - tar -czf blog.tar.gz -C dist .
@@ -1236,7 +1410,7 @@ deploy:
         "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/blog/$CI_COMMIT_SHORT_SHA/blog.tar.gz"
     - |
       SHA256=$(sha256sum blog.tar.gz | cut -d' ' -f1)
-      curl --fail-with-body --max-time 600 -X POST \
+      curl --fail-with-body --max-time 900 -X POST \
         -H "Authorization: Bearer $HOTSERVE_JWT" \
         -d "{
           \"url\": \"$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/blog/$CI_COMMIT_SHORT_SHA/blog.tar.gz\",
@@ -1265,6 +1439,18 @@ status, the last health probe's answer, the last lines the app and
 its `pre_start` wrote (see [Webhook API](#webhook-api)); the whole
 journal stays on the box, `journalctl -t hotserve-blog`.
 
+`--max-time 900` is the budget [Webhook API](#webhook-api) gives, with
+the defaults and a `pre_start`, plus the artifact's transfer: the
+`pre_start`'s `deadline` (5m) + the health gate's `deadline` (5m) +
+one `health_interval` and two `health_timeout`s (9s) + `drain` (5s) +
+`grace` (10s) = 10m24s, which leaves 4m36s for the download. Raise it
+with any of those settings. A curl that gives up before the cutover
+fails the deploy, and the old version keeps serving. A `pre_start`
+still running is not stopped: it runs to its end, and the deploy lock
+is held until then, so a retry gets the 409. Stopping its `.prestart`
+unit ends it sooner (see [Webhook API](#webhook-api)). A curl that
+gives up after the cutover turns red a deploy the box completed.
+
 ## Server layout
 
 ```
@@ -1279,7 +1465,8 @@ journal stays on the box, `journalctl -t hotserve-blog`.
 ```
 
 Inside its sandbox an instance sees only `releases/<its version>/`
-and `shared/` of this tree (see [Sandbox](#sandbox)).
+and `shared/` of this tree, and its own `run/<nonce>/`, where it binds
+its socket (see [Sandbox](#sandbox)).
 
 ## Semantics and trade-offs (read this)
 
@@ -1314,7 +1501,9 @@ and `shared/` of this tree (see [Sandbox](#sandbox)).
   whole cgroup, so worker trees never outlive it.
 - **Changed app definitions apply at the app's next launch** — a
   deploy, a rollback, or a relaunch after a crash, a sustained health failure, or a reboot — never by
-  restarting a running app mid-reload.
+  restarting a running app mid-reload. To give an app one now, roll
+  back to the running version ([Relaunching the running
+  version](#relaunching-the-running-version)).
 - **No post-promote *auto*-revert.** Once traffic cuts over, the deploy
   is done; if the new version misbehaves later, roll back explicitly
   with `?rollback=<version>` (its release dir is still on disk — that's

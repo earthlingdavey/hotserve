@@ -68,6 +68,20 @@ services:
     volumes:
       - .:/src
 
+  # The usage ledger (`make usage`, .github/scripts/usage.py): reads the
+  # Claude Code transcripts from the host read-only and the Actions API
+  # with the token make passes in, writes usage/*.csv and
+  # docs/footprint.md into the checkout. Stdlib only, so the image is
+  # the whole runtime, pinned here where Dependabot watches it.
+  usage:
+    image: python:3.14-slim
+    working_dir: /src
+    environment:
+      GH_TOKEN:
+    volumes:
+      - .:/src
+      - ${HOME}/.claude/projects:/claude-projects:ro
+
   # Serves the demo app tarballs (v1, v2, and a broken v3) that the
   # liveswap scenarios deploy through the webhook — standing in for a
   # GitHub or GitLab release asset URL.
@@ -87,11 +101,14 @@ services:
   # transient unit under the hotserve user's systemd manager,
   # rate-limits and caches. Privileged + host cgroup namespace + the
   # cgroup mount is the systemd-in-docker recipe (cgroup-v2 hosts).
+  # No `image:`, as for e2e-artifacts: compose names the build
+  # `<project>-e2e-hotserve`, so two checkouts running `make e2e` at
+  # once each run the binary they built (one shared tag let either's
+  # build replace the other's).
   e2e-hotserve:
     build:
       context: .
       dockerfile: e2e/Dockerfile
-    image: hotserve-e2e
     privileged: true
     cgroup: host
     stop_signal: SIGRTMIN+3
@@ -108,18 +125,22 @@ services:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
       - ./e2e/lib.sh:/lib.sh:ro
       - ./e2e/liveswap/systemd.sh:/suite-systemd.sh:ro
+      - ./e2e/box/apply.sh:/suite-box.sh:ro
+      # The box template, whose own commands the box apply suite runs:
+      # bin/apply as the workflow does, make secret and the rest as a
+      # laptop does.
+      - ./examples/box:/template:ro
     depends_on:
       - e2e-artifacts
       - e2e-upstream
 
   # Stub origin for the penaltybox scenarios: echoes the requested hint
-  # level back as the response header. Reuses the product image with a
-  # different config.
+  # level back as the response header. The product image with a
+  # different config: the same build as e2e-hotserve's, from the cache.
   e2e-upstream:
     build:
       context: .
       dockerfile: e2e/Dockerfile
-    image: hotserve-e2e
     command: ["/usr/bin/hotserve", "run", "--config", "/etc/hotserve/Caddyfile"]
     # Plain `hotserve run`, not systemd: the image's SIGRTMIN+3 stop
     # signal would be ignored and cost a 10s SIGKILL wait on teardown.

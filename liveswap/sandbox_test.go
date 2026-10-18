@@ -219,7 +219,7 @@ func TestSandboxViewIsExactlyWhatIsNamed(t *testing.T) {
 		"/var/lib/liveswap", "/var/lib/liveswap/blog", "/var/lib/liveswap/blog/state.json",
 		"/var/lib/liveswap/blog/tmp", "/var/lib/liveswap/shop",
 		"/var/lib/hotserve", "/run/hotserve", "/etc/hotserve", "/etc/liveswap",
-		"/etc/blog/blog.env", "/run/user", "/home", "/opt", "/srv", "/var/lib",
+		"/var/lib/hotserve-box", "/etc/blog/blog.env", "/run/user", "/home", "/opt", "/srv", "/var/lib",
 		// Nothing widens a view any more, so a same-box database
 		// socket dir and an out-of-tree cache are absent like
 		// everything else nobody named.
@@ -282,15 +282,15 @@ func TestSandboxProbeCommand(t *testing.T) {
 	if full[0] != "/bin/sh" || full[1] != "-c" || len(full) != 3 {
 		t.Fatalf("probe must be a single sh -c script, got %v", full)
 	}
-	// systemd turns "$$" into "$" in ExecStart arguments, so the shell
-	// pid must be spelled "$$$$" and a bare "$$" must never appear.
-	if !strings.Contains(full[2], "uid_map") || !strings.Contains(full[2], `"$$$$" = 1`) {
+	// The unit's argv reaches the shell byte for byte (ExecStartEx with
+	// no-env-expand), so the shell's pid is spelled "$$" — and "$$$$",
+	// the spelling systemd's substitution once needed, would now reach
+	// the shell as the pid twice and fail the check on every host.
+	if !strings.Contains(full[2], "uid_map") || !strings.Contains(full[2], `"$$" = 1`) {
 		t.Fatalf("full probe checks both namespaces: %q", full[2])
 	}
-	for _, s := range []string{full[2]} {
-		if strings.Contains(strings.ReplaceAll(s, "$$$$", ""), "$$") {
-			t.Fatalf("a bare $$ would reach the shell as $: %q", s)
-		}
+	if strings.Contains(full[2], "$$$$") {
+		t.Fatalf("$$$$ reaches the shell as the pid twice: %q", full[2])
 	}
 }
 
@@ -489,10 +489,10 @@ func TestProbeSandboxCapability(t *testing.T) {
 		// silently ignores PrivatePIDs=: the probe exits non-zero
 		// because the process is not pid 1. There is no lower tier to
 		// fall to, so this is a refusal — the operator must see why.
-		{"kernel ignores the PID namespace", errors.New("exit status 1"), []string{"sandbox probe unit", "exit status 1", "journalctl -t hotserve-sandbox-probe", "Debian 13"}},
+		{"kernel ignores the PID namespace", errors.New("exit status 1"), []string{"sandbox probe unit", "exit status 1", "journalctl -t hotserve-sandbox-probe", "Debian 13", "systemd 257"}},
 		// A container, an LXC VPS, or a kernel built without user
 		// namespaces: the manager refuses the unit outright.
-		{"userns denied", denied, []string{"Permission denied", "Debian 13"}},
+		{"userns denied", denied, []string{"Permission denied", "Debian 13", "systemd 257"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1504,6 +1504,36 @@ func TestBindSourceInsideTheBaseViewRefused(t *testing.T) {
 		if err := validateSandboxRoot(ok); err != nil {
 			t.Errorf("root %s refused: %v", ok, err)
 		}
+	}
+}
+
+// TestTheBoxExchangeTreeIsSupervisorState: /var/lib/hotserve-box holds
+// the box applier's record, results and baseline, written by root and
+// read by the handler (box/DESIGN-box.md, "Paths, owners, and who may
+// touch what"). An app holding it could read every result or plant a
+// bundle in in/, so it is refused as a bind source and as a root the
+// way hotserve's own state is — by its path components, so a sibling
+// that only shares the prefix is not.
+func TestTheBoxExchangeTreeIsSupervisorState(t *testing.T) {
+	for _, p := range []string{"/var/lib/hotserve-box", "/var/lib/hotserve-box/out", "/var/lib/hotserve-box/in/x"} {
+		if err := refusedAsBindSource(p); err == nil {
+			t.Errorf("a mandatory bind source at %s was accepted: the app would hold the box's exchange tree", p)
+		} else if !strings.Contains(err.Error(), "overlaps /var/lib/hotserve-box,") {
+			t.Errorf("%s refused for the wrong reason: %v", p, err)
+		}
+	}
+	for _, bad := range []string{"/var/lib/hotserve-box", "/var/lib/hotserve-box/apps"} {
+		if err := validateSandboxRoot(bad); err == nil {
+			t.Errorf("root %s accepted: every app would live in the box's exchange tree", bad)
+		} else if !strings.Contains(err.Error(), "inside /var/lib/hotserve-box,") {
+			t.Errorf("root %s refused for the wrong reason: %v", bad, err)
+		}
+	}
+	if err := refusedAsBindSource("/var/lib/hotserve-boxes/blog"); err != nil {
+		t.Errorf("a path that only shares the prefix was refused: %v", err)
+	}
+	if err := validateSandboxRoot("/var/lib/hotserve-boxes"); err != nil {
+		t.Errorf("a root that only shares the prefix was refused: %v", err)
 	}
 }
 

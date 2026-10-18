@@ -96,16 +96,85 @@ elif nss getent passwd hotserve-backup >/dev/null 2>&1; then
 else
 	echo "hotserve: the hotserve-backup account could not be made (${why:-no reason was given}); backups wait for it, and nothing else of hotserve does: sudo hotserve-backup setup <repository> makes it, or says why it cannot" >&2
 fi
-# Packages before the Debian-13-only matrix copied an AppArmor profile
-# into /etc/apparmor.d (which the package itself does not own, so dpkg
-# will not remove it on upgrade). Unload and delete it: apparmor.service
-# parses that whole directory at every boot, and the wrapper it attached
-# to is gone.
-if [ -f /etc/apparmor.d/hotserve-user-manager ]; then
-	if [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null 2>&1; then
-		apparmor_parser -R /etc/apparmor.d/hotserve-user-manager 2>/dev/null || true
+# The box applier's exchange tree, /var/lib/hotserve-box: made now that
+# the hotserve group exists, and again at every boot, each time with
+# the modes and owners box/DESIGN-box.md's Paths table gives, put back
+# where they drifted. Named, as debhelper does, so no other package's
+# tmpfiles.d entries run from here.
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+	systemd-tmpfiles --create hotserve-box.conf \
+		|| echo "hotserve: systemd-tmpfiles --create hotserve-box.conf failed; the box applier has no /var/lib/hotserve-box until it succeeds" >&2
+fi
+# The starter config (nfpm.yaml says why it is not a conffile). Install
+# it where nothing stands at /etc/hotserve/Caddyfile, and replace it
+# only while it is byte-identical to the starter this script last wrote
+# there, which the record says. Leave anything else alone, silently: an
+# edit, a file `hotserve init` or a push wrote, a symlink (never
+# followed), anything not a regular file, a file with no record. Each
+# write lands whole, by rename, before the try-restart below loads it. A
+# failure never fails the install; the file stays as it was.
+starter=/usr/share/hotserve/Caddyfile
+config=/etc/hotserve/Caddyfile
+record=/var/lib/hotserve-package/starter.sha256
+sha256() { sha256sum <"$1" | cut -d' ' -f1; }
+# Records $want as the starter on disk. /etc/hotserve is synced first,
+# so the record never names a rename a power cut could still undo,
+# which would make a stock file look edited for good; then the record's
+# own rename, and its directory.
+starter_record() {
+	record_tmp="$record.$$"
+	if sync /etc/hotserve && printf '%s\n' "$want" >"$record_tmp" \
+		&& chmod 0644 "$record_tmp" && sync "$record_tmp" \
+		&& mv -fT "$record_tmp" "$record" && sync "${record%/*}"; then
+		return 0
 	fi
-	rm -f /etc/apparmor.d/hotserve-user-manager
+	rm -f "$record_tmp" || true
+	echo "hotserve: could not write $record durably; until it is, upgrades may leave $config as it is" >&2
+}
+starter_put() {
+	config_tmp="/etc/hotserve/.Caddyfile.package-$$"
+	# -T: a directory standing at that name is refused, never written into.
+	if cp -T "$starter" "$config_tmp" && chown root:root "$config_tmp" \
+		&& chmod 0644 "$config_tmp" && sync "$config_tmp" \
+		&& mv -fT "$config_tmp" "$config"; then
+		starter_record
+		return 0
+	fi
+	rm -f "$config_tmp" || true
+	echo "hotserve: could not install the starter config at $config; it is at $starter" >&2
+}
+# A crash's temporaries: only this script makes them. Never fatal: a
+# directory by one of these names is not this script's to remove.
+rm -f /etc/hotserve/.Caddyfile.package-* "$record".* 2>/dev/null || true
+if want=$(sha256 "$starter") && [ ${#want} -eq 64 ]; then
+	if [ ! -e "$config" ] && [ ! -L "$config" ]; then
+		starter_put
+	elif [ -f "$config" ] && [ ! -L "$config" ]; then
+		have=$(sha256 "$config") || have=
+		recorded=
+		if [ -f "$record" ] && [ ! -L "$record" ]; then
+			recorded=$(head -n 1 "$record") || recorded=
+		fi
+		if [ "$have" = "$want" ]; then
+			# Already the starter: a crash between the rename and the
+			# record, or a box that has never had a record. Without
+			# this it would look edited for good.
+			[ "$recorded" = "$want" ] || starter_record
+		elif [ -n "$have" ] && [ "$have" = "$recorded" ]; then
+			starter_put
+		fi
+	fi
+else
+	echo "hotserve: could not read $starter; $config is left as it is" >&2
+fi
+# The box's key for secrets (box/DESIGN-box.md, "The box's key"), made
+# once and never replaced, so that a box has one with no step. Only on
+# a running system: an image built without systemd as PID 1 would
+# otherwise bake one key into every box made from it. A failure never
+# fails the install; init, or the console, makes it later.
+if [ -d /run/systemd/system ]; then
+	/usr/bin/hotserve box key >/dev/null 2>&1 \
+		|| echo "hotserve: could not make the box's key for secrets; run hotserve box key as root" >&2
 fi
 if command -v systemctl >/dev/null 2>&1; then
 	# liveswap runs deployed apps as transient units under the hotserve
@@ -124,8 +193,8 @@ After=user@$uid.service
 EOF
 	# The user manager's own limits are what its units inherit; match
 	# hotserve.service so apps keep the file-descriptor headroom they
-	# had as its children. (Effective from systemd 256, which is the
-	# floor of the support matrix — see README.)
+	# had as its children. (Effective from systemd 256; the package
+	# requires 257 — see nfpm.yaml.)
 	mkdir -p "/etc/systemd/system/user@$uid.service.d"
 	cat > "/etc/systemd/system/user@$uid.service.d/10-hotserve.conf" <<EOF
 # Generated by the hotserve package (postinstall); do not edit.
@@ -142,9 +211,78 @@ EOF
 	loginctl enable-linger hotserve 2>/dev/null || {
 		mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/hotserve
 	}
-	systemctl try-restart hotserve 2>/dev/null || true
-	echo "hotserve installed. Start it with:"
-	echo "  sudo systemctl enable --now hotserve"
+	# An upgrade restarts a running hotserve onto the new binary;
+	# try-restart leaves a stopped one stopped. Only where systemd is
+	# PID 1: in a chroot or an image build systemctl fails for reasons
+	# that say nothing about hotserve, and there the start hint below is
+	# the whole story.
+	restart=skipped
+	if [ -d /run/systemd/system ]; then
+		if systemctl try-restart hotserve 2>/dev/null; then
+			restart=ok
+		else
+			restart=failed
+		fi
+	fi
+	if [ "$restart" = failed ]; then
+		# The new binary refused to start — most often a Caddyfile it
+		# rejects — and the old one is already stopped, so the site is
+		# down. Say so, on stderr. The script still exits 0: a non-zero
+		# postinst leaves the package half-configured and fails this
+		# apt run, and every later one that retries the configure,
+		# until it succeeds. The package is installed correctly; what
+		# needs fixing is the config, which dpkg cannot do.
+		state=$(systemctl is-active hotserve 2>/dev/null) || true
+		echo "hotserve: restarting onto the new version FAILED; hotserve.service is now ${state:-in an unknown state}." >&2
+		if [ "$state" != active ]; then
+			echo "  Nothing is served until it starts (deployed apps keep running, unreachable)." >&2
+		fi
+		echo "  The likely cause is something in /etc/hotserve/Caddyfile this version refuses. See why with:" >&2
+		echo "    journalctl -u hotserve -e" >&2
+		echo "    systemctl status hotserve" >&2
+		echo "  then fix it and run: sudo systemctl restart hotserve" >&2
+	elif [ "$restart" = ok ] && systemctl is-enabled --quiet hotserve 2>/dev/null; then
+		# Already set up: no start hint. If is-enabled itself fails,
+		# the hint below prints, which is harmless on an enabled unit.
+		if systemctl is-active --quiet hotserve 2>/dev/null; then
+			echo "hotserve restarted."
+		else
+			# try-restart does not start a stopped or failed unit — an
+			# upgrade that fixes an earlier failed start included.
+			echo "hotserve is enabled but not running. Start it with:"
+			echo "  sudo systemctl start hotserve"
+		fi
+	else
+		echo "hotserve installed. Start it with:"
+		echo "  sudo systemctl enable --now hotserve"
+	fi
+fi
+# The box applier's path unit, the way dh_installsystemd would have it:
+# enabled on first installation; an administrator's `disable` kept
+# across upgrades (was-enabled is false then, and update-state only
+# tidies the symlinks); started, or restarted on an upgrade ($2 is the
+# version upgraded from), by deb-systemd-invoke, which starts nothing
+# disabled or masked. The service it starts has no [Install]: the path
+# unit is its only start (box/DESIGN-box.md, "The applier unit").
+if [ -x /usr/bin/deb-systemd-helper ]; then
+	deb-systemd-helper unmask hotserve-box-apply.path >/dev/null || true
+	if deb-systemd-helper --quiet was-enabled hotserve-box-apply.path; then
+		deb-systemd-helper enable hotserve-box-apply.path >/dev/null || true
+	else
+		deb-systemd-helper update-state hotserve-box-apply.path >/dev/null || true
+	fi
+fi
+# The daemon-reload above has loaded the unpacked units.
+if [ -d /run/systemd/system ]; then
+	if [ -n "${2:-}" ]; then action=restart; else action=start; fi
+	if [ -x /usr/bin/deb-systemd-invoke ]; then
+		deb-systemd-invoke "$action" hotserve-box-apply.path >/dev/null || true
+	else
+		# No helper (a systemd host that is not Debian): enabled here,
+		# and started, with no memory of an administrator's disable.
+		systemctl enable hotserve-box-apply.path 2>/dev/null || true
+		systemctl "$action" hotserve-box-apply.path 2>/dev/null || true
+	fi
 fi
 # The backup timers, the way dh_installsystemd would have it: enabled on
 # first installation; an administrator's `disable` kept across upgrades
@@ -170,9 +308,8 @@ fi
 # and obeys a policy-rc.d. So an upgrade starts again a timer an
 # administrator stopped and left enabled — disable it to keep it off.
 # Nothing of the backups was stopped for an upgrade: a run under way
-# is left to finish.
+# is left to finish. The daemon-reload above has loaded their units.
 if [ -d /run/systemd/system ]; then
-	systemctl --system daemon-reload >/dev/null || true
 	if [ -n "${2:-}" ]; then action=restart; else action=start; fi
 	if [ -x /usr/bin/deb-systemd-invoke ]; then
 		deb-systemd-invoke "$action" hotserve-backup.timer hotserve-backup-drill.timer >/dev/null || true
@@ -189,3 +326,5 @@ if [ -d /run/systemd/system ]; then
 		echo "Backups: the hourly timer and the Sunday restore drill are disabled, as they were left; sudo systemctl enable --now hotserve-backup.timer hotserve-backup-drill.timer turns them on"
 	fi
 fi
+# Explicit, so no message above can decide the package's state.
+exit 0
