@@ -27,11 +27,12 @@ func sql(t *testing.T, db string, statements string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// copyOf makes the snapshot's copy of a database the way a dump does.
-func copyOf(t *testing.T, d dirs, rows string) string {
+// copyOf makes the snapshot's copy of a database the way a dump does:
+// a table posts holding the rows 1 and 2.
+func copyOf(t *testing.T, d dirs) string {
 	t.Helper()
 	src := filepath.Join(t.TempDir(), "src.db")
-	sql(t, src, "pragma journal_mode=wal; create table posts(n); insert into posts values "+rows+";")
+	sql(t, src, "pragma journal_mode=wal; create table posts(n); insert into posts values (1),(2);")
 	must(t, os.MkdirAll(filepath.Join(d.staged, "sqlite"), 0o755))
 	copied := filepath.Join(d.staged, "sqlite", "app.db")
 	sql(t, src, "vacuum into '"+copied+"'")
@@ -40,7 +41,7 @@ func copyOf(t *testing.T, d dirs, rows string) string {
 
 func TestIntegrationALiveDatabaseIsRestoredOverUnderAWriter(t *testing.T) {
 	d := newDirs(t, dbPlan, nil)
-	copyOf(t, d, "(1),(2)")
+	copyOf(t, d)
 	live := filepath.Join(d.target, "app.db")
 	sql(t, live, "pragma journal_mode=wal; create table posts(n); insert into posts values (7);")
 
@@ -109,7 +110,7 @@ func TestIntegrationADamagedCopyIsNeverRestored(t *testing.T) {
 	for name, damage := range shapes {
 		t.Run(name, func(t *testing.T) {
 			d := newDirs(t, `{"sqlite":["app.db"],"files":["uploads"]}`, map[string]string{"files/uploads/a.png": "img"})
-			damage(t, copyOf(t, d, "(1),(2)"))
+			damage(t, copyOf(t, d))
 			live := filepath.Join(d.target, "app.db")
 			sql(t, live, "create table posts(n); insert into posts values (7);")
 			a := Run(context.Background(), d.staged, d.target, AllOrNothing)
@@ -135,7 +136,7 @@ func TestIntegrationADamagedCopyIsNeverRestored(t *testing.T) {
 
 func TestIntegrationWhereThereIsNoDatabaseTheCopyIsPutThere(t *testing.T) {
 	d := newDirs(t, `{"sqlite":["data/app.db"]}`, nil)
-	copied := copyOf(t, d, "(1),(2)")
+	copied := copyOf(t, d)
 	must(t, os.MkdirAll(filepath.Join(d.staged, "sqlite", "data"), 0o755))
 	must(t, os.Rename(copied, filepath.Join(d.staged, "sqlite", "data", "app.db")))
 	// Sidecars of a database that is gone.
@@ -152,7 +153,7 @@ func TestIntegrationWhereThereIsNoDatabaseTheCopyIsPutThere(t *testing.T) {
 
 func TestIntegrationADatabaseThatIsALinkIsRefused(t *testing.T) {
 	d := newDirs(t, dbPlan, nil)
-	copyOf(t, d, "(1),(2)")
+	copyOf(t, d)
 	theirs := filepath.Join(d.sibling, "shop.db")
 	sql(t, theirs, "create table posts(n); insert into posts values (41);")
 	must(t, os.Symlink(theirs, filepath.Join(d.target, "app.db")))
@@ -167,7 +168,7 @@ func TestIntegrationADatabaseThatIsALinkIsRefused(t *testing.T) {
 
 func TestIntegrationALiveDatabaseWithDamagedPagesIsRestoredOver(t *testing.T) {
 	d := newDirs(t, dbPlan, nil)
-	copyOf(t, d, "(1),(2)")
+	copyOf(t, d)
 	live := filepath.Join(d.target, "app.db")
 	sql(t, live, "create table posts(n); insert into posts values (7); insert into posts select hex(randomblob(3000)) from posts, posts, posts;  insert into posts select hex(randomblob(3000)) from posts limit 20;")
 	raw, err := os.ReadFile(live)
@@ -192,7 +193,7 @@ func TestIntegrationALiveDatabaseWithDamagedPagesIsRestoredOver(t *testing.T) {
 // restore and closed again after, as for files — once, at the end.
 func TestIntegrationADatabasesClosedDirectoryIsClosedAgain(t *testing.T) {
 	d := newDirs(t, `{"sqlite":["data/app.db"]}`, nil)
-	copied := copyOf(t, d, "(1),(2)")
+	copied := copyOf(t, d)
 	must(t, os.MkdirAll(filepath.Join(d.staged, "sqlite", "data"), 0o755))
 	must(t, os.Rename(copied, filepath.Join(d.staged, "sqlite", "data", "app.db")))
 	must(t, os.MkdirAll(filepath.Join(d.target, "data"), 0o500))
@@ -209,7 +210,7 @@ func TestIntegrationADatabasesClosedDirectoryIsClosedAgain(t *testing.T) {
 // for the copy to go in: found at the checks, nothing changed.
 func TestIntegrationASidecarThatCannotBeRemovedIsRefusedBeforeAnything(t *testing.T) {
 	d := newDirs(t, `{"sqlite":["app.db"],"files":["uploads"]}`, map[string]string{"files/uploads/a.png": "img"})
-	copyOf(t, d, "(1),(2)")
+	copyOf(t, d)
 	must(t, os.MkdirAll(filepath.Join(d.target, "app.db-wal"), 0o755))
 	a := Run(context.Background(), d.staged, d.target, AllOrNothing)
 	if len(a.Items) != 2 || a.Items[0].Class != Refused || !strings.Contains(a.Items[0].Detail, "app.db-wal") || a.Items[1].Class != HeldBack || a.Changed {
@@ -224,7 +225,7 @@ func TestIntegrationASidecarThatCannotBeRemovedIsRefusedBeforeAnything(t *testin
 // better known — gets the mode the files item then supplies for it.
 func TestIntegrationADirectoryMadeForADatabaseGetsTheModeTheFilesKnow(t *testing.T) {
 	d := newDirs(t, `{"sqlite":["data/app.db"],"files":["."]}`, map[string]string{"files/data/other.txt": "x", "files/r.txt": "receipt"})
-	copied := copyOf(t, d, "(1),(2)")
+	copied := copyOf(t, d)
 	must(t, os.MkdirAll(filepath.Join(d.staged, "sqlite", "data"), 0o755))
 	must(t, os.Rename(copied, filepath.Join(d.staged, "sqlite", "data", "app.db")))
 	must(t, os.Chmod(filepath.Join(d.staged, "files", "data"), 0o755))
@@ -243,7 +244,7 @@ func TestIntegrationADirectoryMadeForADatabaseGetsTheModeTheFilesKnow(t *testing
 // order seen, data/ would shut before deep/ could be closed.
 func TestIntegrationDirectoriesAreClosedDeepestFirst(t *testing.T) {
 	d := newDirs(t, `{"sqlite":["data/app.db"],"files":["."]}`, map[string]string{"files/data/deep/f": "x"})
-	copied := copyOf(t, d, "(1),(2)")
+	copied := copyOf(t, d)
 	must(t, os.MkdirAll(filepath.Join(d.staged, "sqlite", "data"), 0o755))
 	must(t, os.Rename(copied, filepath.Join(d.staged, "sqlite", "data", "app.db")))
 	must(t, os.Chmod(filepath.Join(d.staged, "files", "data", "deep"), 0o500))
@@ -269,7 +270,7 @@ func TestIntegrationDirectoriesAreClosedDeepestFirst(t *testing.T) {
 // is found at the checks, not once the restore has begun.
 func TestIntegrationALiveFileThatIsNotADatabaseIsFoundAtTheChecks(t *testing.T) {
 	d := newDirs(t, `{"sqlite":["app.db"],"files":["uploads"]}`, map[string]string{"files/uploads/a.png": "img"})
-	copyOf(t, d, "(1),(2)")
+	copyOf(t, d)
 	write(t, filepath.Join(d.target, "app.db"), "noise where a database was, and not a header in sight")
 	a := Run(context.Background(), d.staged, d.target, AllOrNothing)
 	if len(a.Items) != 2 || a.Items[0].Class != Refused || !strings.Contains(a.Items[0].Detail, "move it aside") || a.Items[1].Class != HeldBack || a.Changed {
@@ -277,7 +278,7 @@ func TestIntegrationALiveFileThatIsNotADatabaseIsFoundAtTheChecks(t *testing.T) 
 	}
 	// An empty file is an empty database, and is restored over.
 	d = newDirs(t, `{"sqlite":["app.db"]}`, nil)
-	copyOf(t, d, "(1),(2)")
+	copyOf(t, d)
 	write(t, filepath.Join(d.target, "app.db"), "")
 	if a := Run(context.Background(), d.staged, d.target, AllOrNothing); classes(a) != "sqlite app.db: ok" {
 		t.Fatalf("an empty file: %+v", a)
