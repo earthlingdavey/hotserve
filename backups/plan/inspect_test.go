@@ -124,7 +124,7 @@ func second[T any](_ T, err error) error { return err }
 
 // A root that depends on the environment is refused only where an app
 // declares a backup: with none declared a run backs nothing up, and the
-// root is not its business — `bin/push` on a box that uses no backups
+// root is not its business — step 6 on a box that uses no backups
 // would otherwise refuse a Caddyfile that works today (the owner, 4a:
 // decide in 4c). Such a plan carries no root at all, so that nothing
 // downstream reads a placeholder as a path. What hides an app — an

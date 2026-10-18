@@ -149,10 +149,10 @@ run && fail "a run with only the old file exited 0" || { says "not set up: $ENVF
 hotserve-backup status >"$OUT" 2>&1
 [ $? = 3 ] && says "$OLD is from before this version" && pass "status exits 3 and says the same" || fail "status: $(cat "$OUT")"
 # A setup that goes through with the old file still there says so at
-# the end: that file is where an administrator's sudoers reaches.
+# the end: that file holds a copy of the credential.
 mv /root/env.keep "$ENVFILE"
 converse "hotserve-backup setup $REPO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
-[ $? = 0 ] && says "$OLD is still there, from before this version, and is not read; an administrator's sudoers may reach it: remove it (sudo rm $OLD)" && [ -f "$OLD" ] && pass "a setup with the old file still there says to remove it, and does not itself" || fail "the old file after a setup: $(grep "$OLD" "$OUT"; ls -la "$OLD" 2>&1)"
+[ $? = 0 ] && says "$OLD is still there, from before this version, and is not read; it holds a copy of the credential: remove it (sudo rm $OLD)" && [ -f "$OLD" ] && pass "a setup with the old file still there says to remove it, and does not itself" || fail "the old file after a setup: $(grep "$OLD" "$OUT"; ls -la "$OLD" 2>&1)"
 rm -f "$OLD"
 
 echo "=== setup 6: mistakes over a working setup leave it as it was ==="

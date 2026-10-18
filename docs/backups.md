@@ -20,17 +20,18 @@ depends on one says **unverified**, and
 
 ## Who runs these
 
-The lines below under `sudo` are root's, but for
-`sudo systemctl reload hotserve`. Run them at the provider's console,
-or as an administrator whose `sudo` is root's (Debian's `sudo` group).
-The administrator [After the first deploy](after-first-deploy.md)
-creates may reload hotserve and no more: their `sudoers` grants the
-`hotserve` user's reach and not root's, and `setup` writes the one
-credential that reads every backup ever made. That administrator — or
-an agent working as one — runs `hotserve-backup validate` and
-`hotserve-backup status`, reads the journal, and pushes the Caddyfile.
-Keep `setup` for a person: it shows the repository password on the
-terminal it runs in.
+The lines below under `sudo` are root's. Run them as root over SSH
+(`ssh root@box.example.com`, the way back [Hardening](hardening.md)
+keeps), without the `sudo`, or as an administrator whose `sudo` is
+root's (Debian's `sudo` group). The administrator Hardening makes is in
+the `adm` group alone, with no `sudo`: they — or an agent working as
+one — read the journal and run `hotserve-backup validate` and
+`hotserve-backup status`, which need no privilege. The Caddyfile reaches
+the box by a signed push from its repository, and the box runs
+`hotserve-backup validate` on each one before it is applied
+([examples/box](../examples/box/README.md)). Keep `setup` for a person:
+it shows the repository password on the terminal it runs in, and it
+writes the one credential that reads every backup ever made.
 
 ## Before you start: the bucket, and what it protects
 
@@ -121,8 +122,9 @@ As root, or an administrator whose `sudo` is root's:
 <!-- smoke: begin -->
 ```sh
 # 1. In the app's block of the Caddyfile, what to back up — in the box
-#    repo, pushed with make push, which runs the next line on the box
-#    (examples/box); on a box without one, in /etc/hotserve/Caddyfile:
+#    repo, by a signed push, which runs the next line on the box before
+#    it applies (examples/box); on a box without one, in
+#    /etc/hotserve/Caddyfile:
 #        backup {
 #            sqlite app.db
 #            files  uploads
@@ -147,8 +149,8 @@ sudo hotserve-backup restore demo
 The package's smoke test (`make install-test`) runs exactly those
 lines, read out of this page, as an administrator under `sudo`, on a
 fresh Debian 13 with the `.deb` just installed. Keep the block in the
-box repo's Caddyfile: a `make push` of a file without it stops that
-app's backups, and a run says so once.
+box repo's Caddyfile: a push of a file without it stops that app's
+backups, and a run says so once.
 
 `setup`, for a bucket nobody has made yet:
 
@@ -299,8 +301,9 @@ A new box, or the same one reinstalled; the `hotserve` user may get
 another uid, which a restore does not mind:
 
 1. Install the package ([Your first deploy](first-deploy.md), step 2)
-   and put the box's Caddyfile back (`make push`,
-   [After the first deploy](after-first-deploy.md), step 1).
+   and give it the box's Caddyfile with `hotserve init` from the box
+   repository, as the first deploy did (step 3; with secrets,
+   [A rebuilt box](secrets.md#a-rebuilt-box)).
 2. `sudo hotserve-backup setup <the same URL>`, with the box's key. It
    finds the repository and asks for its password instead of making
    one:

@@ -833,7 +833,7 @@ func TestTheOldFileStillThereIsSaid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.OldEnvFile != b.cfg.OldEnvFile || !strings.Contains(m.saidAll(), b.cfg.OldEnvFile+" is still there, from before this version, and is not read; an administrator's sudoers may reach it: remove it (sudo rm "+b.cfg.OldEnvFile+")") {
+	if rep.OldEnvFile != b.cfg.OldEnvFile || !strings.Contains(m.saidAll(), b.cfg.OldEnvFile+" is still there, from before this version, and is not read; it holds a copy of the credential: remove it (sudo rm "+b.cfg.OldEnvFile+")") {
 		t.Fatalf("report %+v\nsaid:\n%s", rep, m.saidAll())
 	}
 	if _, err := os.Lstat(b.cfg.OldEnvFile); err != nil {

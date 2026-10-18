@@ -764,12 +764,12 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 	if s.password != "" && !rep.New {
 		term.Say("the password shown above was never used: discard it")
 	}
-	// The file from before this version, if it is still there, is
-	// where the credential was reachable from: said, not removed — it
-	// is root's, and an operator may want its contents once more.
+	// The file from before this version, if it is still there, holds a
+	// copy of the credential: said, not removed — it is root's, and an
+	// operator may want its contents once more.
 	if _, err := os.Lstat(cfg.OldEnvFile); cfg.OldEnvFile != "" && err == nil {
 		rep.OldEnvFile = cfg.OldEnvFile
-		term.Say(fmt.Sprintf("%s is still there, from before this version, and is not read; an administrator's sudoers may reach it: remove it (sudo rm %s)", cfg.OldEnvFile, cfg.OldEnvFile))
+		term.Say(fmt.Sprintf("%s is still there, from before this version, and is not read; it holds a copy of the credential: remove it (sudo rm %s)", cfg.OldEnvFile, cfg.OldEnvFile))
 	}
 	return rep, nil
 }

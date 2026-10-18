@@ -43,8 +43,8 @@ RUN systemctl mask \
 	|| true
 
 COPY --from=builder /hotserve /usr/bin/hotserve
-# bin/push asks it whether a backup run could plan from the Caddyfile
-# being pushed; nothing here runs a backup.
+# The box channel's step 6 asks it whether a backup run could plan
+# from the Caddyfile being pushed; nothing here runs a backup.
 COPY --from=builder /hotserve-backup /usr/bin/hotserve-backup
 COPY --from=deno /deno /usr/local/bin/deno
 # The example pins the Deno its workflow builds with in .deno-version;

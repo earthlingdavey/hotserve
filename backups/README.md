@@ -46,12 +46,10 @@ file: each service is conditioned on `/etc/hotserve-backup/repository.env`,
 and a start before that is skipped, not failed. The lines that set it
 up — the declaration, `validate`, `setup`, a first run, `status`, a
 restore — are under "Set it up" in
-[docs/backups.md](../docs/backups.md#set-it-up). Those under `sudo` but
-the reload are root's: the provider's console, or an administrator
-whose `sudo` is root's. The administrator `docs/after-first-deploy.md`
-creates has the `hotserve` user's reach and not root's
-(`examples/box/sudoers`): the reload, and `validate` and `status`,
-which need no root.
+[docs/backups.md](../docs/backups.md#set-it-up). Those under `sudo` are
+root's: root over SSH, or an administrator whose `sudo` is root's. The
+administrator `docs/hardening.md` makes is in the `adm` group alone,
+with no `sudo`: it runs `validate` and `status`, which need no root.
 
 The package's smoke test (`make install-test`) runs exactly those lines,
 read out of that page, as an administrator under `sudo`, on a fresh
@@ -787,10 +785,11 @@ backup — which is said, not refused; one named through a `{$NAME}` is
 said by the variable, since what the server calls it is not known here. It starts no unit, takes no lock
 and changes nothing.
 
-`examples/box/bin/push` runs it on the staged file after `hotserve
-validate`, where `/usr/bin/hotserve-backup` exists, so a Caddyfile that
-would break backups is refused before it goes live and not by the next
-hourly run. It needs no sudoers line.
+The box channel's step 6 (`box/validate.go`) runs it on the staged
+copy of a push after `hotserve validate`, as the hotserve user, where
+`/usr/bin/hotserve-backup` can be run, so a Caddyfile that would break
+backups is refused before it goes live and not by the next hourly run.
+It needs no privilege.
 
 ## What it refuses
 
@@ -1101,8 +1100,8 @@ What can be known to fail is refused before anything is asked for
    what became of the password. Then setup names the
    repository, whether it was made or opened, and its id — and, when
    `/etc/hotserve/backup.env` from before this version is still there,
-   that it is, and to remove it: that file is where an administrator's
-   sudoers reaches.
+   that it is, and to remove it: `/etc/hotserve` is the box channel's
+   (below).
 
 Whatever ends setup before the last step — Ctrl-C ("interrupted:
 nothing has been written"), a refusal, a kill — leaves the working file
@@ -1118,8 +1117,9 @@ by one that says the repository exists and asks for the password that
 was shown.
 
 `/etc/hotserve-backup/repository.env` is not under `/etc/hotserve`:
-the example sudoers lets an administrator create and edit any
-`/etc/hotserve/*.env`, and the repository credential is root's alone.
+that is the box channel's — its Caddyfile and, under `secrets/`, each
+app's env file, which the hotserve user reads — and the repository
+credential is root's alone.
 A `/etc/hotserve/backup.env` from an earlier version of this branch is
 not read; a run and `status` say so, and what to do: run setup with
 its `RESTIC_REPOSITORY`, type its `RESTIC_PASSWORD` when asked, then

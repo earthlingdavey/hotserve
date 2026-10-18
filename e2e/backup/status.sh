@@ -186,7 +186,7 @@ sed 's#root /var/lib/liveswap#root {$LIVESWAP_ROOT:/var/lib/liveswap}#' /root/Ca
 hotserve validate --config "$V/envroot" --adapter caddyfile >/dev/null 2>&1 && pass "fixture: hotserve accepts a root from the environment: push would let it through" || fail "fixture: hotserve rejects the file: the scenario proves nothing"
 if validate "$V/envroot"; then fail "a root that depends on the environment validated"; else says "LIVESWAP_ROOT" && pass "a root that depends on the environment is refused, by the variable's name" || fail "said: $(cat "$OUT")"; fi
 # The same root on a box where no app declares a backup is no refusal:
-# a run backs nothing up there, and bin/push must not refuse a config
+# a run backs nothing up there, and step 6 must not refuse a config
 # that works today for a feature the box does not use (the owner, 4a:
 # decided in 4c).
 sed '/backup {/,/}/d' "$V/envroot" >"$V/envroot-nobackup"
