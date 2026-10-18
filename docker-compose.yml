@@ -168,7 +168,8 @@ services:
       # build the box through that target, or it gets the last run's.
       additional_contexts:
         bin: ./build/e2e-backup
-    image: hotserve-e2e-backup
+    # No `image:`, as for e2e-hotserve: compose names the build per
+    # project.
     privileged: true
     cgroup: host
     stop_signal: SIGRTMIN+3
