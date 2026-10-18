@@ -365,7 +365,11 @@ from a file others may not read, or under a directory others may not
 enter — a link is followed to where it leads. A refused reload leaves
 the running config serving. `hotserve run` is never refused for it — a
 start that refused would take every site down — and logs the same
-error instead.
+error instead. `hotserve validate` does not ask the file it is given
+for its own mode or the directories on its way, only what it imports:
+a candidate is not the file a run reads (the box applier's step 6
+validates a copy it staged `0600` in a directory of its own), and the
+reload asks them of the file installed.
 
 hotserve-backup reads one Caddyfile, `/etc/hotserve/Caddyfile`. Where
 it is installed (`/usr/bin/hotserve-backup`), `hotserve reload` of any
@@ -373,9 +377,9 @@ other Caddyfile that declares a backup is refused as well: the server
 would run what no backup run reads, and an app only in it would never
 be backed up. The refusal names `hotserve-backup validate <file>` for a
 look at what a backup run would make of it, and `/etc/hotserve/Caddyfile`
-as where to put it (`bin/push` does). Where hotserve-backup is not
+as where to put it (a signed push does). Where hotserve-backup is not
 installed, it is a warning. `hotserve validate` of a candidate file —
-`bin/push` validates `Caddyfile.new` before it is moved into place — is
+step 6 validates a staged copy before the applier puts it in place — is
 not asked; `hotserve run` logs it and serves.
 
 The check adapts the Caddyfile in the environment the command was

@@ -132,7 +132,7 @@ func checkBackups(cmd string, args []string) (warning string, err error) {
 			warning = elsewhere + " (were hotserve-backup installed, a reload of it would be refused)"
 			elsewhere = ""
 		} else {
-			elsewhere += fmt.Sprintf(" — to see what a backup run would make of this file, `hotserve-backup validate %s`; to make it the one backups read, put it at %s (bin/push does)", main, backupCaddyfile)
+			elsewhere += fmt.Sprintf(" — to see what a backup run would make of this file, `hotserve-backup validate %s`; to make it the one backups read, put it at %s (a signed push does)", main, backupCaddyfile)
 		}
 	}
 	dir := filepath.Dir(main)
@@ -183,10 +183,19 @@ func checkBackups(cmd string, args []string) (warning string, err error) {
 			}
 		}
 	}
-	if st, err := os.Stat(main); err == nil && st.Mode().Perm()&0o004 == 0 { //nolint:gosec // the Caddyfile the command was given; its mode is what is checked
+	// A candidate being validated is not the file a run reads: the box
+	// applier's step 6 validates a copy it staged 0600 in a directory of
+	// its own. So validate does not ask the given file's own mode, nor
+	// the way to it; the reload asks them of the file installed. What
+	// the candidate imports from other files is asked now.
+	candidate := cmd == "validate"
+	if st, err := os.Stat(main); !candidate && err == nil && st.Mode().Perm()&0o004 == 0 { //nolint:gosec // the Caddyfile the command was given; its mode is what is checked
 		say("the Caddyfile, %s, may not be read by others", main)
 	}
 	for _, s := range sources {
+		if candidate && sameFile(main, s.File) {
+			continue
+		}
 		if s.App == "" {
 			check("the liveswap root", s.File)
 		} else {

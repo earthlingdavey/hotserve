@@ -159,14 +159,17 @@ func TestABackupDeclaredOutsideTheCaddyfilesDirectoryIsRefused(t *testing.T) {
 	}
 }
 
+// The Caddyfile's own mode is asked at a reload: a candidate being
+// validated is not the file a run reads (TestACandidateIsNotHeldToWhereItStands).
 func TestWhatOthersMayNotReadIsRefused(t *testing.T) {
 	for name, tc := range map[string]struct {
+		cmd                               string
 		caddyfileMode, appsMode, fileMode os.FileMode
 		want                              string
 	}{
-		"the Caddyfile":     {0o640, 0o755, 0o644, "the Caddyfile, CONFIG/Caddyfile, may not be read by others"},
-		"the imported file": {0o644, 0o755, 0o640, "blog's backup is read from CONFIG/apps/blog.caddy, which others may not read"},
-		"a directory":       {0o644, 0o750, 0o644, "blog's backup is read from under CONFIG/apps, which others may not enter"},
+		"the Caddyfile":     {"reload", 0o640, 0o755, 0o644, "the Caddyfile, CONFIG/Caddyfile, may not be read by others"},
+		"the imported file": {"validate", 0o644, 0o755, 0o640, "blog's backup is read from CONFIG/apps/blog.caddy, which others may not read"},
+		"a directory":       {"validate", 0o644, 0o750, 0o644, "blog's backup is read from under CONFIG/apps, which others may not enter"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			config, _ := dirs(t)
@@ -175,11 +178,41 @@ func TestWhatOthersMayNotReadIsRefused(t *testing.T) {
 			if err := os.Chmod(config+"/apps", tc.appsMode); err != nil {
 				t.Fatal(err)
 			}
-			_, err := checkBackups("validate", []string{"--config", config + "/Caddyfile"})
+			_, err := checkBackups(tc.cmd, []string{"--config", config + "/Caddyfile"})
 			if w := strings.ReplaceAll(tc.want, "CONFIG", config); err == nil || !strings.Contains(err.Error(), w) {
 				t.Fatalf("want %q in the error, got %v", w, err)
 			}
 		})
+	}
+}
+
+// A candidate being validated is not where a run reads it: the box
+// applier's step 6 validates a copy staged 0600 in a directory of its
+// own, 0700. Its own mode and place are asked at the reload, of the
+// file the push installs; what it imports is asked now.
+func TestACandidateIsNotHeldToWhereItStands(t *testing.T) {
+	stage := t.TempDir()
+	if err := os.Chmod(stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, stage+"/.1.Caddyfile", global(app), 0o600)
+	checked(t, "validate", "--config", stage+"/.1.Caddyfile")
+	_, err := checkBackups("reload", []string{"--config", stage + "/.1.Caddyfile"})
+	for _, w := range []string{
+		"the Caddyfile, " + stage + "/.1.Caddyfile, may not be read by others",
+		"blog's backup is read from " + stage + "/.1.Caddyfile, which others may not read",
+		"blog's backup is read from under " + stage + ", which others may not enter",
+	} {
+		if err == nil || !strings.Contains(err.Error(), w) {
+			t.Fatalf("reload of the candidate: want %q in the error, got %v", w, err)
+		}
+	}
+	_, outside := dirs(t)
+	write(t, outside+"/shop.caddy", app, 0o644)
+	write(t, stage+"/.2.Caddyfile", global("\t\timport "+outside+"/shop.caddy\n"), 0o600)
+	_, err = checkBackups("validate", []string{"--config", stage + "/.2.Caddyfile"})
+	if w := "blog's backup is read from " + outside + "/shop.caddy, outside " + stage; err == nil || !strings.Contains(err.Error(), w) {
+		t.Fatalf("validate of a candidate importing from outside: want %q in the error, got %v", w, err)
 	}
 }
 
