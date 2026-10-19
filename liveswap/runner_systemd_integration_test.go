@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	sddbus "github.com/coreos/go-systemd/v22/dbus"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
 // These run against a real systemd user manager (make test-integration
@@ -711,6 +713,90 @@ func TestIntegrationSystemdSandboxProbe(t *testing.T) {
 	}
 }
 
+// TestIntegrationSandboxProbeRefusesAnUnfilteredUnit starts the
+// capability probe's own unit, built as probeSandboxCapability builds
+// it (probeStartSpec, unitFor, unitProperties), three times: whole;
+// without RestrictNamespaces=, where the mode still reads 2 as it
+// would from a filter the manager inherited and the unshare check must
+// fail it; and without any seccomp-backed setting, which is what the
+// manager runs where seccomp is unavailable to it, and where the mode
+// check must fail it. Each failure must be the one the probe's journal
+// line names. TestIntegrationSystemdSandboxProbe cannot stand in for
+// the last two, since this host delivers the whole set.
+func TestIntegrationSandboxProbeRefusesAnUnfilteredUnit(t *testing.T) {
+	r := integrationRunner(t)
+	conn, err := userManager.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := func(drop ...string) (result, line string) {
+		t.Helper()
+		nonce, err := newNonce()
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, err := r.unitFor(probeStartSpec(nonce), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// An identifier of its own, matched below: journald can store a
+		// short-lived unit's lines with no unit field at all
+		// (TestIntegrationSystemdJournalTailWhenJournaldIsBehind), but
+		// the stream's identifier is on every one.
+		u.SyslogIdentifier = "itest-probe-" + nonce
+		var props []sddbus.Property
+		for _, p := range unitProperties(u) {
+			if !slices.Contains(drop, p.Name) {
+				props = append(props, p)
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
+		defer cancel()
+		ch := make(chan string, 1)
+		if _, err := conn.StartTransientUnitContext(ctx, u.Name, "fail", props, ch); err != nil {
+			t.Fatalf("starting %s: %v", u.Name, err)
+		}
+		if result, err = jobResult(ctx, ch); err != nil {
+			t.Fatalf("waiting for %s: %v", u.Name, err)
+		}
+		_ = conn.ResetFailedUnitContext(ctx, u.Name)
+		// The probe's own line names what it saw; the journal may take
+		// a moment to have it.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			out, _ := exec.Command("journalctl", "--no-pager", "-o", "cat", "-t", u.SyslogIdentifier).CombinedOutput()
+			if line = string(out); strings.Contains(line, "sandbox probe:") || time.Now().After(deadline) {
+				return result, line
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	// Every setting the manager applies through seccomp, and so skips
+	// together where seccomp is unavailable to it. A new one added to
+	// sandboxProperties without being listed here leaves the mode at 2,
+	// and the last case below fails, naming it.
+	seccompBacked := []string{"SystemCallFilter", "SystemCallErrorNumber", "SystemCallArchitectures",
+		"RestrictAddressFamilies", "RestrictNamespaces", "RestrictRealtime", "RestrictSUIDSGID",
+		"LockPersonality", "ProtectKernelModules", "ProtectKernelLogs", "ProtectKernelTunables", "PrivateDevices"}
+	for _, c := range []struct {
+		name, want string
+		pass       bool
+		drop       []string
+	}{
+		{"whole", ", seccomp 2, unshare refused", true, nil},
+		{"no RestrictNamespaces", ", seccomp 2, unshare allowed", false, []string{"RestrictNamespaces"}},
+		{"no seccomp-backed setting", ", seccomp 0, unshare allowed", false, seccompBacked},
+	} {
+		result, line := probe(c.drop...)
+		if (result == "done") != c.pass {
+			t.Errorf("%s: the probe unit's job is %q, want passed=%v: %q", c.name, result, c.pass, line)
+		}
+		if !strings.Contains(line, c.want) {
+			t.Errorf("%s: the probe's journal line does not say %q: %q", c.name, c.want, line)
+		}
+	}
+}
+
 // writeSandboxView installs the shared view probe (sandboxViewScript,
 // the same file e2e/liveswap/systemd.sh and packaging/test/smoke.sh
 // use) into the release dir, alongside a ./server that sources it and
@@ -780,9 +866,9 @@ func readProbe(t *testing.T, shared string) map[string]string {
 // sandbox and reads the view from inside: the namespaces are in
 // effect, the root shows only the app's own dirs, everything nothing
 // named is absent (not merely unreadable), the manager's /proc is
-// closed, cgroupfs is read-only, /tmp is private and writable, HOME is
-// the shared dir. Then the unit is stopped through the runner like any
-// other.
+// closed, cgroupfs is read-only, the syscall filter is in force, /tmp
+// is private and writable, HOME is the shared dir. Then the unit is
+// stopped through the runner like any other.
 func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 	r := integrationRunner(t)
 	root, release, shared := sandboxRoot(t)
@@ -832,6 +918,11 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 		// No core dump of a crashed app, and no way to raise the soft
 		// limit back: LimitCORE=0 on both, read back from inside.
 		"core_soft": "0", "core_hard": "0",
+		// The syscall filter is in force in here, not only set on the
+		// unit: seccomp's filter mode, and the call the filter takes
+		// out of @system-service refused (EPERM). The same call from
+		// outside the unit is checked below.
+		"seccomp": "2", "io_uring_setup": "refused",
 		// The base view: an OS the app can actually run on. Without
 		// these, "absent" below would only mean the unit is empty.
 		"binsh": "ok", "usrbinenv": "ok", "etcssl": "ok", "resolvconf": "ok",
@@ -877,6 +968,13 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 	}
 	if n, _ := strconv.Atoi(got["nprocs"]); n == 0 || n > 8 {
 		t.Errorf("nprocs = %q, want a handful (own PID namespace)", got["nprocs"])
+	}
+	// From this process, outside the unit, the same call reaches the
+	// kernel (EFAULT on the null params): otherwise "refused" above
+	// could be a filter this test inherited rather than the unit's.
+	if _, _, errno := syscall.Syscall(unix.SYS_IO_URING_SETUP, 1, 0, 0); errno == syscall.EPERM {
+		sysctl, _ := os.ReadFile("/proc/sys/kernel/io_uring_disabled")
+		t.Errorf("io_uring_setup is refused outside the unit too, so io_uring_setup=refused inside proves nothing about the unit's filter (kernel.io_uring_disabled=%s; anything but 0 can refuse it outside too)", strings.TrimSpace(string(sysctl)))
 	}
 	unit := h.state().Unit
 	props := run(t, "systemctl", "--user", "show", unit, "-p", "PrivatePIDs,PrivateUsers,ProtectSystem,ProtectControlGroups,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,InaccessiblePaths,LimitCORE,LimitCORESoft,SystemCallArchitectures")
