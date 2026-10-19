@@ -161,7 +161,14 @@ Concept map from the Nomad-era stack:
   runs under `deadline`, not under the request: a client that hangs up
   MUST NOT stop it midway (a half-applied migration harms the app's
   data); the health gate then fails the deploy on the cancelled
-  request, before any traffic moves.
+  request, before any traffic moves. Its unit carries `deadline` as
+  its own `TimeoutStartSec=`, so it ends on time when no hotserve is
+  watching it. A hotserve stop or restart MUST NOT stop it midway
+  either: the manager runs it on past hotserve, and every sweep but
+  an app's removal leaves a running `pre_start` unit alone and
+  reports itself unconfirmed, naming it, so recovery, the watchdog
+  and the next deploy start and delete nothing until it has ended
+  (recovery retrying on its backoff).
 - The new instance MUST be continuously healthy for `soak` before any
   traffic moves (`soak 0`: the first healthy probe; refused at load
   with `health_path off`, where nothing is probed), and MUST be
@@ -229,9 +236,44 @@ Concept map from the Nomad-era stack:
   retriable — unless the failed instance
   may still be running (the
   dir is kept rather than pulled from under a live process; the next
-  launch's sweep stops the stray unit) or the removal itself fails;
+  launch's sweep stops the stray unit, or, for a `pre_start`, waits
+  for it to end) or the removal itself fails;
   either way release GC (after a later successful deploy) removes it
   once it falls outside the newest `keep`.
+- A URL or push deploy cut short by hotserve stopping (a crash, a
+  restart, an upgrade) MUST leave its version deployable, and MUST
+  NOT leave a release a rollback could launch without its
+  `pre_start`. Before it extracts, the deploy writes
+  `<app>/deploying.json` (its version and start time; outside every
+  view, through `ownfile.go`), and removes it once its record is
+  written, whatever it came to; a rollback or a relaunch writes none.
+  A marker found by the next recovery or the next deploy, each after
+  a confirmed sweep, is a deploy no hotserve finished: if it names
+  the version `state.json` names or the instance kept, that deploy
+  reached the cutover, and the marker is only removed; if the
+  version's record carries the marker's start time, that deploy was
+  recorded and the marker is stale, only removed; otherwise the
+  release is removed (refused through a link, `linkAt`), a failed
+  record names the restart, and then the marker goes. Settling
+  refuses nothing and removes the marker whatever it decides (a
+  removal that fails is logged), since the next deploy's marker
+  would overwrite it: a release that cannot be
+  removed is recorded as a failed deploy's left on disk is
+  (`cleanup of failed release`), and a record there that cannot be
+  read may be that deploy's, so nothing is removed or written over
+  it. A `state.json` that cannot be read vouches for nothing (recovery
+  refuses it, so nothing serves from it): the record decides. Through
+  an app dir that is not the directory it names (`linkAt`) nothing is
+  settled, not even read: the marker and the releases there are a
+  sibling's, and the sibling's own deploy may be holding that marker.
+  A marker that does not prove itself one (it does not parse, names
+  no version or start, or is not a regular file) is acted on for
+  nothing and removed where it can be: a non-empty directory at its
+  name cannot be, and every extracting deploy then fails writing its
+  own marker, naming the path, until it is removed by hand. While a
+  running `pre_start` holds launches, the watchdog leaves an
+  unhealthy instance serving rather than stop
+  it, as while a deploy runs.
 - Config reloads MUST NOT restart running apps. Changed app definitions
   apply at the app's next launch: a deploy, a rollback, or a relaunch
   after a crash, a sustained health failure, or a reboot.
@@ -406,13 +448,16 @@ even that is impossible, reported as "may still be running" so the
 deploy keeps the release; and **the manager is the ledger** — every
 unit is named `hotserve-<app>.<version>.<nonce>.service` (the `.`
 after the app is the one character an app name cannot contain), and
-`Sweep(app, keep)` stops every other unit of the app. Recovery sweeps
-after reattach/relaunch, deploys sweep before GC, removing an app
-from the config sweeps all of it, and `App.Start` sweeps the units of
-any app the config no longer names — so nothing hotserve lost track
+`Sweep(app, keep)` stops every other unit of the app but a running
+`pre_start`, which it leaves to finish and names, unconfirmed.
+Recovery sweeps after reattach/relaunch, deploys sweep before a
+`pre_start`, a start and GC, removing an app from the config stops
+all of it (`StopAll`, sparing nothing), and `App.Start` stops the
+units of any app the config no longer names — so nothing hotserve lost track
 of (a failed `state.json` write, an unconfirmed stop, an app renamed
-while hotserve was down) survives the next start or the next deploy,
-and no release is deleted while the manager still runs something out
+while hotserve was down) survives the next start or the next deploy
+but a running `pre_start`, which nothing is launched beside until it
+ends (on its own `deadline` at the latest), and no release is deleted while the manager still runs something out
 of it. There is
 deliberately no persisted "leaked releases" ledger: systemd already
 knows what is running, and asking it is cheaper and truer than
@@ -501,7 +546,7 @@ backwards edges reappearing *despite* this table.
 | `names.go` | the app-name and version alphabets, and the two helpers over them; shared by every layer |
 | `app.go` | `managedApp` state machine, Deploy pipeline, recovery, env building |
 | `appdirs.go` | `appDirs`: the on-disk layout for one app — path arithmetic, and the one check that a dir of it is the directory it names (`linkAt`, by Lstat), which every place hotserve writes or deletes in an app dir runs. No state, no lock |
-| `ownfile.go` | how a file hotserve keeps in an app dir is written and read — temp file + rename; no link followed at the name, no FIFO held, size-bounded — shared by the deploy records and `state.json` |
+| `ownfile.go` | how a file hotserve keeps in an app dir is written and read — temp file + rename; no link followed at the name, no FIFO held, size-bounded — shared by the deploy records, `state.json` and the deploy marker |
 | `caddyfile.go` | all Caddyfile parsing (global option, directive, upstreams) but the `deploy_trust` block, which is `deploytrust.Parse`; NO defaults here — Provision owns them, reading a zero field as unset, so a value below an option's minimum (0 included) is refused here, named; `soak` and `deploy_log_lines`, whose 0 is a setting, are pointers |
 | `handler.go` | the webhook: payload validation, deploy dispatch, the status endpoint, and every body's filter (`RespondJSON`); authentication is `deploytrust`'s |
 | `redact.go` | the response filter (`Redactor`) that `RespondJSON` applies: known `env_file` values in their encoded forms, a safe list, shape rules, entropy; the four rules every writer of a body holds head the file |
@@ -521,6 +566,7 @@ backwards edges reappearing *despite* this table.
 | `journal.go` | the journal tail a failed deploy's response carries: `journalctl` run with argument lists built here, its output bounded |
 | `watchdog.go` | continuous crash/health supervision: per-app loop, restart budget, backoff, the wait for a deploy holding the lock |
 | `state.go` | `state.json` atomic persistence; the release order (deploy time) that keep-N GC and `available_versions` share |
+| `deploying.go` | the deploy marker, `<app>/deploying.json`: a URL or push deploy in flight, so the next start or deploy removes the release of one hotserve stopped during, and records it failed |
 | `deploys.go` | the deploy record store, `<app>/deploys/<version>.json`: written once through the filter, served back only through it, pruned with the releases; its four rules head the file |
 | `trustwarn.go` | the load-time pass that asks `deploytrust.WarnUnboundSource` about each `deploy_trust` block once, the global ones only when some app inherits them |
 | `deploytoken_cmd.go` | the `hotserve deploy-keygen` / `deploy-token` subcommands |
@@ -733,6 +779,11 @@ severity × occurrence × detection, then the fix's size and risk.
 | A Debian 13 host that passes the tutorial's step 2 (apt's `systemd (>= 257)` floor, `systemd-detect-virt --container`) but whose kernel or container refuses the sandbox's namespaces installs and serves the starter config, and first fails at step 3: `hotserve init`'s reload is liveswap's first start. That reload is refused, the probe's error names the cause, and the starter keeps serving; the box's repository, signer and workflow carry over to a fixed or new host. | `probeSandboxCapability`, from `App.Start` | 2 | 5 | 1 | 10 | size 3, risk 1 (a sandbox-check subcommand that step 2 runs as the hotserve user) | Rule 2 holds (it ends red and named); under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#274, 2026-10-17; #225 scored the same case at occurrence 3, but a host is the operator's choice, so it scores as input). The probe needs the hotserve user and its lingering manager, which the package's postinst creates, so the earliest any check could run is the end of `apt install`, minutes before step 3, with the same refusal and the same fix. A check in postinst could only warn, since a failed postinst leaves the package half-configured: one line in apt's output, after up to two 30-second probe budgets inside dpkg. And liveswap with no apps runs no probe (`len(a.managed) > 0` in `App.Start`), so the starter config cannot carry one. |
 | Releases with no deploy record that proves itself one (deployed before records existed, or whose record write failed) sort after every recorded release, ordered among themselves by their dirs' mtimes. A compromised instance running from one of them can set its own dir's mtime, keep its release, and have another unrecorded one pruned first. No recorded release is affected, nor the two GC holds by rank (`TestReleaseOrderLedger`, "the fallback's limit"). | `newestFirst`, state.go | 2 | 2 | 3 | 12 | size 3 (a birth-time key, with its own fallback where a filesystem reports none) | Rule 2 holds. Under rule 3 the product is under 20 and the fix is not size 1, risk 1. What moves is only which of the releases already first in line for pruning goes first, and each is named in the status (`ordered_by_mtime`) and in the GC line (`placed_by`). It needs two unrecorded releases on disk past the held pair plus a compromised app running from one of them. On a box with records since its first deploy that means two failed record writes as well (occurrence 1). Sorting these releases last is the owner's decision (#299, 2026-10-18): it leaves no app-writable input deciding a prune among recorded releases. |
 | A deploy that finds no instance in memory (the watchdog dropped one whose relaunch was refused for good, `dropIf`, or recovery has not launched the app) gives GC no replaced version to hold by rank. If the version that last served came in by a rollback whose record write was lost, its record is at an older deploy, and with `keep 2` that GC can prune it. | `deployLocked` → `gcReleases`, `previous` | 3 | 2 | 3 | 18 | size 2, risk 2 (fall back to `state.json`'s last-served version) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1. It takes two independent faults: the lost record write, and no instance in memory at the next deploy. With `keep 3` or more, that version stays among those kept unless newer ones were deployed since. The GC line names what it prunes (`placed_by`). |
+| A deploy that takes the lock after a hotserve start, before the background recovery has recorded the instance, sweeps with nothing to keep, so it stops the recorded instance's unit: recovery then relaunches that version where it would have reattached it. Nothing was routed before the deploy either; recovery cannot reattach while the deploy holds the lock. | `deployLocked`, its sweeps (`old` is nil) | 2 | 2 | 3 | 12 | size 3, risk 2 (the deploy recovers first under the lock it holds, or sweeps keeping `state.json`'s handle) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1. Recovery takes the lock first and holds it through the reattach, so it takes two faults: a restart, and recovery's first attempt failing transiently before it records the instance (the manager does not answer `Reattach`, or the app dirs cannot be made) while the manager answers again by the deploy's sweep. Recovery retries on its own backoff (2 s, doubling to a minute). It predates the deploy marker (#317/#318), whose settle adds a sweep earlier in the deploy, before the version check and the fetch, when a marker is on disk. |
+| A marker for the version `state.json` names, or for the instance recovery has just relaunched, is taken as a deploy that reached the cutover, and only cleared. A `state.json` can name a version whose release is gone (removed by hand, a partial restore); recovery then refuses it for good, and the remedy, deploying that version again, writes a marker for it. A hotserve stop after that deploy extracts and before its `pre_start` succeeds leaves the release kept: recovery waits for a `pre_start` still running, then relaunches the release whether or not it succeeded. | `settleInterrupted`, `ensureRunning`'s relaunch | 3 | 2 | 3 | 18 | size 2, risk 2 (recovery sweeps and settles before it relaunches, a marker newer than the state's `updated_at` being no cutover) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1. It takes two faults: a release missing under the recorded version, and a stop in that window (the redeploy is the remedy, not a fault). The status then shows the version running beside its old successful record. Every other marker case ends with the release removed, proven served, or left on disk with the reason in the journal. |
+| A `pre_start` whose start hotserve could not observe and whose stop it could not confirm (`RunOnce`: the start's D-Bus call failed in transit, then `stopUnobserved` could not reach the manager or see the unit gone) fails its deploy as "may still be running", its release kept, while the manager runs it on. Every sweep but an app's removal leaves a running `pre_start` to finish, so until it ends — at the latest at its unit's `TimeoutStartSec=` (`deadline`, five minutes by default) and stop grace — the app's deploys (after their fetch), rollbacks and relaunches are refused, naming it. The old instance serves throughout and the watchdog leaves an unhealthy one serving; one that crashes meanwhile stays down, the watchdog retrying, until the `pre_start` has ended. | `Sweep` (`spare`), after `RunOnce` | 2 | 2 | 1 | 4 | size 3, risk 2 (remember the unit an unconfirmed `RunOnce` left, and stop it at the next sweep as before #317) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1. It ends red and named: the failed deploy's record names the unit as possibly running, and each refusal names it again. That fix is the stop midway that half-applies a migration, which sparing exists to prevent (#317); the wait is bounded by the unit's own deadline. |
+| A non-empty directory at `<app>/deploying.json` fails every deploy that extracts (a URL or push deploy of a new version) until it is removed by hand. The settle reads it as no marker, cannot remove it (`directory not empty`) and goes on; the deploy's own marker write then fails at its rename (`file exists`) before anything is fetched: a 500 naming the path, the version recorded failed, the old instance serving on. Rollbacks, relaunches and recovery go on; each settle logs the directory again, and each deploy, rollback and relaunch runs the settle's sweep first. | `settleInterrupted` → `clearDeployMarker`; `saveDeployMarker` | 4 | 1 | 1 | 4 | size 2, risk 1 (move a marker that is not a regular file aside under a name of its own); size 1, risk 1 (`os.RemoveAll` in `clearDeployMarker`), one-way: it deletes what the directory holds, through a mount under it too | Under rule 3 the product is under 20; the size-1 fix was declined (owner, 2026-10-19): it deletes what hotserve did not write, which neither `state.json`'s reader nor the temp-file sweep ever does. Nothing in hotserve makes a directory there and no app's view holds the app dir (`sandbox.go`), so it takes root or the hotserve uid by hand, or a damaged filesystem; a hostile hotserve uid gains nothing it lacks (T5). The journal names the path at each settle (`is not a regular file`, `directory not empty`). |
+| A deploy that finds a deploy marker on disk settles it after the relaunch check and before its own version check and fetch (`settleBeforeDeploy`): a sweep keeping the instance in memory, which stops strays, resets leftovers and prunes sockets, and, for a deploy no hotserve finished, its release removed and its version recorded failed. A request then refused — its version already on disk (422), its URL refused by the allowlist, its download failing — has still made those changes, and a 422 carries the refusal alone. | `deployLocked` → `settleBeforeDeploy` | 2 | 4 | 1 | 8 | size 2, risk 1 (the version check before the settle, except for the marker's own version); size 3 for the fetch's refusals (the old marker held past the new one's write) | Rule 2 holds: the changes are the settle the design gives the next recovery or deploy, made earlier, so the box ends as it would have; the removal and each unit stopped or reset are named in the journal, and the version's record says why. Under rule 3 the product is under 20 and neither fix is size 1, risk 1. The settle precedes the version check because a retry of the interrupted version is what it makes deployable (#318). One restart is enough: one during a `pre_start` leaves the marker for a deploy that lands between the migration's end and recovery's next attempt (its backoff reaches a minute). With no instance in memory the sweep is the one the row on a deploy before recovery describes. |
 | `max_token_ttl {env.NAME}` in a `deploy_trust local` block is refused at config load (`invalid max_token_ttl "{env.NAME}"`), though the README says `{env.*}` placeholders are resolved at config load: the duration is parsed when the Caddyfile is, before placeholders are. | `deploytrust.Parse` | 2 | 5 | 1 | 10 | size 2, risk 2 (a string field, resolved in `ResolvePlaceholders` and parsed in `Build`) | Rule 2 holds (refused and named, before anything runs); under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#296, 2026-10-17). Every liveswap duration directive (`health_interval`, `deadline`, …) parses the same way, so this one matches them; the Caddyfile's own `{$NAME}`, substituted when the file is read, works for all of them. |
 | An app dir, or a dir it makes, that is a link to a sibling's (`<root>/blog -> shop`, `blog/proxy -> ../shop/proxy`) is still followed outside a deploy. blog's status lists shop's releases as its own available versions, and so does the status a refused deploy's response carries. blog's recovery reads shop's `state.json`; it and the watchdog's relaunch make and remove a run dir in shop's `run/` and are refused at launch for a linked app dir, `releases/`, `shared/` or `run/`, recovery retrying, backing off to once a minute. A linked `proxy/` launches: blog's pins land in shop's `proxy/`, where shop's sweep removes them, so blog, not shop, goes unreachable. | `status`, `ensureRunning`, `launchVersion` | 3 | 5 | 3 | 45 | size 2, risk 1 (`writeRefusal` in status and before a relaunch, #300) | Scores to fix (rule 3); held by decision (#300, 2026-10-18: the deploy side is fixed, the rest held) until a box runs a link under the root, or renaming or aliasing an app becomes a feature. No box does. Nothing here writes into the sibling's releases or data: a deploy, push or rollback through such a dir is refused before it writes (`writeRefusal`), so a rollback to a listed version is refused and named; a relaunch through a linked app dir, `releases/`, `shared/` or `run/` is refused at launch (`resolveBindSources`), red and named; and the socket prune never follows a link (`linkAt`), so no sibling loses its socket and pin that way. |
 | A push refused before its upload is staged (a dir that is not the directory it names, like a 413 or a staging failure) leaves `last_deploy` as it was, where a URL deploy or rollback refused the same way replaces it. | `deployPush` | 2 | 5 | 1 | 10 | size 2, risk 2 (a push refusal through the pipeline's bookkeeping) | Under 20, and not a size-1, risk-1 fix (rule 3). The push's own response is the refusal, a 500 naming the path, the reason and the remedy, and the journal says it with who asked (`deploy failed`, `via`, `remote`). Every refusal of a push before staging already leaves `last_deploy` alone, so a status read after a push tells the same story for each. |
