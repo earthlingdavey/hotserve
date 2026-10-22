@@ -47,7 +47,18 @@ queues, and the host's
 `PrivateDevices=` binds into every unit. `PrivateIPC=` would cover the
 first two, but on systemd 257's user manager it fails every unit's
 `ExecStopPost=` with 226/NAMESPACE, and it does not cover `/dev/shm`
-(#311, owed: S3 × O3 × D5 = 45).
+(#311, owed: S3 × O3 × D5 = 45). Nor, on a box without
+docs/hardening.md step 5, the module-backed protocols under the
+admitted families (`sctp`, `l2tp_ip`, `l2tp_ip6`, `smc`), which an app
+opens and the kernel loads for it; nor, on any box, the kernel
+modules an app loads through the families it has: a netlink
+protocol's or generic-netlink family's module on a `socket()` or a
+`GETFAMILY`, which hands it a live netlink socket into that module's
+parsers, and any aliased family's module on a `socketpair()`, which
+hands it nothing, as any user; a compromised app reaches those
+modules' init and parsers, and the few requests they answer
+unprivileged (both accepted by decision, S3 × O3 × D5 = 45;
+"Module-backed protocols" below).
 
 The refused filter is the one route around the syscall filter that the
 capability probe cannot see. Each seccomp filter on a process counts
@@ -256,8 +267,10 @@ below as a contract the sandbox path must keep.
   `RestrictSUIDSGID=`, `LockPersonality=`, `ProtectKernelTunables=`,
   `ProtectKernelModules=`, `ProtectKernelLogs=`,
   `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK`
-  (netlink read-only for `getifaddrs()`, which runtimes call at
-  startup), `SystemCallFilter=@system-service` less `io_uring_setup`,
+  (netlink for `getifaddrs()`, which runtimes call at startup; a
+  route, link or address change needs `CAP_NET_ADMIN`, which no unit
+  holds, and what a generic-netlink family admits unprivileged is that
+  family's own rule), `SystemCallFilter=@system-service` less `io_uring_setup`,
   with `SystemCallErrorNumber=EPERM` — systemd's curated allowlist,
   adopted wholesale, which is the bar the non-goals below set for any
   seccomp filter, with one call taken out — and
@@ -277,12 +290,19 @@ below as a contract the sandbox path must keep.
   filter at all, so `SystemCallArchitectures=native` takes that ABI
   away. A 32-bit executable would die at its first system call, so the
   pre-flight refuses one naming the setting (`checkMachine`,
-  liveswap/elf.go): a deploy as a 422, a relaunch for good. One route
-  is open: `socketpair(2)`,
-  which the filter does not cover, makes a connected pair in any family
-  that supports it, and `AF_TIPC`, a module Debian 13 builds and a call
-  can autoload, supports it on every socket type (owed: #315; denying
-  `socketpair` is not an option, since Node's `child_process` uses it).
+  liveswap/elf.go): a deploy as a 422, a relaunch for good. The third
+  call that makes a socket, `socketpair(2)`, the filter does not cover
+  either, and on Debian 13 it gives an app no socket outside
+  `AF_UNIX`: in 6.12 only `AF_UNIX` and `AF_TIPC` implement it (every
+  other family's `proto_ops` carries the stub, `EOPNOTSUPP` once the
+  family is registered; a family no module answers for is
+  `EAFNOSUPPORT`), and `tipc` has no autoload alias, so it loads only
+  by root's hand, which docs/hardening.md step 5 (next bullet) refuses
+  too where taken. What the call still does is load the module of any
+  family that has an alias, with no socket to show for it (next
+  bullet, the accepted part). Measured against the source 2026-10-22
+  (#315). Denying `socketpair` was never an option: Node's
+  `child_process` uses it.
   Pinned by
   `TestTwoRoutesAroundTheAddressFamilyFilterAreClosed` and
   `TestCheckMachineRefusesA32BitExecutable`; the integration, e2e and
@@ -301,6 +321,62 @@ below as a contract the sandbox path must keep.
   (`packages/bun-usockets/src/eventing/` holds `epoll_kqueue.c` and,
   for Windows, `libuv.c`), with no `io_uring` call in its runtime
   (oven-sh/bun `ed58ba2`).
+- **Module-backed protocols.** The family list says nothing about the
+  protocol number, and the kernel loads a protocol's module on the
+  first `socket()` that names it, as any user (`inet_create`,
+  `net/ipv4/af_inet.c`; the same in `af_inet6.c`, and for netlink in
+  `af_netlink.c`). On Debian 13's 6.12 three protocols under `AF_INET`
+  and `AF_INET6` carry that alias and gate nothing at creation: `sctp`
+  (132), `l2tp_ip`/`l2tp_ip6` (115) and `smc` (256; `modules.alias` of
+  6.12.113, read 2026-10-22). A compromised app gets a live socket into
+  kernel code the sandbox meant to keep out (#315: S3 × O3 × D5 = 45).
+  `dccp` (`SOCK_DCCP`) would be a fourth, but Debian strips its
+  autoload aliases (its
+  `dccp-disable-auto-loading-as-mitigation-against-local-exploits`
+  patch; sibling patches strip `rds`'s, `af_802154`'s and the
+  ham-radio families'), so it loads only by root's hand, as `tipc`
+  does. hotserve closes none of this. systemd filters no
+  protocol argument, and the package carries no host policy: a
+  modprobe.d file is the box's setting, for every program on it, so it
+  is the operator's step, not the `.deb`'s (owner's decision,
+  2026-10-22, the line the `libatomic1` Recommends was declined on in
+  #279; the shipped file was built, reviewed and taken out again).
+  docs/hardening.md step 5 is that step: `install <module> /bin/false`
+  for `sctp`, `l2tp_ip`, `l2tp_ip6` and `smc`, and for `dccp`, `tipc`
+  and `rds`, which refuse the root-loaded case (a loaded `tipc` is
+  configurable by any netlink sender, its generic family carrying no
+  admin flag, with UDP media built in) and make the seven the set the
+  CIS Debian benchmark makes unavailable. The line stops the kernel's
+  autoload and a hand `modprobe` alike, a module depending on the
+  named one with them (measured: `modprobe dccp_ipv4` stops at
+  `dccp`'s line); a module already loaded stays until reboot. So the
+  route is **open by default**: on a box without the step a
+  compromised app opens those three protocols' sockets. Accepted by
+  decision with that score (rows in DESIGN-liveswap.md and
+  DESIGN-threat-model.md); no probe checks the step either way.
+  Pinned by `TestHardeningStepBlocksTheModuleBackedProtocols`, which
+  holds the page's one line to the test's own list, the one copy of
+  these seven outside this prose: a change to the list changes the
+  test, the page and this bullet together. What stays open on every
+  box, in the same accepted row, is the modules an app loads through
+  the families it has. A `socket(AF_NETLINK, SOCK_RAW, n)` loads the
+  module for netlink protocol `n` (`nfnetlink`, `xfrm_user`,
+  `crypto_user`, `ib_core`, `scsi_transport_iscsi` on Debian 13) and
+  hands the app a live netlink socket into it, and the generic-netlink
+  control family loads any module with a family alias on a
+  `GETFAMILY` by name, `smc` among them; `nfnetlink` and `xfrm_user`
+  refuse an unprivileged sender at their first check, `crypto_user`
+  answers a `GETALG` report (what `/proc/crypto` shows; CVE-2018-19854
+  was an info leak there) and `sock_diag` dumps the namespace's
+  sockets as `/proc/net` does. And `socketpair()` in any family with
+  an alias (`appletalk`, `atm`, `af_key`, `pppox`, `llc2`,
+  `mpls_router`, `can`, `bluetooth`, `rxrpc`, `phonet`, `af_alg`,
+  `nfc`, `hv_sock`, `kcm`, `qrtr`, `smc` on Debian 13) loads it and
+  runs its create path before the stub refuses the call, so the app
+  gets no socket from that one. systemd has
+  no filter for either; blocking `nfnetlink` breaks nftables. A longer
+  list in the hardening step, for the family modules and
+  `crypto_user`, is possible and not decided.
 - The network namespace MUST be shared: apps make outbound calls and
   reach a same-box database over loopback. The app itself listens on
   a per-instance unix socket in its own `run/<nonce>/` (`SOCKET`); nothing
@@ -655,3 +731,11 @@ Dated one-liners; the full text of each is in git.
   (#315). 32-bit executables are refused at the deploy's pre-flight.
   `PrivateIPC=` was measured breaking
   `ExecStopPost=` on systemd 257's user manager and moved to #311.
+- 2026-10-22 (#315) — `socketpair(2)` measured to give no socket
+  outside `AF_UNIX` on Debian 13: only `AF_TIPC` implements it besides,
+  and `tipc` has no autoload alias. The route found instead, a
+  module-backed protocol over an admitted family (`sctp`, `l2tp_ip`,
+  `l2tp_ip6`, `smc`), is the operator's to close (docs/hardening.md
+  step 5, the seven CIS modules; a file shipped by the `.deb` was
+  built and declined): open by default, accepted by decision with the
+  modules a netlink socket or a `socketpair()` loads.
