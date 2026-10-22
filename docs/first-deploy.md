@@ -26,7 +26,9 @@ everything else happens on your laptop and on GitHub.
 [After the first deploy](after-first-deploy.md) covers what comes
 next — changing the config, secrets — and
 [Hardening the box](hardening.md) is recommended, none of it needed to
-get here.
+get here. Deploying from a CI that is not GitHub Actions, or from a
+laptop with a key, is [Deploying from outside GitHub](outside-github.md),
+once this page's box exists.
 
 On the laptop you need git 2.34 or later (it signs commits with an SSH
 key), `make`, and the SSH key the box is created with. Where a step
@@ -179,11 +181,10 @@ directory: it holds the workflow that sends the config to the box, and
 a repository without it starts no run when pushed and reports no
 error. The ZIP and `git archive` keep it; Finder hides it, `cp dir/*`
 skips it, and GitHub's upload page leaves it out. The workflow that
-sends the config to the box is GitHub Actions; on another host, the
-box README's
-[Outside GitHub](../examples/box/README.md#outside-github) says what a
-CI job of your own needs, and the rest of this page reads as if the
-repository is on GitHub.
+sends the config to the box is GitHub Actions; on another host,
+[Deploying from outside GitHub](outside-github.md#4-the-boxs-config-from-another-runner)
+says what a CI job of your own needs, and the rest of this page reads
+as if the repository is on GitHub.
 
 **Add your key as the first signer:**
 

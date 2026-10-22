@@ -751,6 +751,10 @@ Presets:
   control, for non-CI deploys. Generate it with `hotserve
   deploy-keygen`, mint tokens with `hotserve deploy-token`.
 
+[docs/outside-github.md](../docs/outside-github.md) walks through the
+`gitlab`, `oidc` and `local` presets end to end: a key's two halves,
+a job on another CI, and the token's format for minting it elsewhere.
+
 Sub-directives: `audience` (required for OIDC — never trust an
 unaudienced token; for `local`, the name of this box, see below),
 `claim <name> <value>` (exact-match, repeatable — pin `repository`,
@@ -1453,6 +1457,9 @@ deploy:
         https://deploy.example.com/blog
 ```
 
+The same job with the template's `scripts/deploy.sh` pushing the
+tarball in the request, no registry and no read token, is in
+[docs/outside-github.md](../docs/outside-github.md#3-an-apps-deploy-from-another-runner).
 On gitlab.com that URL needs `artifact_allowlist
 gitlab.com/api/v4/projects/<project id>/` on the box. `SHA256` is the
 tarball's digest from the job's own copy, which the box holds the
