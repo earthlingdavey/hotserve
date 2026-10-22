@@ -1205,7 +1205,7 @@ func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 	// The key set's own clock, apart from the limiter's: its interval
 	// is advanced alone at the end, so the address is still throttled.
 	keys := trusttest.NewClock()
-	rig.ma.verifiers = deploytrust.VerifiersOn(keys, []deploytrust.Source{oidcSource(t, iss.URL)}, iss.Client)
+	rig.ma.verifiers = primed(t, deploytrust.VerifiersOn(keys, []deploytrust.Source{oidcSource(t, iss.URL)}, iss.Client))
 	token := func() string {
 		return iss.Mint(t, iss.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	}
@@ -1275,14 +1275,25 @@ func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 	}
 
 	// The issuer is back: within the source's refetch interval its
-	// failed fetch stands, and once that has passed the throttled
-	// address's first valid token deploys and clears it.
+	// failed fetch stands; past it the next token begins the fetch and
+	// is refused without waiting on it, and once that fetch has ended
+	// the throttled address's first valid token deploys and clears it.
 	iss.JWKSDown.Store(false)
 	if w := from(t, h, ci, token()); w.Code != http.StatusUnauthorized {
 		t.Fatalf("issuer back within the refetch interval: code = %d, want 401", w.Code)
 	}
-	keys.Advance(deploytrust.KeyRefetchInterval)
-	if w := from(t, h, ci, token()); w.Code != http.StatusOK {
+	keys.Advance(deploytrust.RefetchInterval)
+	if w := from(t, h, ci, token()); w.Code != http.StatusUnauthorized {
+		t.Fatalf("issuer back past the refetch interval, the token beginning the fetch: code = %d, want 401", w.Code)
+	}
+	// Only that token's fetch can let a retry through: nothing else
+	// fetches within the interval.
+	w := from(t, h, ci, token())
+	for deadline := time.Now().Add(5 * time.Second); w.Code == http.StatusUnauthorized && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+		w = from(t, h, ci, token())
+	}
+	if w.Code != http.StatusOK {
 		t.Fatalf("issuer back past the refetch interval: code = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
 	if h.limiter.Size() != 1 { // the other address's one failure remains
@@ -1302,9 +1313,9 @@ func TestWebhookOutageIsNamedWhenAnotherSourceAccepts(t *testing.T) {
 	h.logger = zap.New(core)
 	down, up := trusttest.NewIssuer(t), trusttest.NewIssuer(t)
 	down.JWKSDown.Store(true)
-	rig.ma.verifiers = append(
+	rig.ma.verifiers = primed(t, append(
 		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, down.URL)}, down.Client),
-		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, up.URL)}, up.Client)...)
+		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, up.URL)}, up.Client)...))
 	tok := up.Mint(t, up.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	if w := do(t, h, http.MethodGet, "/demo", tok, ""); w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200; body: %s", w.Code, w.Body.String())
@@ -1327,9 +1338,9 @@ func TestWebhookOutageNamesEverySourceDown(t *testing.T) {
 	a, b := trusttest.NewIssuer(t), trusttest.NewIssuer(t)
 	a.JWKSDown.Store(true)
 	b.JWKSDown.Store(true)
-	rig.ma.verifiers = append(
+	rig.ma.verifiers = primed(t, append(
 		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, a.URL)}, a.Client),
-		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, b.URL)}, b.Client)...)
+		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, b.URL)}, b.Client)...))
 	tok := a.Mint(t, a.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	if w := do(t, h, http.MethodGet, "/demo", tok, ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", w.Code)

@@ -84,21 +84,32 @@ verified JWT in `Authorization: Bearer` (see "Reducing the asset"):
 against public material, then a claim allowlist. Auth happens **before**
 existence is revealed: an unknown app name is verified against the
 *global* trust sources, so its refusal is the same 401 as a known
-app's (`Handler.ServeHTTP`, liveswap/handler.go). The time to that 401
-need not be, and that is the **residual** (S3 × O5 × D5 = 75, as #296
-scored it; owed: #306). A token is checked against each source a name
-resolves to in turn, the signature before the issuer, so an OIDC
-source refuses a forged token after a local signature check when it
-holds the token's kid, and, when it does not, after a fetch of its
-issuer's keys that it makes at most once a minute (`keySet`,
-liveswap/deploytrust/jwks.go), whatever issuer the token names. A name
-that does not exist goes to the global sources: it is refused at once
-when they hold no OIDC source, and otherwise pays the same on their own
-key sets. The fetch window is per app, not shared across apps that
-trust the same issuer: each app's sources keep their own key set, so
-one unknown-kid token per app per minute can wait on an issuer round
-trip that one to a missing name, sent just before, did not, and an app
-name can be confirmed by timing. Config load refuses an app
+app's (`Handler.ServeHTTP`, liveswap/handler.go). No token waits on
+an issuer for it (#306): a token is checked against each source a
+name resolves to in turn — an OIDC source checks its signature, then
+its issuer, audience and expiry (go-oidc's order), then the claim
+allowlist — and every check is local. Each issuer's discovery and keys
+are held once for the process per `allow_insecure_http` setting (so at
+most twice, when liveswap's differs from the box's https-only one),
+shared by every source that trusts it over that client
+(`issuerState`, liveswap/deploytrust/deploytrust.go), and fetched in
+the background — at start and at each reload (`Warm`), then for a
+token under a kid none is held for, at most once a minute per held
+state, which that token does not wait on (`keySet`,
+liveswap/deploytrust/jwks.go). The time to the 401 can still differ
+by that local work, and that is the **residual**, accepted by the
+owner's decision (S3 × O5 × D5 = 75, #306, 2026-10-20): each source a
+name resolves to parses the token and checks its signature against a
+key it holds under the token's kid (or each key it holds, for a token
+naming none), whatever issuer and audience the token claims, where a
+name with no source does neither. A token longer than `MaxTokenLen` (8 KiB) is refused before
+any source parses it, which bounds the difference: measured on an
+arm64 machine (2026-10-20), an OIDC source refuses a 2 KiB token
+(about a real GitHub one) in 0.11 ms and a 16 KiB one in 0.33 ms,
+where a 1 MiB one, which the header limit allows, took 16 ms. A
+fraction of a millisecond per source is under network jitter for a
+few samples, not for many; the asset is whether an app name exists,
+which a domain or repository name often says anyway. Config load refuses an app
 that resolves to zero trust sources (`App.Validate`,
 liveswap/liveswap.go). Bearer is the only transport, which Caddy
 redacts from access logs.
@@ -226,16 +237,15 @@ Properties that matter to the model:
   deploy-denial primitive for whoever shares it. Verification cost is
   therefore not bounded by the throttle. Against a local key it is one
   signature check, comparable to the TLS handshake the request already
-  paid; against an OIDC source it is the same for a token under a kid
-  the source holds a key for, and, for one under a kid it does not, a
-  fetch of the issuer's keys that each source makes at most once a
-  minute, every other such token meanwhile waiting on that fetch or
-  answered from its outcome (`keySet`, liveswap/deploytrust/jwks.go;
-  the wait is owed: #306). So the throttle is not what bounds CPU, and
-  once a source's discovery has succeeded, traffic does not set how
-  often the box fetches its issuer's keys; while discovery fails, each
-  verification tries it again (`oidcVerifier.ensure`,
-  liveswap/deploytrust/deploytrust.go), one at a time per source.
+  paid; against an OIDC source it is the same, or none for a token
+  under a kid the process holds no key for, which begins a fetch of
+  the issuer's keys in the background, at most once a minute per
+  issuer, and is refused without waiting on it (`keySet`,
+  liveswap/deploytrust/jwks.go). A token longer than `MaxTokenLen` is
+  refused before any parse. So the throttle is not what bounds CPU, and traffic does not set how often the box
+  asks an issuer anything: a token makes it try an issuer's discovery,
+  while that fails, and fetch its keys, each at most once a minute and
+  one at a time (`issuerState`, liveswap/deploytrust/deploytrust.go).
   One limiter for the process, not per handler, so a
   reload hands out no fresh budget and a second mount does not double
   it. Body is capped at 64 KiB → 413

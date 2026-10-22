@@ -95,9 +95,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.
 	// unknown app the token is verified against the global trust
 	// sources, so the status never leaks valid app names to
 	// unauthenticated callers (with no global trust configured, an
-	// unknown app is simply unauthenticable → 401). The time to the
-	// 401 still can, within the bound DESIGN-threat-model.md states
-	// ("Webhook endpoint", the residual; owed: #306).
+	// unknown app is simply unauthenticable → 401). No refusal waits on
+	// an issuer; the time to the 401 can still differ by the local work
+	// a name's sources do, the residual DESIGN-threat-model.md accepts
+	// ("Webhook endpoint").
 	verifiers := h.app.globalVerifiers
 	if ma != nil {
 		verifiers = ma.currentVerifiers()

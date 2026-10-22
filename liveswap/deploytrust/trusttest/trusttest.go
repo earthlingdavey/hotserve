@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -125,6 +126,9 @@ type Issuer struct {
 	// JWKSFetches counts the requests the JWKS endpoint has answered,
 	// 503s included.
 	JWKSFetches atomic.Int64
+	// JWKSMoved makes discovery name the JWKS endpoint's other path,
+	// /jwks-moved, which serves the same keys.
+	JWKSMoved atomic.Bool
 
 	jwks atomic.Pointer[jose.JSONWebKeySet] // what the JWKS endpoint serves
 }
@@ -146,20 +150,26 @@ func NewIssuer(tb testing.TB) *Issuer {
 		if as, ok := iss.DiscoveredAs.Load().(string); ok && as != "" {
 			issuer = as
 		}
+		jwks := iss.URL + "/jwks"
+		if iss.JWKSMoved.Load() {
+			jwks += "-moved"
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"issuer":                                issuer,
-			"jwks_uri":                              iss.URL + "/jwks",
+			"jwks_uri":                              jwks,
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 		})
 	})
-	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+	serveJWKS := func(w http.ResponseWriter, _ *http.Request) {
 		iss.JWKSFetches.Add(1)
 		if iss.JWKSDown.Load() {
 			http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(iss.jwks.Load())
-	})
+	}
+	mux.HandleFunc("/jwks", serveJWKS)
+	mux.HandleFunc("/jwks-moved", serveJWKS)
 	srv := httptest.NewServer(mux)
 	tb.Cleanup(srv.Close)
 	iss.URL = srv.URL
@@ -178,6 +188,18 @@ func (iss *Issuer) setKey(tb testing.TB, kid string) {
 	iss.Priv, iss.KID = priv, kid
 	pub := jose.JSONWebKey{Key: priv.Public(), KeyID: kid, Algorithm: "RS256", Use: "sig"}
 	iss.jwks.Store(&jose.JSONWebKeySet{Keys: []jose.JSONWebKey{pub}})
+}
+
+// Publish adds key to what the JWKS endpoint serves, before the
+// issuer's own signing key or after it.
+func (iss *Issuer) Publish(key jose.JSONWebKey, first bool) {
+	keys := slices.Clone(iss.jwks.Load().Keys)
+	if first {
+		keys = append([]jose.JSONWebKey{key}, keys...)
+	} else {
+		keys = append(keys, key)
+	}
+	iss.jwks.Store(&jose.JSONWebKeySet{Keys: keys})
 }
 
 // Rotate is a key rotation: a new signing key under a new kid, which

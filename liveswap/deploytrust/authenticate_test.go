@@ -203,6 +203,29 @@ func TestAuthenticateBudgetAndBound(t *testing.T) {
 	}
 }
 
+// A token longer than MaxTokenLen is refused before any source reads
+// it, whatever the name: one with no source and one with a source the
+// same way, with the length named for the journal. One at the limit
+// reaches the sources (#306).
+func TestAuthorizeRefusesALongTokenUnread(t *testing.T) {
+	priv, pub := trusttest.GenerateKey()
+	vs := Verifiers([]Source{localTrust(pub, "box")}, nil)
+	long := strings.Repeat("a", MaxTokenLen+1)
+	for _, set := range [][]Verifier{nil, vs} {
+		_, _, err := authorize(context.Background(), set, long)
+		if want := "bearer token is " + strconv.Itoa(MaxTokenLen+1) + " bytes, longer than " + strconv.Itoa(MaxTokenLen); err == nil || err.Error() != want {
+			t.Fatalf("%d sources: err = %v, want %q", len(set), err, want)
+		}
+	}
+	atLimit := strings.Repeat("a", MaxTokenLen)
+	if _, _, err := authorize(context.Background(), vs, atLimit); err == nil || !strings.HasPrefix(err.Error(), "local:") {
+		t.Fatalf("a token at the limit: err = %v, want the source's own refusal", err)
+	}
+	if _, _, err := authorize(context.Background(), vs, trusttest.Mint(t, priv, "box", nil)); err != nil {
+		t.Fatalf("a real token: refused: %v", err)
+	}
+}
+
 // TestOutageLineIsPerCaller pins that the once-per-window line naming
 // a source the box could not consult is written for each webhook that
 // meets it, under that webhook's field: an operator reading one
@@ -211,6 +234,7 @@ func TestOutageLineIsPerCaller(t *testing.T) {
 	iss := trusttest.NewIssuer(t)
 	iss.JWKSDown.Store(true)
 	vs := Verifiers([]Source{{kind: "oidc", issuer: iss.URL, audience: "hotserve", claims: map[string]string{"sub": "ci"}}}, iss.Client)
+	settled(t, vs...)
 	core, logs := observer.New(zap.WarnLevel)
 	logger := zap.New(core)
 	l := NewLimiter(trusttest.NewClock())
@@ -324,9 +348,10 @@ func TestNewIsResolveOnACopy(t *testing.T) {
 	// An OIDC source: the JWKS client is https-only unless
 	// allowInsecure. The test issuer speaks plain http, so only the
 	// insecure client reaches it; the other names it as unreachable.
-	// The warm each one starts is a single bounded discovery fetch
-	// that the issuer answers, or the https-only client refuses, at
-	// once; nothing of it outlives the test.
+	// The warm each one starts is a single bounded discovery fetch,
+	// then a key fetch, that the issuer answers, or the https-only
+	// client refuses, at once; settled waits them out, so nothing of
+	// them outlives the test.
 	iss := trusttest.NewIssuer(t)
 	cfg := func() []TrustConfig {
 		return []TrustConfig{{Kind: "oidc", Issuer: iss.URL, Audience: "hotserve", Subject: "ci"}}
@@ -336,6 +361,7 @@ func TestNewIsResolveOnACopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	settled(t, insecure...)
 	if who, _, err := authorize(ctx, insecure, tok); err != nil || who.By != "oidc:"+iss.URL+" sub=ci" {
 		t.Errorf("allow_insecure_http: By = %q, %v; want the token accepted over plain http", who.By, err)
 	}
@@ -343,6 +369,7 @@ func TestNewIsResolveOnACopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	settled(t, secure...)
 	if _, down, err := authorize(ctx, secure, tok); err == nil || len(down) != 1 || !strings.Contains(err.Error(), "refusing non-https") {
 		t.Errorf("https only: err = %v, down = %d; want the issuer refused as unreachable over http", err, len(down))
 	}

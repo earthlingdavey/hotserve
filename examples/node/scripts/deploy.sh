@@ -40,7 +40,9 @@
 # version keeps serving) — with the status code the request would
 # have had in `http_status`. Every line is printed as it arrives, and
 # a failure exits non-zero. A 401 — the box would not accept the
-# token — is followed by what the box must trust for this run, since
+# token — is sent once more 3s later (send), and a 401 that stands
+# is followed by what the box must
+# trust for this run, since
 # the box's own answer deliberately does not say (the reason is in its
 # journal, for its operator).
 #
@@ -219,6 +221,28 @@ stream() { # <curl args...>: runs the request, prints it, keeps it
 	} | tee "$body"
 }
 httpstatus() { sed -n 's/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' "$hdrs" 2>/dev/null | tail -n 1; }
+# The box's own 401, by its sentence: a 401 from something in front of
+# it (a wrong HOTSERVE_URL, say) is not about deploy_trust.
+boxrefused() {
+	[ "$(httpstatus)" = 401 ] || return 1
+	case $(field "$(tail -n 1 "$body")" error) in 'invalid or missing deploy token'*) return 0 ;; esac
+	return 1
+}
+# send is stream, sent once more 3s after the box refuses the token.
+# The first token under an issuer's new signing key is refused while
+# the box fetches that key, without waiting on the fetch (a wait would
+# tell anyone with a token which apps exist), and the retry finds it.
+# That holds for a HOTSERVE_TOKEN too when it is an issuer's (a GitLab
+# id_token, say). The box refuses before it does anything else, so
+# sending the request again repeats nothing.
+send() { # <curl args...>
+	stream "$@"
+	if boxrefused; then
+		printf '\nthe box refused the token; sending it once more in 3s (a box refuses the first token under a new signing key while it fetches the key)\n'
+		sleep 3
+		stream "$@"
+	fi
+}
 outcome() { # the http_status of a complete last line; else 200 for a whole single 200; else 0
 	# The whole terminal suffix, brace included: a connection cut after
 	# the digits must not read as an outcome.
@@ -247,8 +271,8 @@ refused() {
 		echo "  the audience, subject or claim it pins, against what hotserve deploy-token was given"
 	fi
 	echo "Or the URL's app name is not one the box knows: an unknown app answers the same 401."
-	echo "Or the box could not consult the token's issuer (an outage there): its journal says so, and a re-run"
-	echo "once the issuer is back goes through."
+	echo "Or the box could not consult the token's issuer (an outage there), or had fetched its keys in the"
+	echo "minute before the issuer changed them: its journal says which, and when a re-run goes through."
 	echo "Check the app's deploy_trust block in the box's Caddyfile. The box's journal"
 	echo "(journalctl -u hotserve, 'webhook auth failed') names the app asked for and the"
 	echo "check that refused it, unless the box's budget for logging failed authentications is spent."
@@ -267,12 +291,8 @@ finish() { # <what>: dresses the outcome, exits on failure
 	last=$(tail -n 1 "$body")
 	phase=$(field "$last" phase)
 	why=$(field "$last" error)
-	# Only the box's own 401, by its sentence: a 401 from something in
-	# front of it (a wrong HOTSERVE_URL, say) is not about deploy_trust.
 	hint=
-	if [ "$(httpstatus)" = 401 ]; then
-		case $why in 'invalid or missing deploy token'*) hint=$(refused) ;; esac
-	fi
+	! boxrefused || hint=$(refused)
 	[ -z "$hint" ] || printf '%s\n' "$hint"
 	# The box's pre-flight names the runner a release for its
 	# architecture is built on (liveswap/elf.go); the workflow takes its
@@ -294,7 +314,7 @@ finish() { # <what>: dresses the outcome, exits on failure
 if [ -n "$rollback" ]; then
 	what="$app rollback to $rollback"
 	printf '%srolling %s back to %s\n' "${actions:+::group::}" "$url" "$rollback"
-	stream -X POST "$url?rollback=$rollback"
+	send -X POST "$url?rollback=$rollback"
 	finish "$what"
 	exit 0
 fi
@@ -305,14 +325,14 @@ fi
 what="$app $version"
 printf '%sdeploying %s as %s to %s\n' "${actions:+::group::}" "${artifact%%\?*}" "$version" "$url"
 if [ -f "$artifact" ]; then
-	stream -X POST -H "Content-Type: application/gzip" --data-binary @"$artifact" "$url?version=$version"
+	send -X POST -H "Content-Type: application/gzip" --data-binary @"$artifact" "$url?version=$version"
 else
 	# JSON-escape what goes into the body (a quote or backslash in a
 	# header value would otherwise make it malformed).
 	json() { printf '%s' "$1" | sed 's/[\\"]/\\&/g'; }
 	auth=${ARTIFACT_AUTH_HEADER:+,\"auth_header\":\"$(json "$ARTIFACT_AUTH_HEADER")\"}
 	sha=${ARTIFACT_SHA256:+,\"sha256\":\"$(json "$ARTIFACT_SHA256")\"}
-	stream -X POST -H "Content-Type: application/json" \
+	send -X POST -H "Content-Type: application/json" \
 		-d "{\"url\":\"$(json "$artifact")\",\"version\":\"$(json "$version")\"$auth$sha}" "$url"
 fi
 finish "$what"
