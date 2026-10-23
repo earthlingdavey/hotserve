@@ -373,12 +373,11 @@ Caddyfile and the secrets come back from it
 ([A rebuilt box](secrets.md#a-rebuilt-box)). Without one, keep the
 directory off the box, beside the repository URL, the key and the
 password, again after every change — all but `age/`, the box's own
-key, which never leaves the box and which a rebuilt box makes anew,
-and `secrets/`, which only a box repo writes:
+key, which never leaves the box and which a rebuilt box makes anew.
+Written under `/root`, readable by root alone, then copied off:
 
 ```sh
-sudo tar --exclude=hotserve/age --exclude=hotserve/secrets -czf etc-hotserve.tar.gz -C /etc hotserve
-sudo chmod 600 etc-hotserve.tar.gz    # tar writes it readable by all; then copy it off
+sudo sh -c 'umask 077; tar --exclude=hotserve/age -czf /root/etc-hotserve.tar.gz -C /etc hotserve'
 ```
 
 and on the rebuilt box, before step 2:
@@ -389,12 +388,14 @@ hotserve-backup validate /etc/hotserve/Caddyfile
 sudo systemctl reload hotserve
 ```
 
-It holds every env file the Caddyfile names: store it as you store
-the password. A box with no secrets rebuilt this way, with another uid
-for `hotserve`, found the repository, restored before the first
-deploy, and its next run was `ok` [measured, on the e2e server]; that
-GNU tar leaves the two directories out, and writes the archive `644`,
-was measured on Debian 13.
+It holds the env files under `/etc/hotserve`, in plain text: store it
+as you store the password. An `env_file` the Caddyfile names outside
+that directory is not in it — keep that file the same way, and put it
+back before step 2. A box with no secrets rebuilt this way, with
+another uid for `hotserve`, found the repository, restored before the
+first deploy, and its next run was `ok` [measured, on the e2e server];
+that GNU tar leaves `age/` out and, under that umask, writes the
+archive `600` was measured on Debian 13.
 
 ## The weekly drill, and what it costs
 
