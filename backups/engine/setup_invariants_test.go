@@ -90,12 +90,15 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	}{
 		{"the storage refuses the write at once (S3's 403: exit 1)", func(b *box) {
 			b.outcome["write"], b.writeErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, denied
-		}, "this key read the repository, and restic could not write a lock file to it, or remove the one it wrote (exit 1): a key that may only read, or a storage that refuses writes, cannot back up (restic said: " + denied + ")", ""},
+		}, "this key read the repository, and restic could not write a lock file to it (exit 1): a key that may only read, or a storage that refuses writes, cannot back up (restic said: " + denied + ")", ""},
 		{"restic retries the write to the clock (B2's 401)", func(b *box) {
 			b.hang, b.writeErr = "write", "Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: b2_get_upload_url: 401: \n"
 		}, "this key read the repository, and restic was still retrying a lock file's write to it at 200ms: a key that may only read, or a storage that refuses writes, cannot back up (restic said: Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: b2_get_upload_url: 401:)", ""},
 		{"the storage took the write and never answered (nothing from restic)", func(b *box) { b.hang = "write" },
 			"this key read the repository, and the storage had not answered a lock file's write to it at 200ms: whether this key can write to it is not known", ""},
+		{"the storage took the write and never answered (a line that is no retry)", func(b *box) {
+			b.hang, b.writeErr = "write", "warning: the cache directory could not be made\n"
+		}, "this key read the repository, and the storage had not answered a lock file's write to it at 200ms: whether this key can write to it is not known (restic said: warning: the cache directory could not be made)", ""},
 		{"the unit could not be set up", func(b *box) { b.outcome["write"] = unit.Outcome{Result: "exit-code", ExitStatus: 217} },
 			"writing to the repository: systemd could not set the unit up (status 217)", ""},
 		{"the unit could not be started", func(b *box) { b.err["write"] = errors.New("starting hotserve_backup_write: no such user") },
@@ -158,7 +161,7 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	b.outcome["write"], b.writeErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, denied
 	m.answers = []string{"AKIDX", "wrong", "stored", "AKIDRO", "the-read-only-secret"}
 	_, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
-	if err == nil || !strings.Contains(err.Error(), "could not write a lock file to it, or remove the one it wrote (exit 1): a key that may only read, or a storage that refuses writes, cannot back up") || !strings.Contains(err.Error(), "the password shown above is the repository's: keep it") {
+	if err == nil || !strings.Contains(err.Error(), "could not write a lock file to it (exit 1): a key that may only read, or a storage that refuses writes, cannot back up") || !strings.Contains(err.Error(), "the password shown above is the repository's: keep it") {
 		t.Fatalf("err = %v\nsaid:\n%s", err, m.saidAll())
 	}
 	if got, want := b.roles(), "plan probe init probe open write"; got != want {
@@ -166,6 +169,30 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	}
 	if _, err := os.Lstat(b.cfg.EnvFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the working file was written with the key that cannot write")
+	}
+}
+
+// Ctrl-C during the write check is said with what it may leave: the
+// lock file restic was writing — which restic never passes by itself
+// [M75] — not "nothing has been written", which is the look's and the
+// opening's.
+func TestAnInterruptDuringTheWriteCheckNamesTheLockItMayLeave(t *testing.T) {
+	b, m := setupBox(t)
+	b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
+	ctx, cancel := context.WithCancel(context.Background())
+	b.hang = "write"
+	b.before = func(s unit.Spec) {
+		if strings.Contains(s.Name, "_write_") {
+			cancel()
+		}
+	}
+	m.answers = []string{"AKIDX", "the-secret", "its-own-password"}
+	_, err := Setup(ctx, b.cfg, b, SetupOptions{Repository: "s3:http://e2e-s3:9000/box", Terminal: m})
+	if !errors.Is(err, context.Canceled) || err.Error() != "interrupted: nothing of setup's has been written; a lock file restic was stopped before removing stays, and holds off a prune, or a check from elsewhere, until restic unlock removes it" {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Lstat(b.cfg.EnvFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the working file was written")
 	}
 }
 

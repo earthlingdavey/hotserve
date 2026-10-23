@@ -397,6 +397,9 @@ type setup struct {
 	// said to be. made is more: the repository has that password for
 	// certain — init made it, or it opened one an earlier init made.
 	initRan, made bool
+	// writing is the write check under way or over: an interrupt from
+	// then on may leave restic's lock file, and says so.
+	writing bool
 	// initLeft is whether init was left running — by its clock or an
 	// interrupt — and so still has the staged file and the run
 	// directory to read: the manager opens both in the unit's own first
@@ -846,6 +849,9 @@ func (s *setup) err(err error) error {
 		fate = "; the password shown above was never used: discard it"
 	}
 	if errors.Is(err, context.Canceled) {
+		if s.writing {
+			return interrupted("interrupted: " + lockLeft + fate)
+		}
 		return interrupted("interrupted: nothing has been written" + fate)
 	}
 	if fate != "" {
@@ -1018,6 +1024,7 @@ func (s *setup) writable(ctx context.Context) error {
 		}
 		return ""
 	}
+	s.writing = true
 	o, message, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
 	switch {
 	case errors.Is(err, errDidNotAnswer):
@@ -1026,10 +1033,10 @@ func (s *setup) writable(ctx context.Context) error {
 		// storage that took the connection and never answered leaves
 		// nothing, and says nothing of the key.
 		m := resticMessage(filepath.Join(s.dir, "write.err"))
-		if m == "" {
-			return fmt.Errorf("this key read the repository, and the storage had not answered a lock file's write to it at %s: whether this key can write to it is not known", setupClock)
+		if strings.Contains(m, "returned error, retrying after") { // restic's retry line [measured: RC check 6, M1]
+			return fmt.Errorf("this key read the repository, and restic was still retrying a lock file's write to it at %s%s%s", setupClock, cannot, said(m))
 		}
-		return fmt.Errorf("this key read the repository, and restic was still retrying a lock file's write to it at %s%s%s", setupClock, cannot, said(m))
+		return fmt.Errorf("this key read the repository, and the storage had not answered a lock file's write to it at %s: whether this key can write to it is not known%s", setupClock, said(m))
 	case err != nil:
 		return err
 	case o.OK():
@@ -1038,7 +1045,7 @@ func (s *setup) writable(ctx context.Context) error {
 		s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
 		return nil
 	case o.Result == "exit-code" && o.ExitStatus == 1:
-		return errors.New("this key read the repository, and restic could not write a lock file to it, or remove the one it wrote (exit 1)" + cannot + said(message))
+		return errors.New("this key read the repository, and restic could not write a lock file to it (exit 1)" + cannot + said(message))
 	}
 	detail, _ := resticFailure(o)
 	return errors.New("writing to the repository: " + detail)
@@ -1046,9 +1053,13 @@ func (s *setup) writable(ctx context.Context) error {
 
 // noteWrite is what a person waiting on the write check is told: the
 // lock file is restic's, written and removed by it, and one left by a
-// stop between the two is stale to restic after half an hour (its
-// documentation) — nothing of setup's is in the repository.
-const noteWrite = "(Ctrl-C is safe: nothing of setup's has been written; a lock file restic put there is stale to it after half an hour)"
+// stop between the two stays — restic never passes a stale lock by
+// itself [M75] — and holds off exclusive operations until `restic
+// unlock`; nothing of setup's is in the repository.
+const noteWrite = "(Ctrl-C is safe: " + lockLeft + ")"
+
+// lockLeft is the write check's word on what a stop leaves.
+const lockLeft = "nothing of setup's has been written; a lock file restic was stopped before removing stays, and holds off a prune, or a check from elsewhere, until restic unlock removes it"
 
 // errDidNotAnswer is a unit given up on at its clock.
 var errDidNotAnswer = errors.New("the repository did not answer")
@@ -1091,7 +1102,11 @@ func (s *setup) repository(ctx context.Context, role string, within time.Duratio
 		}
 	}()
 	errFile := filepath.Join(s.dir, role+".err")
-	spec := resticUnit(s.name(role, ""), "hotserve backup: "+role+" the repository", s.staged, argv, filepath.Join(s.dir, role+".out"))
+	what := role + " the repository"
+	if role == "write" {
+		what = "check that the key can write to the repository"
+	}
+	spec := resticUnit(s.name(role, ""), "hotserve backup: "+what, s.staged, argv, filepath.Join(s.dir, role+".out"))
 	spec.StderrFile = errFile
 	if role != "init" {
 		o, err := s.startWithin(ctx, within, spec)
