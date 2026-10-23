@@ -85,12 +85,21 @@ retries a failed upload without end, and held a run for 27 hours with
 nothing said ([#177](https://github.com/smallhoursorg/hotserve/issues/177),
 [#354](https://github.com/smallhoursorg/hotserve/issues/354)); restic's
 own documentation recommends B2's S3 endpoint for the same reason.
-`setup` writes the region, the endpoint's second part (`eu-central-003`
-in `s3.eu-central-003.backblazeb2.com`), beside the key, so restic
-never asks B2 where the bucket is — which these keys may not ask: B2
-puts Get Bucket Location under `readBuckets`
+Given the endpoint as the bucket's page writes it, `setup` writes the
+region, its second part (`eu-central-003` in
+`s3.eu-central-003.backblazeb2.com`), beside the key — `B2's region,
+eu-central-003, from the endpoint's name, goes in the file as
+AWS_DEFAULT_REGION` — so restic never asks B2 where the bucket is,
+which these keys may not ask: B2 puts Get Bucket Location under
+`readBuckets`
 ([S3-compatible app keys](https://www.backblaze.com/docs/cloud-storage-s3-compatible-app-keys)).
-<!-- i354: verify against code -->
+A `b2:` URL is refused before anything is asked, naming the S3 form
+with its bucket and path and `<region>` for you to fill in from the
+bucket's page:
+
+```
+b2: is not supported: B2 is reached at its S3-compatible endpoint, s3:https://s3.<region>.backblazeb2.com/my-backups, with an application key, not the master key; restic's own B2 backend retries a failed upload without end
+```
 
 Each key is an application key for the bucket alone, with the
 capabilities `listBuckets`, `listFiles`, `readFiles` and `writeFiles`
@@ -111,8 +120,10 @@ Whether B2 lets such a key delete by name — restic's lock removal and
 that a delete by name needs `writeFiles` and a delete of a version
 `deleteFiles`, and its table lists Delete Object under `deleteFiles`
 alone. Were it refused, every command longer than restic's five-minute
-lock refresh would be stopped as above
-([release-candidate check 3](release-candidate.md)).
+lock refresh would be stopped as above, every lock would be left
+behind, and `setup`'s check that the key can write would pass all the
+same — restic exits 0 there, saying only that it could not remove its
+lock ([release-candidate check 3](release-candidate.md)).
 
 In the bucket's Lifecycle Settings, "Keep prior versions for this
 number of days": 180. B2 then removes a hide marker itself once the
@@ -282,12 +293,18 @@ restic snapshots --latest 1 --tag hotserve --group-by host,paths,tags
 restic check --no-lock --read-data
 ```
 
-On B2 the URL is the bucket's S3 endpoint and the two key lines carry
-your key's keyID and applicationKey, as on the box; add the region, as
-`setup` writes it on the box, so that restic does not ask B2 for it:
-`export AWS_DEFAULT_REGION=eu-central-003`, the endpoint's second part
-(restic reads it, `internal/backend/s3/config.go`).
-<!-- i354: verify against code -->
+On B2 the URL is the bucket's S3 endpoint, the two key lines carry
+your own key's keyID and applicationKey, and the region goes with them,
+as `setup` writes it into the box's file, so that restic does not ask
+B2 for it (restic reads it, `internal/backend/s3/config.go`):
+
+```bash
+export RESTIC_REPOSITORY=s3:https://s3.eu-central-003.backblazeb2.com/my-backups
+export AWS_DEFAULT_REGION=eu-central-003                         # the endpoint's second part
+read -r AWS_ACCESS_KEY_ID && export AWS_ACCESS_KEY_ID          # your own key's keyID
+read -rs AWS_SECRET_ACCESS_KEY && export AWS_SECRET_ACCESS_KEY # its applicationKey
+```
+
 The newest backup of each app should be within the hour; a snapshot a
 restore made of what it restored over (tagged `pre-restore`) is listed
 apart, and is not a backup:
@@ -458,7 +475,7 @@ run adds two snapshots an app — the backup, and a small record that the
 run ended ok — and listings slow as they grow
 ([Retention](../backups/README.md#retention)). Thin them from your own
 machine, after the first three lines of
-[the look](#look-from-your-own-machine) (on B2, and the region):
+[the look](#look-from-your-own-machine) (on B2, its four):
 
 ```bash
 # restic asks for the repository's password, for each.
@@ -571,6 +588,9 @@ going wrong without it:
 
 **The moment** has to be before the attack's first change, and the copy
 decides whether it was: with `RESTIC_REPOSITORY` set to the new bucket,
+and a key of the new bucket's own — made now, for it alone, as
+[above](#before-you-start-the-bucket-and-what-it-protects); on B2 an
+application key, since the S3 endpoint does not take the master key —
 `restic snapshots` and `restic check --no-lock --read-data`. A check
 that finds errors means the moment was too late — make another copy,
 earlier; the copy never changes the attacked bucket, so trying again

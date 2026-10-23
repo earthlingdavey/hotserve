@@ -240,7 +240,7 @@ run, and what the step is given.
 
 | Unit | Runs as | Network | Credential | Sees |
 |---|---|---|---|---|
-| the run itself | root | — | never reads it | its own state and run dirs |
+| the run itself | root | — | reads which repository it names, to refuse a `b2:` one; passes the file's path to the manager for the rest | its own state and run dirs |
 | setup | root | — | writes it; sees whether one was there before, and reads none | its own state and run dirs, and the terminal |
 | plan | `hotserve-backup`, own user+PID namespaces | no | no | `/etc/hotserve`, read-only |
 | probe, init, open (setup's) | `hotserve-backup`, no capability | yes | yes, the file setup is about to put in place | nothing of the app |
@@ -894,12 +894,7 @@ It needs no privilege.
   this box (`/srv/backups`, `local:`), `sftp:` (ssh takes its key from a
   home directory, which no unit has), `rclone:` (a config file, the
   same), `azure:` (not in Debian's restic), `b2:` (restic's own B2
-  backend: the B2 library Debian 13's restic is built with retries a
-  failed upload without end, #177, #354; B2 is reached through its
-  S3-compatible endpoint, which the refusal names with the bucket and
-  path given — and a run, a restore and a drill refuse a credential
-  file that names a `b2:` repository the same, in the same words,
-  before any unit) <!-- i354: verify against code -->, `rest:`, `gs:` and `swift:`
+  backend: the next item), `rest:`, `gs:` and `swift:`
   (not set up by this command: write the file by hand, below), a URL
   with `user:pass@` in it, with or without a scheme
   before the host (a command line and a shell history are no place for
@@ -934,6 +929,29 @@ It needs no privilege.
   made — a shell, a password, a group — is root's: root reads the
   credential file itself. The lookup is given ten seconds; one that
   does not answer refuses the run, and says so.
+- A `b2:` repository, restic's own B2 backend, whose library in Debian
+  13's restic (blazer 0.6.1) retries a failed upload without end (#177,
+  #354). `setup`, before it asks for anything: "b2: is not supported:
+  B2 is reached at its S3-compatible endpoint,
+  s3:https://s3.<region>.backblazeb2.com/<bucket>/<path>, with an
+  application key, not the master key; restic's own B2 backend retries
+  a failed upload without end" — the bucket and path filled in as
+  restic reads them from the `b2:` URL (the path cleaned, its leading
+  slash dropped, and left out when there is none), the region left
+  for the operator, since a `b2:` URL does not hold it. A run, a
+  restore and a drill read the credential file's `RESTIC_REPOSITORY`
+  as the manager would (the last assignment) and refuse a `b2:` one
+  before any unit, the run recording it as its error: "the repository
+  is b2:, which is not supported: sudo hotserve-backup setup
+  s3:https://s3.<region>.backblazeb2.com/<bucket>/<path>, B2's
+  S3-compatible endpoint, with an application key, not the master
+  key, finds the same repository; restic's own B2 backend retries a
+  failed upload without end". A credential file they cannot read is
+  refused there too, "the credential file <path> could not be read:
+  <why>", where every unit would otherwise fail to start. `status` as
+  root says setup's line as a warning, `warning: <file>:
+  RESTIC_REPOSITORY: b2: is not supported: …`, its exit status
+  unchanged.
 - `setup`, at a prompt: an empty value, one with a line break or a
   control character, or one that is not UTF-8 — the file cannot hold
   it — three times; and a password not confirmed `stored`.
@@ -1026,15 +1044,20 @@ What can be known to fail is refused before anything is asked for
    what was shown). The error a setup ends on goes to stderr, as every
    command's does. They are `AWS_ACCESS_KEY_ID` and
    `AWS_SECRET_ACCESS_KEY` — on B2, an application key's keyID and
-   applicationKey. For a host of the form
-   `s3.<region>.backblazeb2.com` the file also gets
-   `AWS_DEFAULT_REGION=<region>`, not asked: the host names it, and
-   restic then never asks B2 where the bucket is (its S3 library,
-   minio-go, asks only when no region is set). The guide's B2 keys may
-   not ask it — B2 puts Get Bucket Location under `readBuckets` — and
-   minio-go does not retry it on a 5xx with no S3 error code in it,
-   which is how B2 answers one (a JSON body), so one 500 there would
-   put restic's retry lines beside a listing <!-- i354: verify against code; measurement pending: s3probe scenario o, region set and unset -->.
+   applicationKey. For a host that is exactly
+   `s3.<region>.backblazeb2.com`, the region two lower-case letters, a
+   word and three digits (`eu-central-003`) — no port, no trailing dot,
+   no longer name ending so, as B2 writes it — the file also gets
+   `AWS_DEFAULT_REGION=<region>`, not asked, and setup says "B2's
+   region, <region>, from the endpoint's name, goes in the file as
+   AWS_DEFAULT_REGION"; any other host gets nothing more. With it
+   restic never asks B2 where the bucket is (its S3 library, minio-go,
+   asks only when no region is set). The guide's B2 keys may not ask
+   it — B2 puts Get Bucket Location under `readBuckets`, and on the
+   refusal minio-go signs every request for `us-east-1` — and minio-go
+   does not retry it on a 5xx with no S3 error code in it, which is how
+   B2 answers one (a JSON body), so one 500 there would put restic's
+   retry lines beside a listing <!-- i354: measurement pending: s3probe scenario o, region set and unset -->.
    Nothing else is set up by this
    command (`rest:`, `gs:` and `swift:` are written by hand, below). A
    value the file
@@ -1228,13 +1251,17 @@ the record to the repository and puts it aside; the next run drills
 what it backs up.
 
 A box whose file names a `b2:` repository is refused every run until
-it is moved, by one `setup` with the bucket's S3 URL, the same B2 key
-and the repository's own password: the look finds the repository, it is
-opened and held to writing (step 7), and, its id unchanged, the record
-is kept (step 8); the file is written whole, without the old
-`B2_ACCOUNT_*` lines. That one repository answers both URLs is B2's
-(the same bucket through either API), **unverified** on a real bucket
-<!-- i354: verify against code -->.
+it is moved, by the one `setup` the refusal names — the bucket's S3
+URL, the region filled in from the bucket's endpoint — with the same
+application key (not the account's master key, which B2's own API
+takes and its S3 endpoint does not) and the repository's own
+password: the look finds the repository, it is opened and held to
+writing (step 7), and, its id unchanged, the record is kept (step 8);
+the file is written whole, without the old `B2_ACCOUNT_*` lines. The
+URL names the same objects: restic's two backends lay a repository out
+alike under the bucket and path, which the refusal carries over as
+restic's b2 backend reads them (`b2AsS3`, `backups/engine/setup.go`).
+That a real bucket answers both with the one id is **unverified**.
 
 With the package, the first backup runs from `hotserve-backup.timer`
 within the hour and ten minutes of setup ("On a fresh box"), or now
@@ -1275,7 +1302,7 @@ sudo systemd-run --quiet --pipe --wait --collect \
 On B2 the URL is its S3-compatible endpoint and the file has one line
 more, `AWS_DEFAULT_REGION=<region>`, the endpoint's second part, as
 setup writes it; a file that names a `b2:` repository is refused by
-every run, restore and drill ("What it refuses") <!-- i354: verify against code -->.
+every run, restore and drill before any unit ("What it refuses").
 
 Pointing the box at **another repository** this way leaves
 `status.json` speaking of the old one, and `repository-id` beside it
