@@ -1,7 +1,8 @@
 // Package envfile writes and reads the credential file the way systemd's
-// EnvironmentFile= does. It has one writer, setup, and one reader,
+// EnvironmentFile= does. It has one writer, setup, and two readers:
 // status as root, to say where a hand-edited line is not read as it
-// was written.
+// was written, and a run, a restore and a drill, which read the
+// repository it names as the units will be given it.
 //
 // The manager's rules are measured, not assumed
 // (TestIntegrationSystemdReadsAnEnvFileAsParseDoes), and Parse walks
