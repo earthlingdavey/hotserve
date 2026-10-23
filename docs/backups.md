@@ -17,7 +17,8 @@ where a bucket's versions matter, against MinIO standing in for a
 provider. On your box the URL, the ids, the times and the password
 differ. On Backblaze B2 the release candidate `v0.3.0-rc1` then ran
 seven of the eight [release-candidate checks](release-candidate.md)
-(2026-10-04), and what B2 showed is said where it bears. On AWS S3 and
+(2026-10-04 to 10-06), and what B2 showed is said where it bears,
+[one hang included](#against-a-real-provider). On AWS S3 and
 Hetzner nothing has been run: what depends on them says
 **unverified**, and [the last section](#against-a-real-provider) lists
 it all.
@@ -79,14 +80,15 @@ its lock for 30 minutes ended `snapshot … saved`, no lock left
 [measured]. The web console offers three presets and no single
 capabilities — Read and Write, which may delete, Read Only and Write
 Only — so make the two keys once from the command line, with Debian
-13's `backblaze-b2` (3.19; a `debian:13` container will do, and the
-package brings the CA certificates it needs):
+13's `backblaze-b2` (3.19; a `debian:13` container will do, and apt
+brings the CA certificates with it):
 
 ```sh
 apt-get update && apt-get install -y backblaze-b2
 backblaze-b2 authorize-account     # asks for the master key's id, then the key
 backblaze-b2 create-key --bucket my-backups hotserve-box listBuckets,listFiles,readFiles,writeFiles
 backblaze-b2 create-key --bucket my-backups hotserve-laptop listBuckets,listFiles,readFiles,writeFiles
+backblaze-b2 clear-account         # forgets the master key the first line stored on this machine
 ```
 
 Each `create-key` prints the new key's id and the key itself, once.
@@ -196,8 +198,9 @@ next: the first backup runs within the hour and ten minutes (systemctl list-time
 ```
 
 A wrong key is asked for again, up to three times, the password shown
-standing — on B2 each asking was refused at once (`401`), three in
-3.8 s; a setup that ends early says whether to keep that password or
+standing — on B2 a wrong key is refused at the look itself, at once
+(`401`), and no password is shown; a setup that ends early says
+whether to keep that password or
 discard it ([backups/README.md](../backups/README.md#setup)). Then
 [look from your own machine](#look-from-your-own-machine) with the URL,
 the key and the password as you stored them: a password copied wrong is
@@ -365,14 +368,17 @@ the old box still runs, turn its timers off first
 
 **A backup holds what the apps declare under `shared/`, and nothing of
 `/etc/hotserve`**: not the Caddyfile, whose `backup` blocks a restore
-needs before it can run, not the box's own key, and no env file. With
-a box repo the Caddyfile and the secrets come back from it
+needs before it can run, and no env file. With a box repo the
+Caddyfile and the secrets come back from it
 ([A rebuilt box](secrets.md#a-rebuilt-box)). Without one, keep the
-whole directory off the box, beside the repository URL, the key and
-the password, again after every change:
+directory off the box, beside the repository URL, the key and the
+password, again after every change — all but `age/`, the box's own
+key, which never leaves the box and which a rebuilt box makes anew,
+and `secrets/`, which only a box repo writes:
 
 ```sh
-sudo tar -czf etc-hotserve.tar.gz -C /etc hotserve    # on the box; then copy it off
+sudo tar --exclude=hotserve/age --exclude=hotserve/secrets -czf etc-hotserve.tar.gz -C /etc hotserve
+sudo chmod 600 etc-hotserve.tar.gz    # tar writes it readable by all; then copy it off
 ```
 
 and on the rebuilt box, before step 2:
@@ -383,10 +389,12 @@ hotserve-backup validate /etc/hotserve/Caddyfile
 sudo systemctl reload hotserve
 ```
 
-It holds the box's own key and every env file: store it as you store
-the password. A box rebuilt this way, with another uid for `hotserve`,
-found the repository, restored before the first deploy, and its next
-run was `ok` [measured, on the e2e server].
+It holds every env file the Caddyfile names: store it as you store
+the password. A box with no secrets rebuilt this way, with another uid
+for `hotserve`, found the repository, restored before the first
+deploy, and its next run was `ok` [measured, on the e2e server]; that
+GNU tar leaves the two directories out, and writes the archive `644`,
+was measured on Debian 13.
 
 ## The weekly drill, and what it costs
 
@@ -548,8 +556,11 @@ region; on B2, `RCLONE_CONFIG_STORE_TYPE=b2` with `…_ACCOUNT` and
 `…_KEY`, and the same `store,version_at='…'` — there a copy at
 `status`'s minute and one from the bucket's history both checked
 clean, and a box set up onto the copy ran, drilled and was healthy
-[measured]. On AWS S3 and Hetzner all of this is **unverified**. Three
-things the copy needs, each seen going wrong without it:
+[measured — with the box's own key, which on B2 reads old versions
+too (`listFiles` and `readFiles`), and into a folder of the attacked
+bucket; the account's key and a new bucket, as written, are
+**unverified**]. On AWS S3 and Hetzner all of this is **unverified**.
+Three things the copy needs, each seen going wrong without it:
 
 - the time in UTC, with its `T` and `Z`: `2026-10-03 08:49:48` is read
   in your machine's zone, and in Berlin found nothing;
@@ -630,8 +641,9 @@ later reads the bucket with them can read the backups.
 ## Against a real provider
 
 **On Backblaze B2**, the release candidate `v0.3.0-rc1` ran the checks
-of [release-candidate.md](release-candidate.md) on 2026-10-04, from an
-arm64 Hetzner VPS and from fresh test boxes, all but retention:
+of [release-candidate.md](release-candidate.md) from 2026-10-04 to
+10-06, from an arm64 Hetzner VPS and from fresh test boxes, all but
+retention:
 
 - **TLS**: `setup`, runs, restores, the drill and the look from another
   machine, over B2's own certificate.
@@ -658,6 +670,12 @@ arm64 Hetzner VPS and from fresh test boxes, all but retention:
   did every drill. The check itself is **unverified** on B2.
 - **A rebuilt box** with another uid for `hotserve`: restored before
   the first deploy in 10 s, every file the new uid's.
+- **A run's upload hung**, on the owner's box, for 27 hours with no
+  output, and no later run was scheduled meanwhile: `status` said
+  `running: upload of dev, since …` and, after 3 hours, exited 1 with
+  the backups stale. `kill -QUIT` on the unit's restic ended it, and
+  the timer caught up at once. Open as #177: restic's B2 library
+  retries a refused upload without limit, below restic's own retries.
 - **Retention off the box**: **unverified**.
 
 **On AWS S3 and Hetzner** none of this has been run, and every line

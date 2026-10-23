@@ -24,9 +24,9 @@ still **unverified**.
 `b2:<bucket>:`. The off-box machine is your own, with Debian's restic
 0.18 and the [look](backups.md#look-from-your-own-machine) lines' first
 three set, with its own key; where it is a `debian:13` container,
-install `ca-certificates` beside `restic` and `rclone`, neither of
-which brings it (`x509: certificate signed by unknown authority`
-without).
+install `ca-certificates` beside `restic` and `rclone`: apt brings it
+with neither, and restic without it fails every https storage,
+`x509: certificate signed by unknown authority`.
 
 ## 1. A bucket that does not exist, and a wrong secret
 
@@ -102,15 +102,17 @@ Then on the box, `sudo systemctl start hotserve-backup.service` twice,
 `sudo hotserve-backup drill` and `hotserve-backup status`. That the
 probe ends `snapshot … saved` after 30 minutes with no lock left, the
 runs end `ok`, and the drill proves and its check is `clean`:
-**unverified**. On MinIO all of that held; a key that may delete
+**unverified** on S3 and Hetzner. On MinIO all of that held; a key that may delete
 nothing, on the other hand, stopped the probe at 22 minutes —
 `failed to refresh stale lock: client.RemoveObject: Access Denied.`,
 `Fatal: unable to save snapshot: context canceled`, exit 1, seven locks
 left. Remove the probe after: `restic forget <its id>`. **On B2**, with
 the box's key without `deleteFiles`: `processed 1 files, 6 B in 30:01`,
-`snapshot … saved`, no lock left; and the `forget` hid the snapshot's
-file and left its version (`backblaze-b2 ls --long --versions` showed
-its upload, then its upload and a hide).
+`snapshot … saved`, no lock left; the timers started again, the runs
+`ok`, the drill `restore proven` and its check `clean` in 10 s; and
+the `forget` hid the snapshot's file and left its version
+(`backblaze-b2 ls --long --versions` showed its upload, then its
+upload and a hide).
 
 On B2, the bucket's own rule as well: a second bucket set to keep
 prior versions for **1** day, with a key without `deleteFiles`; upload
@@ -158,7 +160,10 @@ checked clean, as the guide says of that minute; one at a moment from
 the bucket's history (`backblaze-b2 ls --long --versions -r … | sort
 -k3,4`: B2 lists by name) held the last backup too and checked clean;
 `setup` onto it kept the record, and the run, the drill and `status`
-were healthy.
+were healthy. Both copies were made with the *box's* key — on B2
+`listFiles` and `readFiles` read old versions — into a folder of the
+same bucket; the account's key and a new bucket, as the guide writes
+it, are still **unverified**.
 
 ## 5. Retention off the box, then status on the box
 
