@@ -58,16 +58,15 @@ and the second ended after 31 s, nothing written:
 restic could not make or open the repository (exit 1): Fatal: create repository at s3:https://…/box2 failed: Fatal: unable to open repository at s3:https://…/box2: client.BucketExists: The request signature we calculated does not match the signature you provided. Check your key and signing method.
 the storage refused the key, or could not be reached: the key id and secret again (the password shown above still applies)
 …
-hotserve-backup: restic could not make or open the repository (exit 1): …; keep the password shown above: restic init ran with it, and may have made the repository; run setup again, which looks first and asks for it if the repository is there
+hotserve-backup: restic could not make or open the repository (exit 1): …; the password shown above was never used: discard it
 ```
 
-**On B2:** the key, limited to another bucket, could make none: three
-askings in 7.5 s, each `… NewBucket: b2_list_buckets: 401:`, nothing
-written. The wrong secret: three askings in 3.8 s, each
-`… b2.NewClient: b2_authorize_account: 401:`, nothing written. Both
-between the same lines as above — "no repository answered within 10s"
-after a refusal that came at once, and "keep the password shown
-above" after an init B2 never let begin (#175).
+On B2 the look itself is refused at once (`b2_authorize_account: 401`
+for a wrong secret, `b2_list_buckets: 401` for a bucket the key may not
+reach; measured, check 1 of `v0.3.0-rc1`: three askings in 3.8 s and
+7.5 s, nothing written): no password is shown until the storage takes
+a key, and three refusals end in restic's words with nothing said of a
+password.
 
 ## 2. Set up, a first backup, status and the drill, over real TLS
 
@@ -171,24 +170,47 @@ with the off-box machine's key; then on the box
 
 ## 6. A read-only key
 
-A key that may read and not write, on a box that is not your real one.
-`setup` only reads an existing repository, so it should take the key;
-whether it does is part of the check:
+A key that may read and not write, on a box that is not your real one,
+and a repository made beforehand with a key that may write:
 
 ```sh
-sudo hotserve-backup setup <url>
-time sudo systemctl start hotserve-backup.service
-hotserve-backup status
+time sudo hotserve-backup setup <url>
 ```
 
-What `status` says, and after how long: not run on the e2e server,
-which has no read-only key. **On B2**, `v0.3.0-rc1`'s `setup` took a
+`setup` holds the key to writing a lock file into a repository that is
+there already, and should refuse this one: at once where the storage
+says so plainly, at its two-minute clock where restic retries.
+**Unverified** on a provider; on the e2e server behind a proxy that
+refuses writes, both — the lines as the e2e asserts them, with the
+clock a release's binary has (the e2e's is 30 s); a run's lock ids and
+timings are its own:
+
+```
+checking that this key can write to it (up to 2m0s)
+hotserve-backup: this key read the repository, and restic exited 1 before its lock file's write completed: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: … client.PutObject: Access Denied.)
+```
+
+at once, and at the clock:
+
+```
+checking that this key can write to it (up to 2m0s)
+still waiting for s3:http://…/box1 (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it)
+hotserve-backup: this key read the repository, and restic had not completed a lock file's write to it within 2m0s: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: Save(<lock/…>) returned error, retrying after …: …)
+```
+
+each exit 1, with nothing of setup's written: `status` after either is
+what it was before — `backups are not set up` on a box that was not,
+the earlier setup on one that was (the credential file is left byte
+for byte as it was).
+
+**On B2**, `v0.3.0-rc1`, whose `setup` did not check yet, took a
 console Read Only key (`repository ready … (existing, …)`). The run
 after it retried the lock about once a minute
 (`b2_get_upload_url: 401:`) and failed after 868 s:
 `demo: failed: restic failed (exit 1): the storage could not be reached, or refused the key, or something else went wrong; …`;
-the drill failed after 832 s, `restore not proven`; `status` exited 1.
-`setup` again with the box's own key afterwards.
+the drill failed after 832 s in #170's words; `status` exited 1. Where
+a `setup` does take such a key, `setup` again with the box's own
+afterwards.
 
 ## 7. Restore onto a second box, with another uid for `hotserve`
 

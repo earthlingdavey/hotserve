@@ -342,6 +342,7 @@ another uid, which a restore does not mind:
    looking for a repository at s3:https://s3.example.com/my-backups (up to 10s)
    the repository exists; its password is needed
    Repository password:
+   checking that this key can write to it (up to 2m0s)
    repository ready: s3:https://s3.example.com/my-backups (existing, id e9157010)
    ```
 
@@ -647,10 +648,14 @@ arm64 Hetzner VPS and from fresh test boxes, all but retention:
   (`NewBucket: b2_list_buckets: 401:`). **A wrong secret**: three
   askings in 3.8 s (`b2.NewClient: b2_authorize_account: 401:`). B2
   answers at once where the e2e server kept restic retrying.
-- **A read-only key**: `v0.3.0-rc1`'s `setup` took it, and every run
-  then failed after 14½ minutes — `demo: failed: restic failed (exit
-  1): the storage could not be reached, or refused the key, …` — as
-  did every drill, and `status` exited 1.
+- **A read-only key**: `setup` writes a lock file to a repository that
+  is there already before it takes the key, and refuses one that
+  cannot — at once where the storage says so plainly, at its two-minute
+  clock where restic retries. Seen on the e2e server behind a proxy
+  that refuses writes, both ways; on B2, `v0.3.0-rc1`'s `setup`, which
+  did not check yet, took a console Read Only key, and every run then
+  failed after 14½ minutes of retries (`b2_get_upload_url: 401:`), as
+  did every drill. The check itself is **unverified** on B2.
 - **A rebuilt box** with another uid for `hotserve`: restored before
   the first deploy in 10 s, every file the new uid's.
 - **Retention off the box**: **unverified**.

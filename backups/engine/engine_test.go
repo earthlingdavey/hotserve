@@ -67,7 +67,9 @@ type box struct {
 	// a role whose unit never ends, the manager's version, which
 	// programs are installed and whether the account is
 	initOut, initErr, probeOut string
+	probeErr                   string // what the look says on stderr
 	openErr                    string // what the open unit says on stderr
+	writeErr                   string // what the write unit says on stderr
 	planErr                    string // what the plan unit says on stderr
 	hang                       string
 	version                    int
@@ -304,7 +306,12 @@ func (b *box) Run(ctx context.Context, s unit.Spec) (unit.Outcome, error) {
 		// As the real runner: the unit is stopped by name once the
 		// context ends, and what could not be confirmed gone wraps the
 		// cause in ErrNotConfirmedGone. Init runs on a context nothing
-		// cancels; its hang ends with the test.
+		// cancels; its hang ends with the test. A write that hangs is
+		// restic retrying, and its retry lines are on stderr before the
+		// clock ends it: written first where the test gives them.
+		if role == "write" && s.StderrFile != "" && b.writeErr != "" {
+			must(b.t, os.WriteFile(s.StderrFile, []byte(b.writeErr), 0o600))
+		}
 		select {
 		case <-ctx.Done():
 		case <-b.release:
@@ -378,12 +385,15 @@ func (b *box) Run(ctx context.Context, s unit.Spec) (unit.Outcome, error) {
 		if s.StderrFile != "" {
 			must(b.t, os.WriteFile(s.StderrFile, []byte(b.initErr), 0o600))
 		}
-	case "probe", "open":
+	case "probe", "open", "write":
 		write(b.probeOut)
 		if s.StderrFile != "" {
-			stderr := ""
-			if role == "open" {
+			stderr := b.probeErr
+			switch role {
+			case "open":
 				stderr = b.openErr
+			case "write":
+				stderr = b.writeErr
 			}
 			must(b.t, os.WriteFile(s.StderrFile, []byte(stderr), 0o600))
 		}
