@@ -16,9 +16,9 @@ Each check gives its commands, and what the e2e server showed beside
 the word **unverified** where only a real provider can say. Write down
 what the provider showed; each answer replaces an **unverified** in
 [Backups](backups.md), or is a defect to fix before the release.
-`v0.3.0-rc1` ran them on Backblaze B2 on 2026-10-04, all but check 5,
-and each check says what B2 showed; on AWS S3 and Hetzner every one is
-still **unverified**.
+`v0.3.0-rc1` ran them on Backblaze B2 from 2026-10-04 to 10-06, all
+but check 5, and each check says what B2 showed; on AWS S3 and Hetzner
+every one is still **unverified**.
 
 `<url>` is the bucket's repository URL, `s3:https://…/<bucket>` or
 `b2:<bucket>:`. The off-box machine is your own, with Debian's restic
@@ -63,10 +63,12 @@ hotserve-backup: restic could not make or open the repository (exit 1): …; the
 
 On B2 the look itself is refused at once (`b2_authorize_account: 401`
 for a wrong secret, `b2_list_buckets: 401` for a bucket the key may not
-reach; measured, check 1 of `v0.3.0-rc1`: three askings in 3.8 s and
-7.5 s, nothing written): no password is shown until the storage takes
-a key, and three refusals end in restic's words with nothing said of a
-password.
+reach; measured, check 1 of `v0.3.0-rc1`, nothing written). What
+`setup` says of it has changed since (#353): no password is shown
+until the storage takes a key, and three refusals end in restic's
+words with nothing said of a password — **unverified** on B2, where
+rc1's three askings, each running the init the current `setup` does
+not, took 3.8 s and 7.5 s.
 
 ## 2. Set up, a first backup, status and the drill, over real TLS
 
@@ -108,15 +110,17 @@ nothing, on the other hand, stopped the probe at 22 minutes —
 `Fatal: unable to save snapshot: context canceled`, exit 1, seven locks
 left. Remove the probe after: `restic forget <its id>`. **On B2**, with
 the box's key without `deleteFiles`: `processed 1 files, 6 B in 30:01`,
-`snapshot … saved`, no lock left; the timers started again, the runs
-`ok`, the drill `restore proven` and its check `clean` in 10 s; and
-the `forget` hid the snapshot's file and left its version
+`snapshot … saved`, no lock left; the timers started again and
+`status` said `dev: ok`; the drill after it proved the restore and
+checked 41/52 `clean` (untimed); and the `forget` hid the snapshot's
+file and left its version
 (`backblaze-b2 ls --long --versions` showed its upload, then its
 upload and a hide).
 
 On B2, the bucket's own rule as well: a second bucket set to keep
 prior versions for **1** day, with a key without `deleteFiles`; upload
-a file and remove it (`rclone delete`), and after the next daily run —
+a file and hide it (`backblaze-b2 upload-file`, then `hide-file`, as
+restic's removal does), and after the next daily run —
 two days on, to be sure — `backblaze-b2 ls --long --versions -r
 b2://<that bucket>` should list neither the file's version nor its hide
 marker: B2's documentation says it removes a hide marker itself once

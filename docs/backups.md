@@ -92,6 +92,8 @@ backblaze-b2 clear-account         # forgets the master key the first line store
 ```
 
 Each `create-key` prints the new key's id and the key itself, once.
+(The two keys the checks below ran with were made with `create-key`;
+these exact lines, from the tool's own usage text, are **unverified**.)
 The master key has now been typed at a terminal: generate a new one in
 the console, which ends the old. In the bucket's Lifecycle Settings,
 "Keep prior versions for this number of days": 180. B2 then removes a
@@ -199,7 +201,9 @@ next: the first backup runs within the hour and ten minutes (systemctl list-time
 
 A wrong key is asked for again, up to three times, the password shown
 standing — on B2 a wrong key is refused at the look itself, at once
-(`401`), and no password is shown; a setup that ends early says
+(`401`, measured on `v0.3.0-rc1`), and no password is then shown
+(what `setup` says of it since #353: **unverified** on B2); a setup
+that ends early says
 whether to keep that password or
 discard it ([backups/README.md](../backups/README.md#setup)). Then
 [look from your own machine](#look-from-your-own-machine) with the URL,
@@ -388,14 +392,19 @@ hotserve-backup validate /etc/hotserve/Caddyfile
 sudo systemctl reload hotserve
 ```
 
-It holds the env files under `/etc/hotserve`, in plain text: store it
-as you store the password. An `env_file` the Caddyfile names outside
-that directory is not in it — keep that file the same way, and put it
-back before step 2. A box with no secrets rebuilt this way, with
-another uid for `hotserve`, found the repository, restored before the
-first deploy, and its next run was `ok` [measured, on the e2e server];
-that GNU tar leaves `age/` out and, under that umask, writes the
-archive `600` was measured on Debian 13.
+It holds the env files under `/etc/hotserve`, in plain text, and a
+`deploy_trust local` key kept there: store it as you store the
+password, and after an attack make a new key pair (`hotserve
+deploy-keygen`) rather than put the old one back. An `env_file` the
+Caddyfile names outside that directory is not in it — keep that file
+the same way, and put it back before step 2. A box rebuilt from a
+plain tar of the directory (a Caddyfile and a deploy key; no `age/`,
+no `secrets/`), with another uid for `hotserve`, found the repository,
+restored before the first deploy, and its next run was `ok` [measured,
+on the e2e server]; that GNU tar leaves `age/` out and, under that
+umask, writes the archive `600` was measured on Debian 13. The lines
+as printed, restoring `secrets/` over the directory the package makes,
+are **unverified**.
 
 ## The weekly drill, and what it costs
 
