@@ -223,7 +223,9 @@ took=$(($(date +%s) - t0))
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "and left the working setup as it was, its unit stopped" || fail "after the clock: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
 fi
 systemctl stop readonly-storage.service
-[ "$(rr list locks --no-lock 2>/dev/null | wc -l)" = 0 ] && pass "no lock file is left in the repository" || fail "locks left: $(rr list locks --no-lock 2>&1)"
+# The listing must answer, not merely print nothing: a listing that
+# failed would also leave stdout empty.
+locks=$(rr list locks --no-lock 2>&1) && [ -z "$locks" ] && pass "no lock file is left in the repository" || fail "locks left, or not listed: $locks"
 
 echo "=== setup 7: a rebuilt box opens the repository it already has, with its own password ==="
 rm -f "$ENVFILE"

@@ -96,6 +96,9 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		}, "this key read the repository, and restic was still retrying a lock file's write to it at 200ms: a key that may only read, or a storage that refuses writes, cannot back up (restic said: Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: b2_get_upload_url: 401:)", ""},
 		{"the storage took the write and never answered (nothing from restic)", func(b *box) { b.hang = "write" },
 			"this key read the repository, and the storage had not answered a lock file's write to it at 200ms: whether this key can write to it is not known", ""},
+		{"restic exited 1 on a read, before any write (a storage that went away after the opening)", func(b *box) {
+			b.outcome["write"], b.writeErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, "Fatal: unable to open repository at s3:http://e2e-s3:9000/box: Load(<config/>, 0, 0) failed: client.GetObject: 503 Slow Down\n"
+		}, "this key read the repository, and restic exited 1 before writing a lock file to it: whether this key can write to it is not known (restic said: Fatal: unable to open repository at s3:http://e2e-s3:9000/box: Load(<config/>, 0, 0) failed: client.GetObject: 503 Slow Down)", ""},
 		{"the storage took the write and never answered (restic's words as the stop ends it)", func(b *box) {
 			b.hang, b.writeErr = "write", "signal terminated received, cleaning up\n"
 		}, "this key read the repository, and the storage had not answered a lock file's write to it at 200ms: whether this key can write to it is not known (restic said: signal terminated received, cleaning up)", ""},

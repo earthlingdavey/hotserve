@@ -1047,8 +1047,13 @@ func (s *setup) writable(ctx context.Context) error {
 	case o.Result == "exit-code" && o.ExitStatus == 11:
 		s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
 		return nil
-	case o.Result == "exit-code" && o.ExitStatus == 1:
+	case o.Result == "exit-code" && o.ExitStatus == 1 && strings.Contains(message, "Save(<lock/"):
 		return errors.New("this key read the repository, and restic could not write a lock file to it (exit 1)" + cannot + said(message))
+	case o.Result == "exit-code" && o.ExitStatus == 1:
+		// Exit 1 is restic's for anything: the check reads the
+		// repository again before it writes, and a read that failed
+		// here says nothing of the key's writing.
+		return errors.New("this key read the repository, and restic exited 1 before writing a lock file to it: whether this key can write to it is not known" + said(message))
 	}
 	detail, _ := resticFailure(o)
 	return errors.New("writing to the repository: " + detail)
