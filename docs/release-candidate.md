@@ -149,25 +149,23 @@ and a repository made beforehand with a key that may write:
 time sudo hotserve-backup setup <url>
 ```
 
-`setup` holds the key to writing a lock file into a repository that is
-there already, and should refuse this one: at once where the storage
-says so plainly, at its two-minute clock where restic retries.
-**Unverified** on a provider; on the e2e server behind a proxy that
-refuses writes, both — the lines as the e2e asserts them, with the
-clock a release's binary has (the e2e's is 30 s); a run's lock ids and
-timings are its own:
+`setup` opens a repository that is there already taking its lock —
+`restic cat config`, which writes a lock file and removes it — and
+should refuse this key: at once where the storage says so plainly, at
+its two-minute clock where restic retries. **Unverified** on a
+provider; on the e2e server behind a proxy that refuses writes, both —
+the lines as the e2e asserts them, with the clock a release's binary
+has (the e2e's is 30 s); a run's lock ids and timings are its own:
 
 ```
-checking that this key can write to it (up to 2m0s)
-hotserve-backup: this key read the repository, and restic exited 1 before its lock file's write completed: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: … client.PutObject: Access Denied.)
+hotserve-backup: this key opened the repository, and restic exited 1 at its lock file's write: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: … client.PutObject: Access Denied.)
 ```
 
 at once, and at the clock:
 
 ```
-checking that this key can write to it (up to 2m0s)
 still waiting for s3:http://…/box1 (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it)
-hotserve-backup: this key read the repository, and restic had not completed a lock file's write to it within 2m0s: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: Save(<lock/…>) returned error, retrying after …: …)
+hotserve-backup: restic had not finished opening the repository and writing a lock file to it within 2m0s: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: Save(<lock/…>) returned error, retrying after …: …)
 ```
 
 each exit 1, with nothing of setup's written: `status` after either is
@@ -175,10 +173,22 @@ what it was before — `backups are not set up` on a box that was not,
 the earlier setup on one that was (the credential file is left byte
 for byte as it was).
 
-**On B2**, `v0.3.0-rc1`, whose `setup` did not check yet, took a
-console Read Only key (`repository ready … (existing, …)`). The run
-after it retried the lock about once a minute
-(`b2_get_upload_url: 401:`) and failed after 868 s:
+**A key that may write and not delete** — narrower than the guide's
+policies — writes the lock file and cannot remove it; the opening
+finds the lock it left and refuses the key by it, naming the lock
+(on the e2e server, behind a proxy that refuses DELETE alone):
+
+```
+hotserve-backup: this key wrote a lock file to the repository and could not remove it (lock …): a key that may not delete cannot prune, and every run would leave one more lock; restic unlock, from a machine with a key that may delete, clears it
+```
+
+`restic unlock` from your own machine, with the key that may delete,
+then clears it ([look from your own machine](backups.md#look-from-your-own-machine)).
+
+**On B2**, `v0.3.0-rc1`, whose `setup` only read, took a console Read
+Only key (`repository ready … (existing, …)`). The run after it
+retried the lock about once a minute (`b2_get_upload_url: 401:`) and
+failed after 868 s:
 `demo: failed: restic failed (exit 1): the storage could not be reached, or refused the key, or something else went wrong; …`;
 the drill failed after 832 s in #170's words; `status` exited 1. Where
 a `setup` does take such a key, `setup` again with the box's own

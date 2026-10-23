@@ -69,7 +69,8 @@ type box struct {
 	initOut, initErr, probeOut string
 	probeErr                   string // what the look says on stderr
 	openErr                    string // what the open unit says on stderr
-	writeErr                   string // what the write unit says on stderr
+	locksOut                   string // what `restic list locks` prints, one id a line
+	lockOut                    string // what `restic cat lock <id>` prints
 	planErr                    string // what the plan unit says on stderr
 	hang                       string
 	version                    int
@@ -306,11 +307,12 @@ func (b *box) Run(ctx context.Context, s unit.Spec) (unit.Outcome, error) {
 		// As the real runner: the unit is stopped by name once the
 		// context ends, and what could not be confirmed gone wraps the
 		// cause in ErrNotConfirmedGone. Init runs on a context nothing
-		// cancels; its hang ends with the test. A write that hangs is
-		// restic retrying, and its retry lines are on stderr before the
-		// clock ends it: written first where the test gives them.
-		if role == "write" && s.StderrFile != "" && b.writeErr != "" {
-			must(b.t, os.WriteFile(s.StderrFile, []byte(b.writeErr), 0o600))
+		// cancels; its hang ends with the test. An opening that hangs is
+		// restic retrying its lock file's write, and its retry lines are
+		// on stderr before the clock ends it: written first where the
+		// test gives them.
+		if role == "open" && s.StderrFile != "" && b.openErr != "" {
+			must(b.t, os.WriteFile(s.StderrFile, []byte(b.openErr), 0o600))
 		}
 		select {
 		case <-ctx.Done():
@@ -385,18 +387,19 @@ func (b *box) Run(ctx context.Context, s unit.Spec) (unit.Outcome, error) {
 		if s.StderrFile != "" {
 			must(b.t, os.WriteFile(s.StderrFile, []byte(b.initErr), 0o600))
 		}
-	case "probe", "open", "write":
+	case "probe", "open", "reopen":
 		write(b.probeOut)
 		if s.StderrFile != "" {
 			stderr := b.probeErr
-			switch role {
-			case "open":
+			if role == "open" {
 				stderr = b.openErr
-			case "write":
-				stderr = b.writeErr
 			}
 			must(b.t, os.WriteFile(s.StderrFile, []byte(stderr), 0o600))
 		}
+	case "locks":
+		write(b.locksOut)
+	case "lock":
+		write(b.lockOut)
 	case "verify":
 		// Everything after "--" and the snapshot id is a parent to list.
 		var out []string
