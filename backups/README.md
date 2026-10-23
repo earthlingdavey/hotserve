@@ -1056,8 +1056,10 @@ What can be known to fail is refused before anything is asked for
    it — B2 puts Get Bucket Location under `readBuckets`, and on the
    refusal minio-go signs every request for `us-east-1` — and minio-go
    does not retry it on a 5xx with no S3 error code in it, which is how
-   B2 answers one (a JSON body), so one 500 there would put restic's
-   retry lines beside a listing <!-- i354: measurement pending: s3probe scenario o, region set and unset -->.
+   B2 answers one (a JSON body), so one 500 there puts restic's two
+   retry lines beside a listing, which is then not believed; with the
+   region set the request is not made, and the same 500 elsewhere is
+   absorbed in silence [M89].
    Nothing else is set up by this
    command (`rest:`, `gs:` and `swift:` are written by hand, below). A
    value the file
@@ -1327,8 +1329,10 @@ severity × occurrence × detection, then the fix's size and risk.
 | At the write check's clock, a stop of the unit the manager could not confirm ends setup in the runner's words ("the unit could not be confirmed gone: hotserve_backup_write_…"), with no word of the key, the lock file that may stay, or `restic unlock`. | `writable` (`backups/engine/setup.go`), the `err != nil` arm; the opening's clock ends the same way | 2 | 2 | 1 | 4 | size 2, risk 2 (a wording for `unit.ErrNotConfirmedGone` in the write check, as `check.go`'s probe has) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, the write-check PR, scored three times). The line names the unit, and `systemctl status` of it shows restic still at its retries; the operator's remedy is the one the clock refusal gives. |
 | A Ctrl-C at the write check that lands before restic has started (between the check's first line and the manager taking the unit) ends with the interrupt's word that a lock file restic was writing may stay, though nothing ran. | `writable` sets `writing` before the unit; `err` (`backups/engine/setup.go`) | 2 | 5 | 1 | 10 | size 2, risk 2 (set the flag from the runner once the unit has started) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, the write-check PR). "May stay" holds either way, and `restic list locks` from your own machine answers it; nothing after the check returns an interrupt, so the flag standing afterwards reaches no line. |
 | `setup`'s look (`restic cat config`) exiting 1 within its clock for a reason other than the storage refusing — a config file restic cannot read, a TLS trust failure — is said as every exit 1 is, "restic could not open the repository (exit 1): <restic's words>" then "the storage refused the key, or could not be reached: the key id and secret again", and setup ends after three askings with restic's words; before #175 the look was given up on and init said the same words after a password had been shown. | `look` (`backups/engine/setup.go`), `lookRefused` | 2 | 3 | 1 | 6 | size 1, risk 2 (reading the look's exit 1 by restic's wording, as init's is, would send a storage that refuses at once in another shape — S3's `AccessDenied` comes through the config's Stat, not the opening — back to the password-first path) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, #175). Rule 2 holds: red, with restic's own words on the line, and nothing written. |
-| A storage outage that begins during a backup leaves the command's lock file in the repository: restic 0.18 refreshes its lock on a context the command's end does not cancel, its unlock waits for that refresh to give up, and the removal then has a minute, so a lock no command holds stays, which restic never passes by itself [M75]. The box's own commands go on (a backup, a fetch and setup's write check take shared locks, the drill's check none); an off-box `prune` waits out its `--retry-lock 1h` and exits 11. <!-- i354: measurement pending: the code-read prediction (restic `internal/repository/lock.go`, the refresh's `context.TODO()`; `internal/restic/lock.go`); s3probe scenario j measures it --> | restic, not this code; docs/backups.md, "Retention, off the box" | 2 | 3 | 1 | 6 | size 2, risk 2 (a `restic unlock` unit after a run the storage failed would delete in the repository on every such run, and would remove a lock another machine's restic held unrefreshed for 30 minutes) | Rule 2 holds: red and named where it bites — `prune` says the repository is locked (exit 11) — and the guide gives `restic list locks --no-lock` and `restic unlock`. Under rule 3 the product is under 20 (2026-10-23, #354). |
-| On an S3 host other than AWS's and B2's, for which setup writes no region, every restic command's first request is minio-go's bucket-location lookup, which minio-go does not retry on a 5xx that carries no S3 error code; restic's own layer retries it, saying so on stderr, and a run's listing with anything beside it is not believed. | `besides` (`backups/engine/engine.go`); minio-go 7.0.89 `bucket-cache.go`, `executeMethod` in `api.go` | 2 | 3 | 1 | 6 | size 2, risk 3 (a region for every host would have to be asked for, and a wrong one is refused; reading restic's retry lines as harmless would believe a listing beside a line that means a snapshot was left out) | Rule 2 holds: the listing is a warning of the run, said as restic having something to say beside it, and the next run lists again. On AWS minio-go knows the region from the host; on B2 setup writes it ("Setup", 4). Under rule 3 the product is under 20 (2026-10-23, #354). <!-- i354: measurement pending: s3probe scenario o, region unset --> |
+| A storage outage that begins during a backup leaves the command's lock file in the repository: the backup ends exit 1 after 20–35 minutes, its lock still there [M87], which restic never passes by itself [M75]. The box's own commands go on (a backup, a fetch and setup's write check take shared locks, the drill's check none; the next backup measured ok); an off-box `prune` waits out its `--retry-lock 1h` and exits 11. | restic, not this code; docs/backups.md, "Retention, off the box" | 2 | 3 | 1 | 6 | size 2, risk 2 (a `restic unlock` unit after a run the storage failed would delete in the repository on every such run, and would remove a lock another machine's restic still held) | Rule 2 holds: red and named where it bites — `prune` says the repository is locked (exit 11) — and the guide gives `restic list locks --no-lock` and the unlock. Under rule 3 the product is under 20 (2026-10-23, #354). |
+| An off-box `prune` that is stopped (killed, its machine asleep or cut off) or whose deletes all fail leaves an exclusive lock, which restic does not take for stale with its process gone [M90]: every run and drill of the box's then waits its `--retry-lock 2h` for it, holding the run lock, nothing said meanwhile, and ends "the repository stayed locked by something else for 2h (exit 11)"; backups stop until `restic unlock` from your own machine. | restic, not this code; `resticFailure` (`backups/engine/engine.go`); docs/backups.md, "Retention, off the box" | 4 | 4 | 1 | 16 | size 3, risk 3 (the box removing another machine's lock would end a prune that is still running, whose lock is all that keeps a backup from writing beside its deletions) | Rule 2 holds: red and named — every run fails naming the lock, `status` is stale from the third hour — and the guide gives the remedy and says to read `prune`'s exit status, not its words (one whose every delete failed printed "2 snapshots have been removed", M90). Under rule 3 the product is under 20 (2026-10-23, #354). Whether `restic unlock` without `--remove-all` removes such a lock is not measured; the guide gives `--remove-all` with the box's timers stopped. |
+| A storage that takes connections and never answers, or answers a byte at a time, is not ended by restic within 40 minutes, with nothing on stderr [M88] (a paused one, 25 minutes, #346); an upload, a fetch and the check have no backstop (D4), so the unit runs on, holding the run lock, and no later run starts. | the upload, fetch and check units (`backups/engine/engine.go`, `restore.go`, `check.go`); restic's stuck-request watchdog re-sends a blackholed request every 5 minutes | 4 | 3 | 1 | 12 | size 3, risk 3 (a no-progress watchdog that ends a unit, the option #177 weighs: a new state per unit, and a cut that must never end a slow upload that is moving) | Rule 2 holds: `status` exits 1 from the third hour — "no run has finished since …", the app stale, and `running: upload of <app>, since …` naming the stuck unit. Under rule 3 the product is under 20 (2026-10-23, #354). The switch to the S3 endpoint removed the hang #177 found (M87: every fault that answers ends); this one is left with #177 (on hold), where the watchdog and a dead man's switch are weighed. |
+| On an S3 host other than AWS's and B2's, for which setup writes no region, every restic command's first request is minio-go's bucket-location lookup, which minio-go does not retry on a 5xx that carries no S3 error code: one such 500 puts restic's two retry lines on stderr beside a listing, exit 0, and the listing is not believed [M89]. An S3 XML 500 there is retried by minio-go in silence. | `besides` (`backups/engine/engine.go`); minio-go 7.0.89 `bucket-cache.go`, `executeMethod` in `api.go` | 2 | 3 | 1 | 6 | size 2, risk 3 (a region for every host would have to be asked for, and a wrong one is refused; reading restic's retry lines as harmless would believe a listing beside a line that means a snapshot was left out) | Rule 2 holds: the listing is a warning of the run, said as restic having something to say beside it, and the next run lists again. On AWS minio-go knows the region from the host; on B2 setup writes it ("Setup", 4), and with it the same fault is silent (M89). Under rule 3 the product is under 20 (2026-10-23, #354). |
 
 ## Development
 
@@ -1407,20 +1411,23 @@ programs under the same code.
      a quarter of an hour (864 s and 900 s measured), exit 1.
      `listClock` is twice that, and an upload, a fetch and the check,
      which have no backstop, end by it where the storage answers (next).
-   - how a storage that fails ends, through restic's S3 backend, against
-     the suites' S3 server behind a proxy that injects the fault
-     <!-- i354: measurement pending: s3probe RESULTS.md replaces this prediction -->:
-     by restic 0.18's code and Debian's minio-go 7.0.89, which it is
-     built with, minio-go tries a request ten times, under a second
-     apart, and restic's own layer retries the call for a quarter of
-     an hour, then exit 1 — a 500 or 503 every time, a connection
-     refused or reset, a host that does not resolve; one storage that
-     takes connections and never answers, about 100 minutes (ten
-     five-minute stuck-request cuts, twice); a paused one gave no exit
-     in 25 minutes (#346); one that trickles its answers can run for
-     hours and succeed. A run of under ten 500s in a row is absorbed
-     by minio-go and says nothing; more prints restic's retry lines on
-     stderr, and succeeds.
+   - how a storage that fails ends, through restic's S3 backend, with
+     the suites' S3 server (rclone, `e2e/backup/s3.Dockerfile`) behind
+     a proxy that injects the fault, plain HTTP, no region, and the
+     upload's own command [M87–M90]: minio-go 7.0.89, which Debian's
+     restic is built with, tries a request ten times, 0–1 s apart, and
+     restic's own layer retries the call, then exit 1 after 14.3–14.9
+     minutes an operation — a 500 or 503 every time, a connection
+     refused, a host that does not resolve; 20.5 and 34.7 minutes for
+     an outage from mid-backup. Up to three 500s in a row say nothing;
+     ten, two lines on stderr; random faults, resets and 503s that
+     stop, exit 0. A storage that takes connections and never answers,
+     or answers a byte at a time, had not ended at 40 minutes (a
+     paused one at 25, #346): no backstop ends them either (D4, #177).
+     A listing beside one B2-shaped 500 on the location lookup, with
+     no region, is not believed (M89). A `prune` whose deletes all
+     fail ends after ~35 minutes and leaves exclusive locks that hold
+     every run for two hours (M90).
 
 ```sh
 docker build -t hsb-s3 -f e2e/backup/s3.Dockerfile .

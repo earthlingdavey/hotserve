@@ -488,15 +488,34 @@ restic prune --retry-lock 1h
 
 Each needs the repository to itself, and without `--retry-lock` gives up
 at once while a run of the box's holds a lock: `repository is already
-locked`, exit 11 [measured]; with it, it waits. A lock that no command
-holds any more is waited on all the same, for the hour and then exit 11:
-restic never passes a stale lock by itself [M75]. One is left when a
-storage outage begins during a backup, by restic's own code (its lock's
-refresh runs on past the command's end, which then cannot remove the
-lock) <!-- i354: measurement pending: the code-read prediction; s3probe scenario j (refused mid-backup) measures it -->.
-`restic list locks --no-lock` shows it, and `restic unlock`, which
-removes a lock not refreshed for 30 minutes, clears the way; then
-prune. The
+locked`, exit 11 [measured]; with it, it waits. A lock no command
+holds any more is waited on all the same: restic never passes a stale
+lock by itself [M75]. Two things leave one [measured, against the e2e
+S3 server behind a proxy that injects the fault]:
+
+- **A storage outage that begins during a box's backup** leaves its
+  lock. The box's next runs go on; a `prune` waits out its hour and
+  exits 11.
+- **A `prune` that fails or is stopped** leaves its own, which no
+  other command may share — after 35 minutes with every delete
+  refused, three of them. Every run and drill of the box's then waits
+  for it — two hours by its `--retry-lock`, of which 40 minutes were
+  watched, nothing said meanwhile — exits 11, and says the repository
+  stayed locked; `status`
+  calls the backups stale from the third hour. So read `prune`'s exit
+  status, not its words: the one whose every delete was refused
+  printed `2 snapshots have been removed` and removed none. On B2,
+  every `prune` would end this way if a key without `deleteFiles`
+  may not delete by name (above, **unverified**).
+
+Either way `restic list locks --no-lock` lists what is there. `restic
+unlock` removes a lock restic judges stale; whether it judges a dead
+prune's so was not tried. `restic unlock --remove-all` removes every
+lock, a running command's too, so first stop the box's timers and let
+any run end (`sudo systemctl stop hotserve-backup.timer
+hotserve-backup-drill.timer`; `hotserve-backup status` says whether a
+unit is running), and have no command of your own running; then start
+the timers again, and prune. The
 first `forget` thins each app's backups, and the snapshots a restore
 made of what it restored over (tagged `pre-restore`) apart from them;
 the second, the records that runs ended ok. One `forget` would keep a
