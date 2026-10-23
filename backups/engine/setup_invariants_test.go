@@ -90,9 +90,9 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	}{
 		{"the storage refuses the write at once (S3's 403: exit 1)", func(b *box) {
 			b.outcome["write"], b.writeErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, denied
-		}, "this key read the repository and could not write a lock file to it (exit 1): a key that may only read cannot back up (restic said: " + denied + ")", ""},
+		}, "this key read the repository, and restic could not write a lock file to it, or remove the one it wrote (exit 1): a key that may only read, or a storage that refuses writes, cannot back up (restic said: " + denied + ")", ""},
 		{"restic retries the write to the clock (B2's 401)", func(b *box) { b.hang = "write" },
-			"this key read the repository and wrote no lock file to it within 200ms: a key that may only read cannot back up", ""},
+			"this key read the repository, and restic was still retrying a lock file's write to it at 200ms: a key that may only read, or a storage that refuses writes, cannot back up", ""},
 		{"the unit could not be set up", func(b *box) { b.outcome["write"] = unit.Outcome{Result: "exit-code", ExitStatus: 217} },
 			"writing to the repository: systemd could not set the unit up (status 217)", ""},
 		{"the unit could not be started", func(b *box) { b.err["write"] = errors.New("starting hotserve_backup_write: no such user") },
@@ -135,6 +135,34 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	b, m := setupBox(t)
 	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err != nil || strings.Contains(b.roles(), "write") {
 		t.Fatalf("err %v, units %s", err, b.roles())
+	}
+	// One an earlier attempt's init made, opened with the password
+	// shown, was written with the key of that attempt, not the one asked
+	// for since: that key is held to writing the same, and refused the
+	// same, the shown password said to be kept (init ran with it).
+	b, m = setupBox(t)
+	b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+	b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+	b.initOut, b.initErr = "", wrongKey
+	inits := 0
+	b.before = func(s unit.Spec) {
+		if strings.Contains(s.Name, "_init_") {
+			if inits++; inits == 1 {
+				b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
+			}
+		}
+	}
+	b.outcome["write"], b.writeErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, denied
+	m.answers = []string{"AKIDX", "wrong", "stored", "AKIDRO", "the-read-only-secret"}
+	_, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
+	if err == nil || !strings.Contains(err.Error(), "could not write a lock file to it, or remove the one it wrote (exit 1): a key that may only read, or a storage that refuses writes, cannot back up") || !strings.Contains(err.Error(), "keep the password shown above") {
+		t.Fatalf("err = %v\nsaid:\n%s", err, m.saidAll())
+	}
+	if got, want := b.roles(), "plan probe init probe open write"; got != want {
+		t.Fatalf("units %s, want %s", got, want)
+	}
+	if _, err := os.Lstat(b.cfg.EnvFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the working file was written with the key that cannot write")
 	}
 }
 

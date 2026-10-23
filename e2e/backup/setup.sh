@@ -189,13 +189,19 @@ says "Repository password (new)" && fail "a password was made for a repository t
 # reads, so both were taken, and every run after failed.
 readonly_storage() { # <the status a write gets>
 	printf '{\n\tadmin off\n\tauto_https off\n}\nhttp://127.0.0.1:9100 {\n\t@write method PUT POST DELETE\n\trespond @write %s\n\treverse_proxy e2e-s3:9000\n}\n' "$1" >/root/readonly.Caddyfile
+	# The one name each time, collected whatever it ended as, so that
+	# a proxy that ended failed does not keep the second from starting;
+	# and the start is checked, so that the second case never runs
+	# against the first proxy.
 	systemctl stop readonly-storage.service 2>/dev/null
-	systemd-run --quiet --unit=readonly-storage.service /usr/bin/hotserve run --config /root/readonly.Caddyfile --adapter caddyfile
+	systemctl reset-failed readonly-storage.service 2>/dev/null
+	systemd-run --quiet --collect --unit=readonly-storage.service /usr/bin/hotserve run --config /root/readonly.Caddyfile --adapter caddyfile || fail "the read-only proxy ($1) could not be started"
 	i=0
 	until curl -s -o /dev/null http://127.0.0.1:9100/ || [ "$i" -ge 100 ]; do
 		i=$((i + 1))
 		sleep 0.1
 	done
+	systemctl is-active --quiet readonly-storage.service || fail "the read-only proxy ($1) is not running: $(systemctl status readonly-storage.service 2>&1 | tail -5)"
 }
 RO=s3:http://127.0.0.1:9100/setuprepo
 readonly_storage 403
@@ -203,7 +209,7 @@ t0=$(date +%s)
 converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
 rc=$?
 took=$(($(date +%s) - t0))
-[ "$rc" != 0 ] && says "the repository exists; its password is needed" && says "checking that this key can write to it (up to 30s)" && says "this key read the repository and could not write a lock file to it (exit 1): a key that may only read cannot back up (restic said: .*Access Denied" && [ "$took" -lt 20 ] && pass "a key the storage refuses every write, plainly, is refused at once (${took}s), in restic's words" || fail "a read-only key, refused plainly: exit $rc after ${took}s: $(cat "$OUT")"
+[ "$rc" != 0 ] && says "the repository exists; its password is needed" && says "checking that this key can write to it (up to 30s)" && says "this key read the repository, and restic could not write a lock file to it, or remove the one it wrote (exit 1): a key that may only read, or a storage that refuses writes, cannot back up (restic said: .*Access Denied" && [ "$took" -lt 20 ] && pass "a key the storage refuses every write, plainly, is refused at once (${took}s), in restic's words" || fail "a read-only key, refused plainly: exit $rc after ${took}s: $(cat "$OUT")"
 says "repository ready" && fail "setup said the repository was ready" || pass "and not called ready"
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "the working file is byte-identical, no copy of a credential is left, no unit is running" || fail "after a read-only key: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
 readonly_storage 500
@@ -211,7 +217,7 @@ t0=$(date +%s)
 converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
 rc=$?
 took=$(($(date +%s) - t0))
-[ "$rc" != 0 ] && says "still waiting for $RO (Ctrl-C is safe: nothing has been written)" && says "this key read the repository and wrote no lock file to it within 30s: a key that may only read cannot back up (restic said: .*Save(<lock/" && [ "$took" -ge 30 ] && [ "$took" -lt 90 ] && pass "a write restic retries is given up on at the clock (${took}s), and said as a key that cannot write" || fail "a read-only key, retried: exit $rc after ${took}s: $(cat "$OUT")"
+[ "$rc" != 0 ] && says "still waiting for $RO (Ctrl-C is safe: nothing of setup's has been written; a lock file restic put there is stale to it after half an hour)" && says "this key read the repository, and restic was still retrying a lock file's write to it at 30s: a key that may only read, or a storage that refuses writes, cannot back up (restic said: .*Save(<lock/" && [ "$took" -ge 30 ] && [ "$took" -lt 90 ] && pass "a write restic retries is given up on at the clock (${took}s), and said as a key that cannot write" || fail "a read-only key, retried: exit $rc after ${took}s: $(cat "$OUT")"
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "and left the working setup as it was, its unit stopped" || fail "after the clock: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
 systemctl stop readonly-storage.service
 [ "$(rr list locks --no-lock 2>/dev/null | wc -l)" = 0 ] && pass "no lock file is left in the repository" || fail "locks left: $(rr list locks --no-lock 2>&1)"

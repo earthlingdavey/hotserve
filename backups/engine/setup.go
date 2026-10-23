@@ -789,6 +789,9 @@ func (s *setup) leaveInit() { s.initLeft, s.keepDir = true, true }
 // tryShown opens the repository with the password shown — the staged
 // file holds it — after an earlier attempt's init ran with it: one it
 // opens is one this setup made; else the repository's own is needed.
+// The key is not the one that made it — an attempt comes round only
+// when the key is asked for again — so it is held to writing as any
+// key to a repository that was there already.
 func (s *setup) tryShown(ctx context.Context, rep *SetupReport, needsOwn func()) error {
 	id, opened, err := s.openRepository(ctx)
 	if err != nil {
@@ -796,6 +799,9 @@ func (s *setup) tryShown(ctx context.Context, rep *SetupReport, needsOwn func())
 	}
 	if opened {
 		s.term.Say("the repository exists, and the password shown above opens it: it was made by an earlier attempt of this setup")
+		if err := s.writable(ctx); err != nil {
+			return err
+		}
 		rep.RepositoryID, rep.New, s.made = id, true, true
 		return nil
 	}
@@ -994,22 +1000,29 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 // file and removes it — 0.7 s where the key may write [measured]. Where
 // it may not, restic exits 1 at once on a storage that says so plainly
 // (S3's 403) and retries for a quarter of an hour on one that does not
-// (B2's 401) [measured], so it has the opening's clock. Another restic
-// holding the repository exclusively (exit 11, at once [measured]) is
-// no refusal of the key: said, and setup goes on.
+// (B2's 401) [measured], so it has the opening's clock. A storage that
+// refuses or retries writes alone is refused the same way, named as
+// the other cause. Another restic holding the repository exclusively
+// (exit 11, at once [measured]) is no refusal of the key: said, and
+// setup goes on.
 func (s *setup) writable(ctx context.Context) error {
 	s.term.Say(fmt.Sprintf("checking that this key can write to it (up to %s)", setupClock))
-	const readOnly = ": a key that may only read cannot back up"
-	said := func() string {
-		if m := resticMessage(filepath.Join(s.dir, "write.err")); m != "" {
+	// What is seen is said — a write refused, or still retried at the
+	// clock — and the two causes that look alike from here are named:
+	// restic's words, appended, tell them apart (a 403 or 401 names the
+	// key; a 500 or 503 the storage).
+	const cannot = ": a key that may only read, or a storage that refuses writes, cannot back up"
+	said := func(m string) string {
+		if m != "" {
 			return " (restic said: " + record.Text(m) + ")"
 		}
 		return ""
 	}
-	o, _, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
+	o, message, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
 	switch {
 	case errors.Is(err, errDidNotAnswer):
-		return fmt.Errorf("this key read the repository and wrote no lock file to it within %s%s%s", setupClock, readOnly, said())
+		// The clock's error carries no message: read from the unit's file.
+		return fmt.Errorf("this key read the repository, and restic was still retrying a lock file's write to it at %s%s%s", setupClock, cannot, said(resticMessage(filepath.Join(s.dir, "write.err"))))
 	case err != nil:
 		return err
 	case o.OK():
@@ -1018,11 +1031,17 @@ func (s *setup) writable(ctx context.Context) error {
 		s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
 		return nil
 	case o.Result == "exit-code" && o.ExitStatus == 1:
-		return errors.New("this key read the repository and could not write a lock file to it (exit 1)" + readOnly + said())
+		return errors.New("this key read the repository, and restic could not write a lock file to it, or remove the one it wrote (exit 1)" + cannot + said(message))
 	}
 	detail, _ := resticFailure(o)
 	return errors.New("writing to the repository: " + detail)
 }
+
+// noteWrite is what a person waiting on the write check is told: the
+// lock file is restic's, written and removed by it, and one left by a
+// stop between the two is stale to restic after half an hour (its
+// documentation) — nothing of setup's is in the repository.
+const noteWrite = "(Ctrl-C is safe: nothing of setup's has been written; a lock file restic put there is stale to it after half an hour)"
 
 // errDidNotAnswer is a unit given up on at its clock.
 var errDidNotAnswer = errors.New("the repository did not answer")
@@ -1051,6 +1070,10 @@ func (s *setup) repository(ctx context.Context, role string, within time.Duratio
 		defer close(noteDone)
 		if role == "init" {
 			s.term.Say("still waiting for " + s.repo + " (Ctrl-C leaves restic init running, and the next setup waits for it; it may be making the repository with the password shown: keep it)")
+			return
+		}
+		if role == "write" {
+			s.term.Say("still waiting for " + s.repo + " " + noteWrite)
 			return
 		}
 		s.term.Say("still waiting for " + s.repo + " (Ctrl-C is safe: nothing has been written)")

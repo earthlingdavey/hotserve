@@ -931,10 +931,12 @@ It needs no privilege.
   it — three times; and a password not confirmed `stored`.
 - `setup`, after two minutes with no answer from the repository (ten
   seconds for the look that comes first): the look, the opening or the
-  write is stopped, and nothing has been written; init is left running,
-  said, and waited for by whatever comes next.
+  write is stopped, and nothing of setup's has been written (the write
+  may leave restic's lock file, stale to it after half an hour); init
+  is left running, said, and waited for by whatever comes next.
 - `setup`, for a repository that is there already: a key that reads it
-  and cannot write a lock file to it ("Setup", 7).
+  and cannot write a lock file to it, or a storage that refuses the
+  write ("Setup", 7).
 
 ## The Caddyfile is read without the server's environment
 
@@ -1082,15 +1084,24 @@ What can be known to fail is refused before anything is asked for
    same command without `--no-lock`, which writes a lock file and
    removes it (0.7 s [measured]), said as "checking that this key can
    write to it". A key that may read and not write is refused, in
-   restic's words, before anything is written: at once where the
-   storage says so plainly (S3's 403: restic exits 1), at the two-minute
-   clock where restic retries (B2's 401, which it retried for a quarter
-   of an hour [measured, RC check 6]) — a run with such a key fails
-   that long after it starts, every hour. Where another restic holds
-   the repository (exit 11: a prune or a check from elsewhere) nothing
-   was learned of the key; that is said, and setup goes on. A
+   restic's words, before anything of setup's is written: at once
+   where the storage says so plainly (S3's 403: restic exits 1), at
+   the two-minute clock where restic retries (B2's 401, which it
+   retried for a quarter of an hour [measured, RC check 6]) — a run
+   with such a key fails that long after it starts, every hour. What
+   is said is what was seen — the write refused, or still retried at
+   the clock — and both causes that look alike from the box, a key
+   that may only read and a storage that refuses writes, are named;
+   restic's words, appended, tell them apart. A key that may write and
+   not delete (narrower than the guide's) is refused at the lock's
+   removal, and leaves that one lock file, which restic treats as
+   stale after half an hour (its documentation). Where another restic
+   holds the repository (exit 11: a prune or a check from elsewhere)
+   nothing was learned of the key; that is said, and setup goes on. A
    repository setup itself made was written by its init, and is not
-   asked. Where the look could not tell and init finds the repository
+   asked; one an earlier attempt of this setup made, opened with the
+   password shown, was made with that attempt's key, and the key asked
+   for since is held to writing the same. Where the look could not tell and init finds the repository
    there after all ("already initialized", whatever the password), the
    same follows, and the password just shown is said not to be the
    one;

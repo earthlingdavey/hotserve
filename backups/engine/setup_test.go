@@ -740,7 +740,7 @@ func TestAfterAFailedInitTheShownPasswordIsTriedBeforeItIsCalledUnused(t *testin
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe init probe open"; got != want {
+	if got, want := b.roles(), "plan probe init probe open write"; got != want {
 		t.Fatalf("units: %s, want %s", got, want)
 	}
 	if strings.Contains(m.askedAll(), "Repository password: ") {
@@ -799,7 +799,7 @@ func TestAfterAFailedInitTheShownPasswordIsTriedBeforeItIsCalledUnused(t *testin
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe init probe init open"; got != want || !rep.New || rep.RepositoryID != repoID || strings.Contains(m.saidAll(), "discard it") || strings.Contains(m.askedAll(), "Repository password: ") {
+	if got, want := b.roles(), "plan probe init probe init open write"; got != want || !rep.New || rep.RepositoryID != repoID || strings.Contains(m.saidAll(), "discard it") || strings.Contains(m.askedAll(), "Repository password: ") {
 		t.Fatalf("units %s, report %+v\nsaid:\n%s", got, rep, m.saidAll())
 	}
 	// A first init that says the repository exists ran with no earlier
