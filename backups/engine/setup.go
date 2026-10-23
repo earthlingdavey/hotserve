@@ -1013,11 +1013,13 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 // setup goes on.
 func (s *setup) writable(ctx context.Context) error {
 	s.term.Say(fmt.Sprintf("checking that this key can write to it (up to %s)", setupClock))
-	// What is seen is said — a write refused, or still retried at the
-	// clock — and the two causes that look alike from here are named:
-	// restic's words, appended, tell them apart (a 403 or 401 names the
-	// key; a 500 or 503 the storage).
-	const cannot = ": a key that may only read, or a storage that refuses writes, cannot back up; run setup again with a key that may write"
+	// What is said is what happened — exit 1, or the clock — with the
+	// two causes that look alike from the box named, and the last line
+	// restic said appended, which tells them apart (a 403 or 401 names
+	// the key, a 500 or 503 the storage, a Load line a read that never
+	// got to the write). Nothing is inferred from that line: an earlier
+	// round did, and each inference had a stderr that fooled it.
+	const cannot = ": a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write"
 	said := func(m string) string {
 		if t := record.Text(m); t != "" {
 			return " (restic said: " + t + ")"
@@ -1025,21 +1027,10 @@ func (s *setup) writable(ctx context.Context) error {
 		return ""
 	}
 	s.writing = true
-	o, message, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
-	// One line of restic's is appended, the last that bears on the
-	// lock file: the cleaned message is the whole stderr cut to its
-	// head, where a read's 503 lines would hide the 403 or 401 that
-	// names the key. Read raw: the cleaned message has its lines joined.
-	raw, _ := os.ReadFile(s.errFile("write"))
+	o, _, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
 	switch {
 	case errors.Is(err, errDidNotAnswer):
-		// A write restic retries leaves its retry lines on stderr; a
-		// storage that took the connection and never answered leaves
-		// nothing, and says nothing of the key.
-		if l := lockRetryLine(string(raw)); l != "" {
-			return fmt.Errorf("this key read the repository, and restic was still retrying a lock file's write to it at %s%s%s", setupClock, cannot, said(l))
-		}
-		return fmt.Errorf("this key read the repository, and the storage had not answered a lock file's write to it at %s: whether this key can write to it is not known%s", setupClock, said(lastLine(string(raw))))
+		return fmt.Errorf("this key read the repository, and no lock file was written to it within %s%s%s", setupClock, cannot, said(s.lastSaid("write")))
 	case err != nil:
 		return err
 	case o.OK():
@@ -1047,52 +1038,34 @@ func (s *setup) writable(ctx context.Context) error {
 	case o.Result == "exit-code" && o.ExitStatus == 11:
 		s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
 		return nil
-	case o.Result == "exit-code" && o.ExitStatus == 1 && lockLine(string(raw)) != "":
-		return errors.New("this key read the repository, and restic could not write a lock file to it (exit 1)" + cannot + said(lockLine(string(raw))))
 	case o.Result == "exit-code" && o.ExitStatus == 1:
-		// Exit 1 is restic's for anything: the check reads the
-		// repository again before it writes, and a read that failed
-		// here says nothing of the key's writing.
-		return errors.New("this key read the repository, and restic exited 1 before writing a lock file to it: whether this key can write to it is not known" + said(message))
+		return errors.New("this key read the repository, and restic exited 1 before a lock file was written to it" + cannot + said(s.lastSaid("write")))
 	}
 	detail, _ := resticFailure(o)
 	return errors.New("writing to the repository: " + detail)
 }
 
 // errFile is where a unit's stderr goes, by its role: the one spelling
-// of the .err file, which two readers name.
+// of the .err file.
 func (s *setup) errFile(role string) string { return filepath.Join(s.dir, role+".err") }
 
-// lockRetryLine is the last of restic's retry lines for the lock
-// file's write in what it said, or "": "Save(<lock/…>) returned error,
-// retrying after …" [measured: RC check 6, M1], on one line — not a
-// read's retry ("Load(<config/>…"), nor a Save refused once beside an
-// earlier line that retried, nor what restic says as the stop ends it
-// ("signal terminated received, cleaning up", M1).
-func lockRetryLine(stderr string) string {
-	l := lockLine(stderr)
-	if strings.Contains(l, "returned error, retrying after") {
-		return l
+// lastSaid is the last line a unit's restic wrote to stderr, by role
+// — the message of its exit_error line where that is the last, since
+// restic ends on one — or "" where it wrote nothing. The cleaned
+// message (resticMessage) is the whole of stderr joined and cut to its
+// head, where a minute of a read's retries would hide the one line
+// that names the key.
+func (s *setup) lastSaid(role string) string {
+	raw, _ := os.ReadFile(s.errFile(role))
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	last := lines[len(lines)-1]
+	var m struct {
+		Message string `json:"message"`
 	}
-	return ""
-}
-
-// lockLine is the last line restic said of the lock file's write
-// ("Save(<lock/…>) …", retried or failed), or "".
-func lockLine(stderr string) string {
-	found := ""
-	for _, l := range strings.Split(stderr, "\n") {
-		if strings.Contains(l, "Save(<lock/") {
-			found = l
-		}
+	if json.Unmarshal([]byte(last), &m) == nil && m.Message != "" {
+		return m.Message
 	}
-	return found
-}
-
-// lastLine is the last line restic said, or "" where it said nothing.
-func lastLine(stderr string) string {
-	lines := strings.Split(strings.TrimRight(stderr, "\n"), "\n")
-	return lines[len(lines)-1]
+	return last
 }
 
 // noteWrite is what a person waiting on the write check is told: the

@@ -1085,22 +1085,21 @@ What can be known to fail is refused before anything is asked for
    The opening only reads, so the key is then held to **writing**: the
    same command without `--no-lock`, which writes a lock file and
    removes it (0.7 s [measured]), said as "checking that this key can
-   write to it". A key that may read and not write is refused, in
-   restic's words, before anything of setup's is written: at once
-   where the storage says so plainly (S3's 403: restic exits 1), at
-   the two-minute clock where restic retries (B2's 401, which it
-   retried for a quarter of an hour [measured, RC check 6]) — a run
-   with such a key fails that long after it starts, every hour. What
-   is said is what was seen — the write refused (exit 1), or still
-   retried at the clock (restic's "retrying after" line) — and both
-   causes that look alike from the box, a key that may only read and a
-   storage that refuses writes, are named; restic's words, appended,
-   tell them apart. A clock with no retry line from restic is a
-   storage that took the write and never answered: said as that, the
-   key unjudged. A stop or Ctrl-C between the lock file's writing and
-   its removal leaves it, which restic never passes by itself [M75]
-   and `restic unlock` removes; the waiting note and the interrupt
-   say so. A key
+   write to it". A key that may read and not write is refused before
+   anything of setup's is written: at once where the storage says so
+   plainly (S3's 403: restic exits 1), at the two-minute clock where
+   restic retries (B2's 401, which it retried for a quarter of an hour
+   [measured, RC check 6]) — a run with such a key fails that long
+   after it starts, every hour. What is said is what happened — exit
+   1, or no lock file within the clock — with both causes that look
+   alike from the box named, a key that may only read and a storage
+   that refuses or does not answer writes, and the last line restic
+   said appended, which tells them apart (a 403 or 401 the key, a 500
+   or 503 the storage, a `Load` line a read that never reached the
+   write); nothing is inferred from that line. A stop or Ctrl-C
+   between the lock file's writing and its removal leaves it, which
+   restic never passes by itself [M75] and `restic unlock` removes;
+   the waiting note and the interrupt say so. A key
    that may write and not delete (narrower than the guide's policies,
    which grant the delete — on B2, `writeFiles` covers the hide restic
    deletes by) is **not** refused: restic logs a lock file it could not
