@@ -24,10 +24,19 @@ what the provider showed; each answer replaces an **unverified** in
 bucket's page shows; elsewhere `s3:https://…/<bucket>`. The off-box
 machine is your own, with Debian 13's restic 0.18, awscli, rclone and
 backblaze-b2, the [look](backups.md#look-from-your-own-machine) lines'
-first three set — on B2 with `AWS_DEFAULT_REGION=<region>` too — and
-its own key. Nothing here prints a secret: keys are read with `read`,
-never typed on a command line, and the credential file is shown by its
-keys alone (`sudo sed 's/=.*/=…/' /etc/hotserve-backup/repository.env`).
+first three set, and its own key. On B2, three more: every `aws` line
+below then goes to B2's endpoint and not to AWS, and adds no checksum
+an operation does not require (restic sends an upload's Content-MD5
+and no other):
+
+```bash
+export AWS_DEFAULT_REGION=<region> AWS_ENDPOINT_URL=https://s3.<region>.backblazeb2.com
+export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+```
+
+Nothing here prints a secret: keys are read with `read`, never typed on
+a command line, and the credential file is shown by its keys alone
+(`sudo sed 's/=.*/=…/' /etc/hotserve-backup/repository.env`).
 
 ## 1. A `b2:` URL, a bucket that does not exist, and a wrong secret
 
@@ -108,7 +117,8 @@ would pass, and the lock would stay, holding off a `prune` until
 **On B2, first of every check:** what B2's S3 API does with a delete by
 name — what restic sends for every lock file it removes and every file
 `prune` removes, never naming a version — from a key without
-`deleteFiles`. Backblaze's page on its S3 keys says both: its text, that
+`deleteFiles`. [Backblaze's page on its S3 keys](https://www.backblaze.com/docs/cloud-storage-s3-compatible-app-keys)
+says both: its text, that
 `writeFiles` is needed to delete a file by name and `deleteFiles` to
 delete a version; its table, that Delete Object needs `deleteFiles`. In
 a bucket set to keep prior versions for **1** day, from the off-box
@@ -117,14 +127,12 @@ capabilities:
 
 ```bash
 aws s3api put-object --bucket <that bucket> --key rc-s3-hide/probe.txt --body probe.txt
-sleep 2    # B2's documentation: a hide in the same second as the upload may not hide
+sleep 2    # a hide in the same second as the upload may not hide (check 11)
 aws s3api delete-object --bucket <that bucket> --key rc-s3-hide/probe.txt
 aws s3api delete-object --bucket <that bucket> --key rc-s3-hide/probe.txt --version-id <the upload's VersionId>
 ```
 
-(With `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` set: awscli 2.23
-adds checksums to an upload by default, and restic sends none.) The
-first delete answered with `"DeleteMarker": true` means the guide's
+The first delete answered with `"DeleteMarker": true` means the guide's
 keys can remove restic's locks and prune, as it says; `AccessDenied`
 means they cannot — then stop here, and decide the bucket's design
 before any other check. The second, a version deleted by its id as an
@@ -168,8 +176,9 @@ On B2, the bucket's own rule as well: two days after the first step,
 rc-s3-hide/` and `backblaze-b2 ls --long --versions -r b2://<that
 bucket> rc-s3-hide` should list neither the probe's version nor its
 marker: B2's documentation says a delete by name inserts a delete
-marker, and that its lifecycle rules always remove an orphan delete
-marker.
+marker ([Delete Object](https://www.backblaze.com/apidocs/s3-delete-object)),
+and that its lifecycle rules always remove an orphan delete marker
+([Put Bucket Lifecycle Configuration](https://www.backblaze.com/apidocs/s3-put-lifecycle-configuration)).
 **Unverified**; on S3 the guide's rule asks for it (expired delete
 markers), and Hetzner's cannot.
 
@@ -309,10 +318,10 @@ On a box that an earlier release set up with a `b2:` repository, with
 the candidate installed: `sudo systemctl start hotserve-backup.service`,
 then `sudo hotserve-backup status`. The run refuses at once, before
 any unit starts, in these words (in its journal,
-`journalctl -u hotserve-backup.service`):
+`journalctl -u hotserve-backup.service`, after the date and host):
 
 ```
-the repository is b2:, which is not supported: sudo hotserve-backup setup s3:https://s3.<region>.backblazeb2.com/<bucket>/<path>, B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; restic's own B2 backend retries a failed upload without end
+hotserve-backup[<pid>]: hotserve-backup: the repository is b2:, which is not supported: sudo hotserve-backup setup s3:https://s3.<region>.backblazeb2.com/<bucket>/<path>, B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; restic's own B2 backend retries a failed upload without end
 ```
 
 and `status` says `the last run ended early: the repository is b2:,
@@ -349,7 +358,8 @@ outside it, how fast, and in what words: **unverified**.
 
 ## 11. A lock removed in the second it was written
 
-B2's documentation says a hide made in the same second as the file's
+[B2's documentation](https://www.backblaze.com/docs/cloud-storage-call-the-s3-compatible-api)
+says a hide made in the same second as the file's
 upload may not hide it, and a short restic command writes its lock and
 removes it within a second. From the off-box machine, in a repository
 of its own on a bucket you can spare, with a key of the box's
