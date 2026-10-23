@@ -1033,7 +1033,10 @@ func (s *setup) writable(ctx context.Context) error {
 		// storage that took the connection and never answered leaves
 		// nothing, and says nothing of the key.
 		m := resticMessage(filepath.Join(s.dir, "write.err"))
-		if strings.Contains(m, "returned error, retrying after") { // restic's retry line [measured: RC check 6, M1]
+		// restic's retry line for the lock file's write [measured: RC
+		// check 6, M1] — not a read's retry, nor what restic says as the
+		// stop ends it ("signal terminated received, cleaning up", M1).
+		if strings.Contains(m, "Save(<lock/") && strings.Contains(m, "returned error, retrying after") {
 			return fmt.Errorf("this key read the repository, and restic was still retrying a lock file's write to it at %s%s%s", setupClock, cannot, said(m))
 		}
 		return fmt.Errorf("this key read the repository, and the storage had not answered a lock file's write to it at %s: whether this key can write to it is not known%s", setupClock, said(m))
