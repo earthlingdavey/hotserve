@@ -167,7 +167,7 @@ at once, and at the clock:
 ```
 checking that this key can write to it (up to 2m0s)
 still waiting for s3:http://…/box1 (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it)
-hotserve-backup: this key read the repository, and restic had not completed a lock file's write to it within 2m0s: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: Save(<lock/…>) returned error, retrying after …: client.PutObject: 500 Internal Server Error …)
+hotserve-backup: this key read the repository, and restic had not completed a lock file's write to it within 2m0s: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: Save(<lock/…>) returned error, retrying after …: …)
 ```
 
 each exit 1, with nothing of setup's written: `status` after either is
