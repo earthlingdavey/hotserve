@@ -151,7 +151,7 @@ refuses writes, both:
 
 ```
 checking that this key can write to it (up to 2m0s)
-hotserve-backup: this key read the repository, and restic could not write a lock file to it (exit 1): a key that may only read, or a storage that refuses writes, cannot back up (restic said: Save(<lock/9b04fe1141>) failed: client.PutObject: Access Denied. unable to create lock in backend: client.PutObject: Access Denied.)
+hotserve-backup: this key read the repository, and restic could not write a lock file to it (exit 1): a key that may only read, or a storage that refuses writes, cannot back up; run setup again with a key that may write (restic said: Save(<lock/9b04fe1141>) failed: client.PutObject: Access Denied. unable to create lock in backend: client.PutObject: Access Denied.)
 ```
 
 after 2 s, and after 122 s:
@@ -159,7 +159,7 @@ after 2 s, and after 122 s:
 ```
 checking that this key can write to it (up to 2m0s)
 still waiting for s3:http://…/box1 (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was stopped before removing stays, and holds off a prune, or a check from elsewhere, until restic unlock removes it)
-hotserve-backup: this key read the repository, and restic was still retrying a lock file's write to it at 2m0s: a key that may only read, or a storage that refuses writes, cannot back up (restic said: Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: client.PutObject: 500 Internal Server Error …)
+hotserve-backup: this key read the repository, and restic was still retrying a lock file's write to it at 2m0s: a key that may only read, or a storage that refuses writes, cannot back up; run setup again with a key that may write (restic said: Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: client.PutObject: 500 Internal Server Error …)
 ```
 
 each exit 1, with nothing of setup's written: `status` after either is
