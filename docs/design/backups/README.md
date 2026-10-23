@@ -13,6 +13,11 @@ operator guide is [docs/backups.md](../../backups.md) and the reference is
   egress figure were not done.
 - The run found a hang that stops backups: a run's upload sat for 27 hours
   on B2 with no output — **#177**, with the evidence and the options.
+- Every RC check on B2 ran through restic's own `b2:` backend. Since
+  D13 (2026-10-23, #354) B2 is reached through restic's S3 backend at
+  B2's S3-compatible endpoint and `b2:` is refused, so the checks that
+  rest on the backend (1, 3, 4, 6) are run again there; their native
+  results stay in `rc-runs/` as the record they are.
 - Open work is labelled [`backup`](https://github.com/smallhoursorg/hotserve/issues?q=is%3Aopen+label%3Abackup).
   #172 (the threat model's Backups section) is the gate before `backup`
   merges into `main`.
@@ -24,7 +29,7 @@ operator guide is [docs/backups.md](../../backups.md) and the reference is
 | [handover.md](handover.md) | The briefing the work started from: facts, the owner's decisions, pitfalls. Was `HANDOVER-backups.md`. |
 | [plan.md](plan.md) | The running plan and log: decisions (D…), measurements (M…), each PR's brief and outcome, the RC run check by check. Was `PLAN-backups.md`. |
 | [pr-plans/](pr-plans/) | One plan per PR: procedures, claims traced to code, measurements, review rankings. |
-| [rc-runs/](rc-runs/) | Raw outputs of the RC checks run against real B2, and the scripts that made them; `RC-stuck-upload.md` is #177's evidence; `rc-results/` is the RC-results PR's own. |
+| [rc-runs/](rc-runs/) | Raw outputs of the RC checks run against real B2 through restic's own `b2:` backend, and the scripts that made them; `RC-stuck-upload.md` is #177's evidence; `rc-results/` is the RC-results PR's own. |
 | [tools/lanes.sh](tools/lanes.sh) | Runs every lane (`make test` … `make e2e`) in turn, a log and a summary line each. |
 
 Paths inside the notes that pointed at `.claude/plans/` and
