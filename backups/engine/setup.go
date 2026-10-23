@@ -1076,16 +1076,18 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 // setup goes on.
 func (s *setup) writable(ctx context.Context) error {
 	s.term.Say(fmt.Sprintf("checking that this key can write to it (up to %s)", setupClock))
-	// What is said is what happened — exit 1, or the clock — with the
-	// two causes that look alike from the box named, and the last line
-	// restic said appended, which tells them apart (a 403 or 401 names
-	// the key, a 500 or 503 the storage, a Load line a read that never
-	// got to the write). Nothing is inferred from that line, nor of
-	// the lock file's state — a PUT the storage took and never
-	// acknowledged may have landed — which the waiting note and the
-	// interrupt cover: an earlier round inferred, and each inference
-	// had a stderr that fooled it.
-	const cannot = ": a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write"
+	// What is said is what happened — exit 1, or the clock — that the
+	// key's writing is not known either way, the two causes that look
+	// alike from the box, and the last line restic said, which tells
+	// them apart (a 403 or 401 names the key, a 500 or 503 the storage,
+	// a Load line a read that never got to the write). No remedy is
+	// named: a key replaced for a storage that throttled reads is the
+	// wrong one. Nothing is inferred from that line, nor of the lock
+	// file's state — a PUT the storage took and never acknowledged may
+	// have landed — which the waiting note and the interrupt cover: an
+	// earlier round inferred, and each inference had a stderr that
+	// fooled it.
+	const cannot = ": whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here"
 	said := func(m string) string {
 		if t := record.Text(m); t != "" {
 			return " (restic said: " + t + ")"

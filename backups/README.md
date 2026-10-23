@@ -1126,12 +1126,14 @@ What can be known to fail is refused before anything is asked for
    restic retries (B2's 401, which it retried for a quarter of an hour
    [measured, RC check 6]) — a run with such a key fails that long
    after it starts, every hour. What is said is what happened — exit
-   1, or a write not completed within the clock — with both causes that look
-   alike from the box named, a key that may only read and a storage
-   that refuses or does not answer writes, and the last line restic
-   said appended, which tells them apart (a 403 or 401 the key, a 500
-   or 503 the storage, a `Load` line a read that never reached the
-   write); nothing is inferred from that line. A stop or Ctrl-C
+   1, or a write not completed within the clock — that the key's
+   writing is not known either way, both causes that look alike from
+   the box, a key that may only read and a storage that refuses or
+   does not answer writes, and the last line restic said, which tells
+   them apart (a 403 or 401 the key, a 500 or 503 the storage, a
+   `Load` line a read that never reached the write); nothing is
+   inferred from that line, and no remedy named, since a key replaced
+   for a storage that throttled reads is the wrong one. A stop or Ctrl-C
    between the lock file's writing and its removal leaves it, which
    restic never passes by itself [M75] and `restic unlock` removes;
    the waiting note and the interrupt say so. A key
