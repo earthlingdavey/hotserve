@@ -102,6 +102,12 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		{"the storage took the write and never answered (restic's words as the stop ends it)", func(b *box) {
 			b.hang, b.writeErr = "write", "signal terminated received, cleaning up\n"
 		}, "this key read the repository, and the storage had not answered a lock file's write to it at 200ms: whether this key can write to it is not known (restic said: signal terminated received, cleaning up)", ""},
+		{"the write refused (exit 1) after reads that were retried: the Save line is the one appended", func(b *box) {
+			b.outcome["write"], b.writeErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, strings.Repeat("Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down\n", 3)+denied+"\n"
+		}, "this key read the repository, and restic could not write a lock file to it (exit 1): a key that may only read, or a storage that refuses writes, cannot back up; run setup again with a key that may write (restic said: " + denied + ")", ""},
+		{"the storage took the write and never answered (a blank last line is nothing said)", func(b *box) {
+			b.hang, b.writeErr = "write", " \n"
+		}, "this key read the repository, and the storage had not answered a lock file's write to it at 200ms: whether this key can write to it is not known", ""},
 		{"a read retried for most of the clock, then the write refused once as it landed: not a retried write", func(b *box) {
 			b.hang, b.writeErr = "write", "Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down\nSave(<lock/9b04fe1141>) failed: client.PutObject: Access Denied.\n"
 		}, "this key read the repository, and the storage had not answered a lock file's write to it at 200ms: whether this key can write to it is not known (restic said: Save(<lock/9b04fe1141>) failed: client.PutObject: Access Denied.)", ""},
@@ -200,7 +206,7 @@ func TestAnInterruptDuringTheWriteCheckNamesTheLockItMayLeave(t *testing.T) {
 	}
 	m.answers = []string{"AKIDX", "the-secret", "its-own-password"}
 	_, err := Setup(ctx, b.cfg, b, SetupOptions{Repository: "s3:http://e2e-s3:9000/box", Terminal: m})
-	if !errors.Is(err, context.Canceled) || err.Error() != "interrupted: nothing of setup's has been written; a lock file restic was stopped before removing stays, and holds off a prune, or a check from elsewhere, until restic unlock removes it" {
+	if !errors.Is(err, context.Canceled) || err.Error() != "interrupted: nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it" {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := os.Lstat(b.cfg.EnvFile); !errors.Is(err, os.ErrNotExist) {

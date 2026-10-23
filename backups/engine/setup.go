@@ -1019,23 +1019,23 @@ func (s *setup) writable(ctx context.Context) error {
 	// key; a 500 or 503 the storage).
 	const cannot = ": a key that may only read, or a storage that refuses writes, cannot back up; run setup again with a key that may write"
 	said := func(m string) string {
-		if m != "" {
-			return " (restic said: " + record.Text(m) + ")"
+		if t := record.Text(m); t != "" {
+			return " (restic said: " + t + ")"
 		}
 		return ""
 	}
 	s.writing = true
 	o, message, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
+	// One line of restic's is appended, the last that bears on the
+	// lock file: the cleaned message is the whole stderr cut to its
+	// head, where a read's 503 lines would hide the 403 or 401 that
+	// names the key. Read raw: the cleaned message has its lines joined.
+	raw, _ := os.ReadFile(s.errFile("write"))
 	switch {
 	case errors.Is(err, errDidNotAnswer):
 		// A write restic retries leaves its retry lines on stderr; a
 		// storage that took the connection and never answered leaves
-		// nothing, and says nothing of the key. One line is appended,
-		// the last that bears on it: a clock's stderr holds a minute or
-		// more of lines, and the cut to its head would hide the 401
-		// that names the key behind an earlier read's 503.
-		// Read raw: the cleaned message has its lines joined.
-		raw, _ := os.ReadFile(s.errFile("write")) //nolint:gosec // written by the manager into root's own run dir
+		// nothing, and says nothing of the key.
 		if l := lockRetryLine(string(raw)); l != "" {
 			return fmt.Errorf("this key read the repository, and restic was still retrying a lock file's write to it at %s%s%s", setupClock, cannot, said(l))
 		}
@@ -1047,8 +1047,8 @@ func (s *setup) writable(ctx context.Context) error {
 	case o.Result == "exit-code" && o.ExitStatus == 11:
 		s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
 		return nil
-	case o.Result == "exit-code" && o.ExitStatus == 1 && strings.Contains(message, "Save(<lock/"):
-		return errors.New("this key read the repository, and restic could not write a lock file to it (exit 1)" + cannot + said(message))
+	case o.Result == "exit-code" && o.ExitStatus == 1 && lockLine(string(raw)) != "":
+		return errors.New("this key read the repository, and restic could not write a lock file to it (exit 1)" + cannot + said(lockLine(string(raw))))
 	case o.Result == "exit-code" && o.ExitStatus == 1:
 		// Exit 1 is restic's for anything: the check reads the
 		// repository again before it writes, and a read that failed
@@ -1059,7 +1059,8 @@ func (s *setup) writable(ctx context.Context) error {
 	return errors.New("writing to the repository: " + detail)
 }
 
-// errFile is where a unit's stderr goes, by its role: the one spelling.
+// errFile is where a unit's stderr goes, by its role: the one spelling
+// of the .err file, which two readers name.
 func (s *setup) errFile(role string) string { return filepath.Join(s.dir, role+".err") }
 
 // lockRetryLine is the last of restic's retry lines for the lock
@@ -1069,9 +1070,19 @@ func (s *setup) errFile(role string) string { return filepath.Join(s.dir, role+"
 // earlier line that retried, nor what restic says as the stop ends it
 // ("signal terminated received, cleaning up", M1).
 func lockRetryLine(stderr string) string {
+	l := lockLine(stderr)
+	if strings.Contains(l, "returned error, retrying after") {
+		return l
+	}
+	return ""
+}
+
+// lockLine is the last line restic said of the lock file's write
+// ("Save(<lock/…>) …", retried or failed), or "".
+func lockLine(stderr string) string {
 	found := ""
 	for _, l := range strings.Split(stderr, "\n") {
-		if strings.Contains(l, "Save(<lock/") && strings.Contains(l, "returned error, retrying after") {
+		if strings.Contains(l, "Save(<lock/") {
 			found = l
 		}
 	}
@@ -1092,7 +1103,7 @@ func lastLine(stderr string) string {
 const noteWrite = "(Ctrl-C is safe: " + lockLeft + ")"
 
 // lockLeft is the write check's word on what a stop leaves.
-const lockLeft = "nothing of setup's has been written; a lock file restic was stopped before removing stays, and holds off a prune, or a check from elsewhere, until restic unlock removes it"
+const lockLeft = "nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it"
 
 // errDidNotAnswer is a unit given up on at its clock.
 var errDidNotAnswer = errors.New("the repository did not answer")
