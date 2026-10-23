@@ -1178,13 +1178,15 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 // API]. Asked with the opening's own command without --no-lock, which
 // writes a lock file and removes it — 0.7 s where the key may write
 // [measured]. Where it may not, restic exits 1 at once on a storage
-// that says so plainly (a 403) and retries one that does not (a 500)
-// [measured, M1: rclone's S3 server behind a proxy refusing writes],
-// for a quarter of an hour by its own limit, so it has the opening's
-// clock. A storage that refuses or retries writes alone is refused the
-// same way, named as the other cause. Another restic holding the
-// repository exclusively (exit 11, at once [measured]) is no refusal of
-// the key: said, and setup goes on.
+// that says so plainly (a 403 [measured:
+// rc-runs/rc-results/M3-readonly-proxy.out]) and retries one that does
+// not (the Internal Error of `rclone serve s3 --read-only` [measured:
+// rc-runs/rc-results/M1-readonly-storage.out]; a 500, the e2e's second
+// read-only case), for a quarter of an hour by its own limit, so it has
+// the opening's clock. A storage that refuses or retries writes alone
+// is refused the same way, named as the other cause. Another restic
+// holding the repository exclusively (exit 11, at once [measured]) is
+// no refusal of the key: said, and setup goes on.
 func (s *setup) writable(ctx context.Context) error {
 	s.term.Say(fmt.Sprintf("checking that this key can write to it (up to %s)", setupClock))
 	// What is said is what happened — exit 1, or the clock — that the

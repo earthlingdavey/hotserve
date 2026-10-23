@@ -201,8 +201,9 @@ says "Repository password (new)" && fail "a password was made for a repository t
 # A key that may read and not write. The storage through a proxy of the
 # box's own that passes every read and refuses every write: plainly
 # (403), where restic exits 1 at once, and then in a way restic retries
-# (500 [M1]; B2's native API's 401 was retried for a quarter of an hour
-# [RC check 6]),
+# (500; the Internal Error of `rclone serve s3 --read-only` is retried
+# alike [measured: rc-runs/rc-results/M1-readonly-storage.out], and B2's
+# native API's 401 was, for a quarter of an hour [RC check 6]),
 # which the clock ends — 30 s in this box's binary. The opening only
 # reads, so both were taken, and every run after failed.
 readonly_storage() { # <the status a write gets>
