@@ -159,7 +159,7 @@ timings are its own:
 
 ```
 checking that this key can write to it (up to 2m0s)
-hotserve-backup: this key read the repository, and restic exited 1 at a lock file's write to it: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write (restic said: … client.PutObject: Access Denied.)
+hotserve-backup: this key read the repository, and restic exited 1 before its lock file's write completed: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write (restic said: … client.PutObject: Access Denied.)
 ```
 
 at once, and at the clock:
@@ -171,7 +171,9 @@ hotserve-backup: this key read the repository, and restic had not completed a lo
 ```
 
 each exit 1, with nothing of setup's written: `status` after either is
-`backups are not set up`.
+what it was before — `backups are not set up` on a box that was not,
+the earlier setup on one that was (the credential file is left byte
+for byte as it was).
 
 **On B2**, `v0.3.0-rc1`, whose `setup` did not check yet, took a
 console Read Only key (`repository ready … (existing, …)`). The run

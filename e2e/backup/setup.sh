@@ -210,7 +210,7 @@ t0=$(date +%s)
 converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
 rc=$?
 took=$(($(date +%s) - t0))
-[ "$rc" != 0 ] && says "the repository exists; its password is needed" && says "checking that this key can write to it (up to 30s)" && says "this key read the repository, and restic exited 1 at a lock file's write to it: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write (restic said: .*Access Denied" && [ "$took" -lt 20 ] && pass "a key the storage refuses every write, plainly, is refused at once (${took}s), in restic's words" || fail "a read-only key, refused plainly: exit $rc after ${took}s: $(cat "$OUT")"
+[ "$rc" != 0 ] && says "the repository exists; its password is needed" && says "checking that this key can write to it (up to 30s)" && says "this key read the repository, and restic exited 1 before its lock file's write completed: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write (restic said: .*Access Denied" && [ "$took" -lt 20 ] && pass "a key the storage refuses every write, plainly, is refused at once (${took}s), in restic's words" || fail "a read-only key, refused plainly: exit $rc after ${took}s: $(cat "$OUT")"
 says "repository ready" && fail "setup said the repository was ready" || pass "and not called ready"
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "the working file is byte-identical, no copy of a credential is left, no unit is running" || fail "after a read-only key: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
 fi

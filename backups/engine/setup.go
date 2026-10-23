@@ -1105,7 +1105,7 @@ func (s *setup) writable(ctx context.Context) error {
 		s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
 		return nil
 	case o.Result == "exit-code" && o.ExitStatus == 1:
-		return errors.New("this key read the repository, and restic exited 1 at a lock file's write to it" + cannot + said(s.lastSaid("write", false)))
+		return errors.New("this key read the repository, and restic exited 1 before its lock file's write completed" + cannot + said(s.lastSaid("write", false)))
 	}
 	detail, _ := resticFailure(o)
 	return errors.New("writing to the repository: " + detail)
@@ -1131,7 +1131,7 @@ func (s *setup) lastSaid(role string, stopped bool) string {
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := lines[i]
-		if stopped && (strings.Contains(l, "context canceled") || strings.Contains(l, "signal terminated received")) {
+		if record.Text(l) == "" || stopped && (strings.Contains(l, "context canceled") || strings.Contains(l, "signal terminated received")) {
 			continue
 		}
 		return l
@@ -1198,9 +1198,10 @@ func (s *setup) repository(ctx context.Context, role string, within time.Duratio
 	spec.StderrFile = errFile
 	if role != "init" {
 		o, err := s.startWithin(ctx, within, spec)
-		// With the clock's error too: the unit has been stopped, and
-		// what restic said to then is the caller's to read.
-		return o, resticMessage(errFile), err
+		if err != nil {
+			return o, "", err
+		}
+		return o, resticMessage(errFile), nil
 	}
 	// Init: recorded for the next lock holder to wait for, not to stop
 	// (the record goes once it was seen to end), and run on a context
