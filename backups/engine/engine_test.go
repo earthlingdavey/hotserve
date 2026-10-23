@@ -1304,3 +1304,49 @@ func TestAnAppThatFailedLastRunGoesLast(t *testing.T) {
 		t.Fatalf("the second run, with aaa still failing: blog %v, zzz %v, aaa %v", st.Apps["blog"].Class, st.Apps["zzz"].Class, st.Apps["aaa"].Class)
 	}
 }
+
+// A run reads the repository the credential file names as the manager
+// will give it to every unit — the last assignment, quotes, escapes and
+// whitespace as systemd takes them, a comment as none — and refuses a
+// b2: one before any unit, recorded; anything the units would not be
+// given as b2: runs.
+func TestARunReadsTheRepositoryAsTheUnitsAreGivenIt(t *testing.T) {
+	const s3 = "RESTIC_REPOSITORY=s3:http://e2e-s3:9000/box\n"
+	for _, tc := range []struct {
+		name, file string
+		refused    bool
+	}{
+		{"plain", "RESTIC_REPOSITORY=b2:hs-backups:dev\n", true},
+		{"double quotes", "RESTIC_REPOSITORY=\"b2:hs-backups:dev\"\n", true},
+		{"single quotes", "RESTIC_REPOSITORY='b2:hs-backups:dev'\n", true},
+		{"whitespace the manager trims", "  RESTIC_REPOSITORY =  b2:hs-backups:dev  \n", true},
+		{"an escaped colon", "RESTIC_REPOSITORY=b2\\:hs-backups:dev\n", true},
+		{"a line joined by a backslash", "RESTIC_REPOSITORY=b2\\\n:hs-backups:dev\n", true},
+		{"b2: last of two", s3 + "RESTIC_REPOSITORY=b2:hs-backups:dev\n", true},
+		{"b2: first of two: the last wins", "RESTIC_REPOSITORY=b2:hs-backups:dev\n" + s3, false},
+		{"b2: in a # comment", "#RESTIC_REPOSITORY=b2:hs-backups:dev\n" + s3, false},
+		{"b2: in a ; comment", ";RESTIC_REPOSITORY=b2:hs-backups:dev\n" + s3, false},
+		{"b2: in another key", "RESTIC_REPOSITORY_OLD=b2:hs-backups:dev\n" + s3, false},
+		{"b2: inside the value", "RESTIC_REPOSITORY=s3:http://e2e-s3:9000/b2:x\n", false},
+		{"no repository", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newBox(t)
+			must(t, os.WriteFile(b.cfg.EnvFile, []byte(tc.file+"RESTIC_PASSWORD=the-secret\n"), 0o600))
+			st, err := Run(context.Background(), b.cfg, b)
+			refused := err != nil && strings.HasPrefix(err.Error(), "the repository is b2:, which is not supported: ")
+			if refused != tc.refused {
+				t.Fatalf("refused %v, want %v: %v", refused, tc.refused, err)
+			}
+			if !tc.refused {
+				if err != nil || b.roles() == "" {
+					t.Fatalf("the run: %v; units %q", err, b.roles())
+				}
+				return
+			}
+			if b.roles() != "" || st == nil || !strings.HasPrefix(st.Error, "the repository is b2:") {
+				t.Fatalf("units %q; record %+v", b.roles(), st)
+			}
+		})
+	}
+}

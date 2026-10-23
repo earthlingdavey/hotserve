@@ -413,7 +413,8 @@ func TestIntegrationALockHeldForTheWholeRetryIsExit11(t *testing.T) {
 // the key may read and not write refuses it — where --no-lock, the
 // opening's, reads on. Refused plainly, restic 0.18 exits 1 at once and
 // names the lock; a refusal it retries is the check's clock's to end
-// [measured on B2: a quarter of an hour]. As the backup account's
+// [measured: a quarter of an hour on B2's native API (RC check 6); a
+// 500 over S3, retried to the clock (M1)]. As the backup account's
 // stand-in, over a repository it may read and not write.
 func TestIntegrationResticCatConfigWritesALockFileUnlessNoLock(t *testing.T) {
 	const restic = "/usr/bin/restic"
