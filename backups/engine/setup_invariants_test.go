@@ -99,9 +99,12 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		{"the storage took the write and never answered (a blank last line is nothing said)", func(b *box) {
 			b.hang, b.writeErr = "write", " \n"
 		}, "this key read the repository, and no lock file was written to it within 200ms: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write", ""},
-		{"restic's words as the stop ends it are the last line", func(b *box) {
+		{"restic's words as the stop ends it are its last, and not the storage's: nothing before them, nothing appended", func(b *box) {
 			b.hang, b.writeErr = "write", "signal terminated received, cleaning up\n"
-		}, "this key read the repository, and no lock file was written to it within 200ms: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write (restic said: signal terminated received, cleaning up)", ""},
+		}, "this key read the repository, and no lock file was written to it within 200ms: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write", ""},
+		{"the stop's own exit_error line last, the retry line before it appended (the e2e's clock case)", func(b *box) {
+			b.hang, b.writeErr = "write", "Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: b2_get_upload_url: 401: \nsignal terminated received, cleaning up\n{\"message_type\":\"exit_error\",\"code\":1,\"message\":\"unable to create lock in backend: context canceled\"}\n"
+		}, "this key read the repository, and no lock file was written to it within 200ms: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write (restic said: Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: b2_get_upload_url: 401:)", ""},
 		{"a read retried to the clock, never reaching the write: the Load line is appended, and judged by nobody here", func(b *box) {
 			b.hang, b.writeErr = "write", "Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down\n"
 		}, "this key read the repository, and no lock file was written to it within 200ms: a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write (restic said: Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down)", ""},

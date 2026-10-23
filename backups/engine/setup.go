@@ -1030,7 +1030,7 @@ func (s *setup) writable(ctx context.Context) error {
 	o, _, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
 	switch {
 	case errors.Is(err, errDidNotAnswer):
-		return fmt.Errorf("this key read the repository, and no lock file was written to it within %s%s%s", setupClock, cannot, said(s.lastSaid("write")))
+		return fmt.Errorf("this key read the repository, and no lock file was written to it within %s%s%s", setupClock, cannot, said(s.lastSaid("write", true)))
 	case err != nil:
 		return err
 	case o.OK():
@@ -1039,7 +1039,7 @@ func (s *setup) writable(ctx context.Context) error {
 		s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
 		return nil
 	case o.Result == "exit-code" && o.ExitStatus == 1:
-		return errors.New("this key read the repository, and restic exited 1 before a lock file was written to it" + cannot + said(s.lastSaid("write")))
+		return errors.New("this key read the repository, and restic exited 1 before a lock file was written to it" + cannot + said(s.lastSaid("write", false)))
 	}
 	detail, _ := resticFailure(o)
 	return errors.New("writing to the repository: " + detail)
@@ -1050,22 +1050,32 @@ func (s *setup) writable(ctx context.Context) error {
 func (s *setup) errFile(role string) string { return filepath.Join(s.dir, role+".err") }
 
 // lastSaid is the last line a unit's restic wrote to stderr, by role
-// — the message of its exit_error line where that is the last, since
-// restic ends on one — or "" where it wrote nothing. The cleaned
-// message (resticMessage) is the whole of stderr joined and cut to its
-// head, where a minute of a read's retries would hide the one line
-// that names the key.
-func (s *setup) lastSaid(role string) string {
+// — the message of an exit_error line, since restic ends on one — or
+// "" where it wrote nothing. Where setup stopped the unit, restic's
+// last words are the stop's own — "unable to create lock in backend:
+// context canceled", "signal terminated received, cleaning up"
+// [measured: the e2e's clock case; M1] — and say nothing of the
+// storage: the line before them is the one. The cleaned message
+// (resticMessage) is the whole of stderr joined and cut to its head,
+// where a minute of a read's retries would hide the one line that
+// names the key.
+func (s *setup) lastSaid(role string, stopped bool) string {
 	raw, _ := os.ReadFile(s.errFile(role))
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	last := lines[len(lines)-1]
-	var m struct {
-		Message string `json:"message"`
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := lines[i]
+		var m struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(l), &m) == nil && m.Message != "" {
+			l = m.Message
+		}
+		if stopped && (strings.Contains(l, "context canceled") || strings.Contains(l, "signal terminated received")) {
+			continue
+		}
+		return l
 	}
-	if json.Unmarshal([]byte(last), &m) == nil && m.Message != "" {
-		return m.Message
-	}
-	return last
+	return ""
 }
 
 // noteWrite is what a person waiting on the write check is told: the
