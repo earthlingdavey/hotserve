@@ -1080,8 +1080,11 @@ func (s *setup) writable(ctx context.Context) error {
 	// two causes that look alike from the box named, and the last line
 	// restic said appended, which tells them apart (a 403 or 401 names
 	// the key, a 500 or 503 the storage, a Load line a read that never
-	// got to the write). Nothing is inferred from that line: an earlier
-	// round did, and each inference had a stderr that fooled it.
+	// got to the write). Nothing is inferred from that line, nor of
+	// the lock file's state — a PUT the storage took and never
+	// acknowledged may have landed — which the waiting note and the
+	// interrupt cover: an earlier round inferred, and each inference
+	// had a stderr that fooled it.
 	const cannot = ": a key that may only read, or a storage that refuses or does not answer writes, cannot back up; run setup again with a key that may write"
 	said := func(m string) string {
 		if t := record.Text(m); t != "" {
@@ -1093,7 +1096,7 @@ func (s *setup) writable(ctx context.Context) error {
 	o, _, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
 	switch {
 	case errors.Is(err, errDidNotAnswer):
-		return fmt.Errorf("this key read the repository, and no lock file was written to it within %s%s%s", setupClock, cannot, said(s.lastSaid("write", true)))
+		return fmt.Errorf("this key read the repository, and restic had not completed a lock file's write to it within %s%s%s", setupClock, cannot, said(s.lastSaid("write", true)))
 	case err != nil:
 		return err
 	case o.OK():
@@ -1102,7 +1105,7 @@ func (s *setup) writable(ctx context.Context) error {
 		s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
 		return nil
 	case o.Result == "exit-code" && o.ExitStatus == 1:
-		return errors.New("this key read the repository, and restic exited 1 before a lock file was written to it" + cannot + said(s.lastSaid("write", false)))
+		return errors.New("this key read the repository, and restic exited 1 at a lock file's write to it" + cannot + said(s.lastSaid("write", false)))
 	}
 	detail, _ := resticFailure(o)
 	return errors.New("writing to the repository: " + detail)
@@ -1112,27 +1115,22 @@ func (s *setup) writable(ctx context.Context) error {
 // of the .err file.
 func (s *setup) errFile(role string) string { return filepath.Join(s.dir, role+".err") }
 
-// lastSaid is the last line a unit's restic wrote to stderr, by role
-// — the message of an exit_error line, since restic ends on one — or
-// "" where it wrote nothing. Where setup stopped the unit, restic's
-// last words are the stop's own — "unable to create lock in backend:
-// context canceled", "signal terminated received, cleaning up"
-// [measured: the e2e's clock case; M1] — and say nothing of the
-// storage: the line before them is the one. The cleaned message
-// (resticMessage) is the whole of stderr joined and cut to its head,
-// where a minute of a read's retries would hide the one line that
-// names the key.
+// lastSaid is the last line a unit's restic wrote to stderr, by role,
+// or "" where it wrote nothing; the unit runs without --json, so the
+// lines are plain. Where setup stopped the unit, restic's last words
+// are the stop's own — "unable to create lock in backend: context
+// canceled", "signal terminated received, cleaning up" [measured on
+// restic 0.18.0: the e2e's clock case; M1] — and say nothing of the
+// storage: the line before them is the one. That is read from the
+// words, and a restic that rewords its stop would be quoted again;
+// the e2e's clock case pins it. The cleaned message (resticMessage)
+// is the whole of stderr joined and cut to its head, where a minute of
+// a read's retries would hide the one line that names the key.
 func (s *setup) lastSaid(role string, stopped bool) string {
 	raw, _ := os.ReadFile(s.errFile(role))
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := lines[i]
-		var m struct {
-			Message string `json:"message"`
-		}
-		if json.Unmarshal([]byte(l), &m) == nil && m.Message != "" {
-			l = m.Message
-		}
 		if stopped && (strings.Contains(l, "context canceled") || strings.Contains(l, "signal terminated received")) {
 			continue
 		}
