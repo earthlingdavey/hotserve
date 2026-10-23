@@ -654,7 +654,9 @@ author's beliefs about systemd, and only the real thing corrects them.
    and never matches a sibling; anything invalid is refused),
    env_file keys (every key handed to a unit is one systemd accepts),
    and the D-Bus value parsers (no overflowed budgets, no "infinity"
-   sentinel, no panics).
+   sentinel from the parsers that feed a budget or a limit —
+   `parseManagerLimit` alone keeps it, by design, as the lift target
+   for a manager whose `DefaultTasksMax=` is infinity — no panics).
 3. Integration (`make test-integration`, caddytest under a real user
    manager): webhook deploy v1 → proxied body; v2 cutover; broken v3 →
    500 and v2 still serving; reload keeps the app PID; keep-N; OIDC,
@@ -795,6 +797,11 @@ severity × occurrence × detection, then the fix's size and risk.
 | A reload whose discovery names a moved jwks_uri while a token-begun key fetch on the old set is in flight leaves that fetch's answer in the old set, which nothing reads; a reload while such a fetch is in flight on the same set forces nothing and takes that fetch's answer. A new kid verifies once the new set's own fetch succeeds; if that fails, the token is refused with the fetch's error, named (the row on failed fetches above). | `issuerState.discover`, deploytrust | 2 | 2 | 1 | 4 | size 2, risk 2 (carry the in-flight fetch over, or force a second) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#337, 2026-10-20): two faults — an issuer moving its jwks_uri, and a fetch in flight at that reload — and it ends red and named. |
 | A key rotation within a minute of the issuer's last key fetch (a reload, a deploy under another new kid, a token from another issuer — the signature is checked first — or a forged token naming a new kid, began it) is refused for every token until a minute after that fetch, the templates' 3s retry included: that run goes red, and a re-run from then goes through. A forged token once a minute can make a rotation refused for up to a minute after the issuer publishes its key (each such fetch picks up what the issuer then publishes). | `keySet.refresh`, deploytrust | 2 | 5 | 1 | 10 | size 2, risk 2 (let a retry skip the interval) | Rule 2 holds: red and named, the refusal saying the keys were fetched under a minute ago, from when a token fetches them again, and that `systemctl reload hotserve` fetches them now (#306, 2026-10-20). Under rule 3 the product is under 20 and the fix is not size 1, risk 1. Skipping the interval for any token would hand the fetch rate to whoever sends tokens. |
 | On a box without docs/hardening.md step 5, an app unit's `socket()` under `AF_INET`/`AF_INET6` with protocol 132, 115 or 256 loads `sctp`, `l2tp_ip`/`l2tp_ip6` or `smc` (Debian 13's `modules.alias` carries exactly those; none gates creation on a capability) and gets a live socket into kernel code the sandbox meant to keep out. On every box, a `socket(AF_NETLINK, SOCK_RAW, n)` loads the kernel module for netlink protocol `n` (`nfnetlink`, `xfrm_user`, `crypto_user`, `ib_core`, `scsi_transport_iscsi`), a generic-netlink `GETFAMILY` by name loads any module with a family alias, and a `socketpair()` loads any aliased family's module and runs its create path before the call fails: a compromised app reaches those modules' init and request parsers, and the few requests they answer unprivileged (`crypto_user`'s `GETALG` report, `sock_diag`'s socket dumps): a live netlink socket from the first two routes, nothing from the `socketpair()`. | `sandboxProperties` (`RestrictAddressFamilies=`); the kernel's `inet_create`, `__sock_create`, `netlink_create`, `genl_rcv_msg` | 3 | 3 | 5 | 45 | the seven `install <module> /bin/false` lines of docs/hardening.md step 5, the operator's (size 1 as text; the same file shipped by the `.deb` was built, reviewed and declined 2026-10-22: a modprobe.d file is the whole box's policy, as the `libatomic1` Recommends was in #279); none in systemd for the no-socket loads; blocking `nfnetlink` breaks nftables; dropping `AF_NETLINK` breaks `getifaddrs()` in Node and Go | Scores to fix (rule 2); accepted by the owner's decision (#315, 2026-10-22) as the operator's step, open by default. `TestHardeningStepBlocksTheModuleBackedProtocols` holds the page's one line to the test's own list, the one copy of the seven outside DESIGN-sandbox.md's prose ("Module-backed protocols"). |
+| A handle whose caps were marked unknown (a `SetCaps` that failed with the unit unreadable after it) stays unknown through a later `SetCaps` that succeeds but writes no `TasksMax=` — the manager's `DefaultTasksMax` unreadable since the dial, and a tasks cap of the unit's to lift. Status then shows no `caps` though the memory and CPU caps written are in force, and every sync re-sends them, until a relaunch or a restart of hotserve reads the unit afresh. | `SetCaps`, `capsUnknown` | 3 | 2 | 3 | 18 | size 3 (an uncertainty per cap, or a read of the unit after every write) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#345, 2026-10-23): two faults — a dial whose `DefaultTasksMax` read failed, then a transport failure across the write and its read-back — and the next deploy or restart settles it. |
+| A `SetCaps` whose write the manager applied before the transport failed is logged by `syncCaps` as not applied ("they apply at its next launch"), while the read-back that followed found the caps applied and status shows them in effect. | `syncCaps`, `SetCaps` | 2 | 3 | 1 | 6 | size 2, risk 1 (`SetCaps` returns no error when the read-back holds what it sent) | Rule 2 holds: it ends correct, the caps in force and status saying so; under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#345, 2026-10-23). |
+| `configure` runs `syncCaps` on the reload's own path, so a reload while the user manager has stopped answering waits on each capped app's write and read-back (two `pollTimeout`s, 20 s) before Caddy moves to the next app; the caps apply at the next launch regardless, and the journal names the wait per app. | `configure`, `syncCaps` | 2 | 3 | 1 | 6 | size 2, risk 2 (run the sync from the watchdog's goroutine, which `configure` already wakes) | Rule 2 holds: red and named, and the reload ends correct. Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#345, 2026-10-23). A manager that has stopped answering is the incident already: deploys and the watchdog wait on it the same way. |
+| A unit whose `cgroup.controllers` hotserve can never read (its cgroup path absent from hotserve's view of the tree: a cgroup namespace between the two, or a path the manager reports that does not exist) on a host whose user manager does not delegate a controller reports its caps under `caps`, as the manager holds them, with no `caps_unenforced` and no journal line; the watcher re-reads at each poll and never succeeds. | `setCapsState`, `readControllers` | 3 | 1 | 5 | 15 | size 3 (a third state in status, "enforcement unknown", on the wire) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#345, 2026-10-23). Two host conditions outside the support matrix at once; on Debian 13 the path is readable and every controller is delegated (measured). |
+| The manager's `DefaultTasksMax` is read once, with the dial. A read that fails while the connection stays up leaves it unreadable for the connection's life: every reattach and read-back then takes the manager's resolved default for an operator's cap (`unitCaps`), status shows `tasks_max` at that number for an app with none configured, and each sync re-sends the other caps with the "could not be read" Warn, until a redial. | `get`, `DefaultTasksMax`, `unitCaps` | 2 | 3 | 3 | 18 | size 2, risk 2 (a bounded re-read of the property when the cached value is 0; go-systemd's property get takes no context, so the bound is the dial's) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#345, 2026-10-23). The number shown is the unit's real bound; the kernel is unaffected; a restart of hotserve or a dropped connection reads it again. |
 
 **Owed** (over the bar, not yet fixed):
 
@@ -802,15 +809,157 @@ severity × occurrence × detection, then the fix's size and risk.
 |---|---|---|---|---|
 | A bind mount can give two apps one directory, or put one app's data inside another's: an fstab source another app also uses, or a whole app dir mounted at another's. A mount resolves to itself, so the launch check (`resolveBindSources`) passes it: blog launches on shop's data, writable, and nothing says so. | 5 | 5 | 5 | #308, to design: equal `(st_dev, st_ino)` alone misses a source nested in another's; when to check, what to refuse and what to say are open there. Until then, the README's bind-mount advice says the source must be the app's own |
 
+## Resource caps
+
+Per app, `memory_max`, `tasks_max` and `cpu_quota` (liveswap.go
+`AppConfig`) become the unit's `MemoryMax=` (with `MemorySwapMax=0`),
+`TasksMax=` and `CPUQuotaPerSecUSec=` on every unit of the app — the
+instance and the pre_start — rendered by `capProperties`
+(systemd_dbus.go) beside the sandbox set. A unit with none set gets
+none of the properties, so the manager's defaults stand unchanged. A
+running instance gets a reload's values through `SetUnitProperties`
+(runtime) rather than at its next launch: `syncCaps` (app.go) runs
+with every install of a spec (`configure`, `rollbackConfig`), after a
+reattach (ensureRunning) and at every publication of an instance
+(`publishInstance`: a deploy launches from the spec it snapshotted,
+and a reload during its fetch or soak would otherwise reach only the
+instance being replaced), compares the spec's caps
+with the handle's — what the manager last applied, or read back at
+reattach (`propCaps`) — and sends every cap when they differ: an
+unset memory or CPU cap as infinity, their default, and an unset
+tasks cap as the manager's `DefaultTasksMax` (read once per
+connection), because an unset `TasksMax=` means that default, not
+infinity — infinity would lift the manager's own 15% bound from the
+unit, unless infinity is what the manager was configured with, in
+which case it is the default and the lift goes there. A unit the
+handle knows carries no tasks cap gets no `TasksMax=` written at all:
+there is nothing to lift. A lift writes the default's number into the
+unit, and on 257 that leaves a de-capped unit where an untouched one
+already is (measured below: a change of `DefaultTasksMax=` followed
+by `daemon-reload` or `daemon-reexec` moves the manager's report of
+an untouched unit's `TasksMax` and not its `pids.max`), until its next
+launch. With the handle's caps unknown the lift is written whatever
+the unit may carry. The same number is the reason a reattach cannot take the
+manager's word for a tasks cap as it stands: the manager reports an
+unset `TasksMax=` resolved to its default (a number, never
+"infinity"), so a reattach reads a `TasksMax` equal to
+`DefaultTasksMax` as unset (`unitCaps`). With the default unreadable
+a lift leaves the unit's tasks cap alone and the handle keeps
+reporting it. Status reports the handle's (`caps`). `memory_max` has
+a floor of 1 MB and `cpu_quota` a ceiling of 100000% (`minMemoryMax`,
+`maxCPUQuota`, caddyfile.go): below the one the unit cannot exec,
+above the other is no box, so the line is a mistyped one, refused by
+name rather than accepted as no cap at all.
+
+Measured 2026-10-22 on multipass VMs (2 vCPU, 2 GB, no swap): Debian
+13 (systemd 257), Ubuntu 24.04 (255), Ubuntu 26.04 (259), with the
+caps set on a sandboxed transient unit of a lingering user's manager.
+What the design rests on:
+
+- `user@.service` delegates `cpu memory pids` on all three, and on
+  Fedora 43 (258): the three caps are the whole set a user manager
+  can hold; the kernel reads back each value given, and a write from
+  inside the unit is EROFS (`ProtectControlGroups=`).
+- `set-property --runtime` on the running unit changed `memory.max`,
+  `pids.max` and `cpu.max` with the same pid, and cleared them to
+  `max` again — the live path.
+- A `MemoryMax=` hit ends as `Result=oom-kill`, `ActiveState=failed`
+  (`OOMPolicy=stop` is the default on all three), which the runner
+  already reads as a crash; `memory.oom.group` is 0, so the kernel
+  kills the one process, and the stop policy takes the unit.
+- `TasksMax=40` against a fork loop: a `sh -c` command died with
+  status 2 at the first refused fork; Python kept running with 39
+  children and 61 refusals. Idle threads: Node 7 (11 under ten file
+  reads), Deno 8.
+- Without caps: a fork bomb is bounded at `DefaultTasksMax=15%` of
+  threads-max (2273 at 2 GB) under a user slice at 33%; at the bound
+  the system manager answered in 0 s, a new user unit started in 0–2 s,
+  `stop` took 2–5 s. A leak was killed by the global OOM killer after
+  35–49 s, the leaker first (`oom_score_adj` 200 against hotserve's 0:
+  systemd's defaults for a user manager's units and a system service,
+  not hotserve's setting),
+  sibling and managers untouched; the box's responsiveness during
+  those seconds was not measured, and a box with swap would thrash
+  longer.
+- The real victim is a sibling: under the bomb a second app's requests
+  hit a 10 s timeout on Debian 13 and Ubuntu 24.04 (1.3 s on 26.04)
+  while a server in `system.slice` kept a 5–9 ms median (the root
+  splits CPU 50/50 between `system.slice` and `user.slice`).
+  `CPUQuota=50%` or `CPUWeight=10` on the offender brought the sibling
+  back under 200 ms.
+- `systemctl set-property user-<uid>.slice …` applies live and persists
+  on all three; a drop-in plus `daemon-reload` does not re-apply on
+  257 (the manager shows the new value, the kernel keeps the old) and
+  does on 255 and 259. Docs say set-property.
+- Ubuntu 24.04 and 26.04 refuse the sandboxed unit outright under their
+  default `apparmor_restrict_unprivileged_userns=1` (exit 218); with
+  it 0 every number above matched Debian.
+- Measured 2026-10-23 on Debian 13 (257): an uncapped unit's cgroup
+  carries the memory and pids controllers and not cpu (CPU accounting
+  on cgroup v2 needs no controller), so a reload that gives a unit its
+  first `cpu_quota` is what makes the manager enable cpu on the unit's
+  path. The runner's own path — `SetUnitProperties`, then a read of
+  the unit's `cgroup.controllers` — found the controller present at the
+  reply in 40 of 40 rounds, and gone again at the reply to the lift:
+  the manager realises the cgroup before it answers, so the enforcement
+  list read right after a write is current, and nothing recomputes it
+  between writes.
+- Measured 2026-10-23 on Debian 13 (257): a change of
+  `DefaultTasksMax=` (user.conf.d, then `daemon-reload` or
+  `daemon-reexec`) reaches no running unit's kernel limit. An untouched
+  unit reports the new `TasksMax=3000` from the manager while its
+  `pids.max` stays 2273; a unit whose `TasksMax=` was set to the old
+  default reports and holds 2273; a capped unit keeps its cap. So a
+  lift to the default's number leaves a de-capped unit where an
+  untouched one already is, until the next launch — and the manager's
+  report of an untouched unit's `TasksMax` is not what the kernel
+  enforces after such a change (the same quirk as the slice drop-in
+  above). Measured on 257 only: on 255 and 259, where a
+  `daemon-reload` does re-apply a slice drop-in, an untouched unit
+  may follow the new default while a lifted one holds its number; both
+  are outside the support matrix and were not measured.
+
+A cap the host cannot enforce is named, not refused: the manager
+accepts `MemoryMax=` on a unit whose cgroup the memory controller does
+not reach (a container's user manager), so at adopt, at reattach and
+after every live write the runner reads the unit's
+`cgroup.controllers` (`readControllers`, `missingCaps`), warns when a
+cap first appears in the list, and status lists those caps as
+`caps_unenforced` rather than under `caps`. A reading that fails
+leaves the last one standing, and the list is recomputed from it for
+the caps as they now are; a handle with no reading yet claims nothing
+either way, and the watcher reads again at each poll until one
+succeeds (on a supported host the first succeeds). Refusing the launch, as the sandbox probe does for its
+namespaces, was considered and not taken: a cap is availability, not
+isolation, the hosts in question are outside the support matrix, and
+a refusal would turn a host change into an outage for every capped
+app. The infinity sentinel (2^64−1) is refused as a `memory_max` at
+validation: the handle would report it as a cap and a reattach as
+none.
+
+Accepted: `memory_max` applies to the pre_start too — a migration
+needing more than the server is raised like any other cap, and the
+deploy's response names the OOM kill. A cap the manager refuses to
+set live (a stale connection) applies at the next launch and the
+journal says so; the next reload, a publication or a reattach tries
+again, nothing in between does. The failure is ambiguous (the manager
+may have applied the properties before the transport failed), so the
+runner reads the unit back and takes the manager's word for the
+handle's caps; with the unit unreadable too the caps are marked
+unknown, which no sync takes as "already applied" and status does not
+report as in effect, until a SetCaps succeeds.
+
 ## Non-goals
 
 - Post-promote *auto*-revert. Rollback is an explicit operation —
   `POST /<app>?rollback=<version>` relaunches an on-disk release. The
   watchdog restarts the same version; it never auto-reverts.
 - Multi-node or any cluster awareness.
-- Resource limits — one unit property away (`MemoryMax=`, `TasksMax=`,
-  `CPUQuota=`; the sandbox makes cgroupfs read-only so they hold);
-  unset by design until an app needs them (#71).
+- Resource limits beyond the three a user manager can set (`memory_max`,
+  `tasks_max`, `cpu_quota` — see "Resource caps"): IO and cpuset caps
+  need controllers `user@.service` does not delegate (measured on
+  systemd 255, 257, 259); a CPU *weight* directive is one property
+  away and waits for a case.
 - Prometheus metrics (deploys_total, duration).
 - Deploy queueing; 409 + CI retry is the queue.
 - Windows.

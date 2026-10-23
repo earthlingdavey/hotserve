@@ -48,6 +48,7 @@ type appSpec struct {
 	maxArtifactSize    int64
 	maxArtifactEntries int
 	deployLogLines     int // lines of the app's journal in a failed deploy's response; 0 = none
+	caps               resourceCaps
 	allowInsecure      bool
 	allowlist          []artifactAllowEntry
 	dirs               appDirs
@@ -336,6 +337,12 @@ type managedApp struct {
 	// secretsLoaded set means the spec has no env_file.
 	secretsFrom   string
 	secretsLoaded bool
+
+	// capsMu serializes syncCaps: its snapshot, compare and apply are
+	// one step, so a publication's sync and a reload's cannot
+	// interleave and leave the older spec's caps applied last. Taken
+	// before specMu and mu, never while either is held.
+	capsMu sync.Mutex
 }
 
 func newManagedApp(name string) *managedApp {
@@ -455,6 +462,19 @@ type appConfigState struct {
 // pooled app keeps the runner — and so the connection — it was first
 // started with across every later reload.
 func (ma *managedApp) configure(owner any, spec *appSpec, verifiers []deploytrust.Verifier, logger *zap.Logger, clients *fetchClients, manager systemdConn) {
+	ma.installSpec(owner, spec, verifiers, logger, clients, manager)
+	// The caps are the one part of a definition that reaches the
+	// instance already running, so they go with the install, after the
+	// lock: a reload's changed caps apply now rather than at the next
+	// launch. The first start has no instance yet; recovery syncs the
+	// one it reattaches (ensureRunning).
+	ma.syncCaps()
+}
+
+// installSpec is configure's locked half: the spec and its
+// collaborators are swapped under specMu, and nothing that reads them
+// back (syncCaps takes a snapshot) runs inside it.
+func (ma *managedApp) installSpec(owner any, spec *appSpec, verifiers []deploytrust.Verifier, logger *zap.Logger, clients *fetchClients, manager systemdConn) {
 	ma.specMu.Lock()
 	defer ma.specMu.Unlock()
 	changed := ma.spec != nil && !specEqual(ma.spec, spec)
@@ -478,7 +498,7 @@ func (ma *managedApp) configure(owner any, spec *appSpec, verifiers []deploytrus
 	}
 	ma.store = &fileStateStore{path: spec.dirs.state}
 	if changed {
-		logger.Info("app definition changed; it applies at the app's next launch (deploy, rollback, or relaunch after a crash, health failure or reboot)")
+		logger.Info("app definition changed; it applies at the app's next launch (deploy, rollback, or relaunch after a crash, health failure or reboot), except its resource caps, which reach the running instance now")
 	}
 	// Wake the watchdog so a reload's spec (watchdog off, new
 	// intervals) applies promptly even while the instance is healthy
@@ -1232,6 +1252,7 @@ func (ma *managedApp) ensureRunning() error {
 		ma.wd.setLastFailure("") // a recovery that gave up, or a refusal, is over
 		c.logger.Info("reattached to running instance", zap.String("version", st.CurrentVersion))
 		ma.pokeWatchdog()
+		ma.syncCaps() // the config may have changed its caps while hotserve was down
 		if err := ma.sweepOrWhy(c, inst, ""); err != nil {
 			// Serving, but the ledger is unsettled: recover() retries
 			// and the retry path above sweeps again.
@@ -1481,7 +1502,41 @@ func (l launch) startSpec(spec *appSpec, command []string) startSpec {
 		env:     l.env,
 		grace:   spec.grace,
 		sandbox: spec.sandboxSpecFor(l.releaseDir, l.nonce),
+		caps:    spec.caps,
 	}
+}
+
+// syncCaps gives the running instance the caps the spec has now, when
+// its unit carries others: a reload's changed memory_max, tasks_max or
+// cpu_quota applies to the running app rather than waiting for its
+// next launch, and a cap a reload removed is lifted. A unit reattached
+// after a hotserve restart carries whatever it was started with, which
+// this brings up to date too. A failure is a warning, not an error:
+// the caps apply at the next launch regardless (startSpec).
+//
+// Serialized per app (capsMu): every install of a spec is followed by
+// a sync, and a sync that waits behind another snapshots the spec
+// after it, so whichever order a publication's and a reload's syncs
+// start in, the last to apply carries the latest spec.
+func (ma *managedApp) syncCaps() {
+	ma.capsMu.Lock()
+	defer ma.capsMu.Unlock()
+	c := ma.snapshot()
+	inst := ma.currentInstance()
+	if c.spec == nil || c.runner == nil || inst == nil || !c.runner.Alive(inst.handle) {
+		return
+	}
+	want := c.spec.caps
+	if hs := inst.handle.state(); !hs.CapsUnknown && hs.Caps == want {
+		return
+	}
+	fields := []zap.Field{zap.String("version", inst.version),
+		zap.Uint64("memory_max", want.memoryMax), zap.Int("tasks_max", want.tasksMax), zap.Int("cpu_quota", want.cpuQuota)}
+	if err := c.runner.SetCaps(inst.handle, want); err != nil {
+		c.logger.Warn("resource caps not applied to the running instance; they apply at its next launch", append(fields, zap.Error(err))...)
+		return
+	}
+	c.logger.Info("resource caps applied to the running instance", fields...)
 }
 
 func (l launch) instance(h handle) *instance {
@@ -1501,7 +1556,18 @@ func (ma *managedApp) publishInstance(c collaborators, inst *instance) error {
 	ma.current = inst
 	ma.mu.Unlock()
 	ma.activeSocket.Store(inst.sock)
-	return ma.persistState(c, inst)
+	// Persisted before the caps are reconciled: the record is what a
+	// restart recovers, and a sync that waits on the manager must not
+	// hold it back from naming the instance that is already serving.
+	err := ma.persistState(c, inst)
+	// The instance was started from the spec its launch snapshotted;
+	// a reload in between (a deploy's fetch and soak are long) changed
+	// the caps on the instance it was replacing, not on this one.
+	// Reconciled here, against the spec as it is now, so the serving
+	// instance carries the accepted configuration's caps whichever
+	// path published it.
+	ma.syncCaps()
+	return err
 }
 
 // unrouteIf clears activeSocket only while inst is still current, under
@@ -1579,6 +1645,17 @@ type statusSnapshot struct {
 	// journalctl for the app's own output.
 	Unit    string `json:"unit,omitempty"`
 	Running bool   `json:"running"`
+	// Caps is what the running unit is bounded to, as the manager last
+	// applied them: set at the unit's start, changed live by a reload
+	// (syncCaps), or read back at reattach. Absent when none is set,
+	// and without any cap the host does not enforce.
+	Caps *capsSnapshot `json:"caps,omitempty"`
+	// CapsUnenforced names the configured caps the host does not
+	// enforce: the user manager does not delegate their controller to
+	// the unit's cgroup, so the manager holds the value and the kernel
+	// bounds nothing (not the case on Debian 13). Absent when every
+	// cap is enforced.
+	CapsUnenforced []string `json:"caps_unenforced,omitempty"`
 	// Deploys is the outcome of the latest deploy of each version a
 	// record is kept for (deploys.go), newest first; the whole record
 	// is GET /<app>?deploy=<version>. Serialized before last_deploy:
@@ -1604,6 +1681,38 @@ type statusSnapshot struct {
 	// release unless it is the running version, which the list puts
 	// first; absent when there are none.
 	OrderedByMtime []string `json:"ordered_by_mtime,omitempty"`
+}
+
+// capsSnapshot is resourceCaps on the wire, in the directives' own
+// names and units (bytes, a count, a percentage of one CPU).
+type capsSnapshot struct {
+	MemoryMax uint64 `json:"memory_max,omitempty"`
+	TasksMax  int    `json:"tasks_max,omitempty"`
+	CPUQuota  int    `json:"cpu_quota,omitempty"`
+}
+
+// capsForStatus splits the unit's caps into the ones in effect and the
+// ones the host does not enforce (named, not valued: a value the
+// kernel ignores is not a cap). nil caps when nothing is in effect.
+func capsForStatus(caps resourceCaps, unenforced []string) *capsSnapshot {
+	off := map[string]bool{}
+	for _, name := range unenforced {
+		off[name] = true
+	}
+	s := &capsSnapshot{}
+	if !off["memory_max"] {
+		s.MemoryMax = caps.memoryMax
+	}
+	if !off["tasks_max"] {
+		s.TasksMax = caps.tasksMax
+	}
+	if !off["cpu_quota"] {
+		s.CPUQuota = caps.cpuQuota
+	}
+	if *s == (capsSnapshot{}) {
+		s = nil
+	}
+	return s
 }
 
 func (ma *managedApp) status() statusSnapshot {
@@ -1633,6 +1742,9 @@ func (ma *managedApp) status() statusSnapshot {
 		s.Command = hs.Command
 		s.Unit = hs.Unit
 		s.Running = c.runner.Alive(ma.current.handle)
+		if hs.Caps.any() && !hs.CapsUnknown {
+			s.Caps, s.CapsUnenforced = capsForStatus(hs.Caps, hs.CapsUnenforced), hs.CapsUnenforced
+		}
 	}
 	// After current: the watchdog records a restart before it installs
 	// the new instance, so a status that shows the instance shows why
@@ -1647,6 +1759,17 @@ func (ma *managedApp) status() statusSnapshot {
 // still the one installed (a later config's stays). Used when a
 // candidate is cleaned up while another config still holds the app.
 func (ma *managedApp) rollbackConfig(owner any) bool {
+	if !ma.restoreSpec(owner) {
+		return false
+	}
+	// The candidate's caps reached the instance with its install
+	// (configure): give it the serving definition's back.
+	ma.syncCaps()
+	return true
+}
+
+// restoreSpec is rollbackConfig's locked half.
+func (ma *managedApp) restoreSpec(owner any) bool {
 	ma.specMu.Lock()
 	defer ma.specMu.Unlock()
 	if ma.configuredBy != owner || ma.prev == nil {

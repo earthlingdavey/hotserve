@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -62,6 +63,9 @@ type userManagerClient struct {
 	// would stall the runner.
 	sandboxMu  sync.Mutex
 	sandboxGen uint64 // generation the host was measured capable for; 0 = never
+	// defaultTasksMax is the manager's DefaultTasksMax= as read with the
+	// connection (get), like nofile; infinity kept, 0 = unreadable.
+	defaultTasksMax atomic.Uint64
 }
 
 // userManager is the process-wide client every systemdRunner shares.
@@ -183,6 +187,20 @@ func (c *userManagerClient) get() (*sddbus.Conn, error) {
 		conn.Close()
 		return nil, err
 	}
+	// The manager's DefaultTasksMax, read the same way for the same
+	// reason: it is what an unset tasks_max is lifted to, and what a
+	// unit with none reports (SetCaps, unitCaps). Published with the
+	// connection, so a manager restarted with another value is read
+	// again on the redial. Infinity is kept: a manager configured so
+	// has that as its default, and a lift goes there. 0 = unreadable:
+	// nothing to lift to.
+	var tasksMax uint64
+	if v, err := conn.GetManagerProperty("DefaultTasksMax"); err == nil {
+		tasksMax = parseManagerLimit(v)
+	} else if !conn.Connected() {
+		conn.Close()
+		return nil, err
+	}
 	for _, nc := range raws {
 		if derr := nc.SetDeadline(time.Time{}); derr != nil {
 			conn.Close()
@@ -198,7 +216,8 @@ func (c *userManagerClient) get() (*sddbus.Conn, error) {
 	}
 	c.conn = conn
 	c.nofile.Store(nofile) // published with the connection it was read from
-	c.generation.Add(1)    // ... as is the generation the sandbox cache keys on
+	c.defaultTasksMax.Store(tasksMax)
+	c.generation.Add(1) // ... as is the generation the sandbox cache keys on
 	return conn, nil
 }
 
@@ -206,9 +225,19 @@ func (c *userManagerClient) get() (*sddbus.Conn, error) {
 // manager property ("@t 524288"); 0 for anything unparseable or
 // unlimited, which callers treat as "don't set".
 func parseManagerUint(s string) uint64 {
+	if n := parseManagerLimit(s); n != infinityUSec {
+		return n
+	}
+	return 0
+}
+
+// parseManagerLimit reads the same rendering and keeps infinity: a
+// DefaultTasksMax= of infinity is a default of the manager's like any
+// number, the one a lifted tasks cap then goes to. 0 = unparsable.
+func parseManagerLimit(s string) uint64 {
 	s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "@t"))
 	n, err := strconv.ParseUint(s, 10, 64)
-	if err != nil || n == ^uint64(0) {
+	if err != nil {
 		return 0
 	}
 	return n
@@ -330,7 +359,56 @@ func unitProperties(u unitSpec) []sddbus.Property {
 			{Path: "/usr/bin/rm", Args: []string{"rm", "-f", u.Socket}, IgnoreFailure: true},
 		})})
 	}
+	props = append(props, capProperties(u.Caps, false, 0)...)
 	return append(props, sandboxProperties(u.Sandbox)...)
+}
+
+// usecPerPercent is one percent of a second: CPUQuota=50% is
+// CPUQuotaPerSecUSec=500ms on the bus.
+const usecPerPercent = 10_000
+
+// infinityUSec is what the manager reads, and reports, as "infinity"
+// for a uint64 cgroup property: no cap.
+const infinityUSec = ^uint64(0)
+
+// capProperties renders resourceCaps as the unit's cgroup properties.
+// At a start (live=false) only what is set is emitted, so an app with
+// no caps gets exactly the manager's defaults. Live (SetCaps) every
+// cap is, so a cap a reload removed is lifted from the running unit
+// rather than kept: memory and CPU to infinity, their defaults, and an
+// unset tasks cap to liftTasksTo, the manager's DefaultTasksMax —
+// never infinity, which would lift the manager's own bound too; with
+// liftTasksTo 0 (the default unreadable) TasksMax alone is left as it
+// is, and the memory and CPU resets still go. memory_max comes with
+// MemorySwapMax=0: a cap an app can spill past into swap bounds
+// nothing, and lifting the cap lifts that too.
+func capProperties(c resourceCaps, live bool, liftTasksTo uint64) []sddbus.Property {
+	var props []sddbus.Property
+	if c.memoryMax > 0 || live {
+		mem, swap := infinityUSec, infinityUSec
+		if c.memoryMax > 0 {
+			mem, swap = c.memoryMax, 0
+		}
+		props = append(props,
+			sddbus.Property{Name: "MemoryMax", Value: godbus.MakeVariant(mem)},
+			sddbus.Property{Name: "MemorySwapMax", Value: godbus.MakeVariant(swap)},
+		)
+	}
+	if c.tasksMax > 0 || (live && liftTasksTo > 0) {
+		tasks := liftTasksTo
+		if c.tasksMax > 0 {
+			tasks = uint64(c.tasksMax)
+		}
+		props = append(props, sddbus.Property{Name: "TasksMax", Value: godbus.MakeVariant(tasks)})
+	}
+	if c.cpuQuota > 0 || live {
+		quota := infinityUSec
+		if c.cpuQuota > 0 {
+			quota = uint64(c.cpuQuota) * usecPerPercent
+		}
+		props = append(props, sddbus.Property{Name: "CPUQuotaPerSecUSec", Value: godbus.MakeVariant(quota)})
+	}
+	return props
 }
 
 // execCommand is the D-Bus shape of one Exec*= entry, "(sasb)": the
@@ -538,6 +616,39 @@ func (c *userManagerClient) StopUnit(ctx context.Context, name string) (string, 
 	return jobResult(ctx, ch)
 }
 
+// SetUnitProperties sets runtime (not persisted — transient units
+// persist nothing anyway) properties on a loaded unit.
+func (c *userManagerClient) SetUnitProperties(ctx context.Context, name string, props []sddbus.Property) error {
+	conn, err := c.get()
+	if err != nil {
+		return err
+	}
+	err = conn.SetUnitPropertiesContext(ctx, name, true, props...)
+	c.dropIfDisconnected(conn, err)
+	return err
+}
+
+// DefaultTasksMax is the manager's DefaultTasksMax= as read with the
+// connection (get), resolved: the manager resolves its own percentage
+// to a number, and a unit with no TasksMax= reports exactly this; a
+// manager configured with DefaultTasksMax=infinity reports infinity,
+// which is kept (it is that manager's default, where a lift goes). The
+// read happened under the dial's deadlines, so nothing here can wait
+// on a manager that has stopped answering; a dropped connection reads
+// it again on the redial, which is also when a manager restarted with
+// another value is seen.
+func (c *userManagerClient) DefaultTasksMax(_ context.Context) (uint64, error) {
+	if _, err := c.get(); err != nil {
+		return 0, err
+	}
+	v := c.defaultTasksMax.Load()
+	if v == 0 {
+		// Unreadable at the dial: no number to lift a tasks cap to.
+		return 0, errors.New("the manager's DefaultTasksMax is unreadable")
+	}
+	return v, nil
+}
+
 func (c *userManagerClient) ResetFailedUnit(ctx context.Context, name string) error {
 	conn, err := c.get()
 	if err != nil {
@@ -601,7 +712,41 @@ func statusFromProps(props map[string]any) unitStatus {
 		ExecMainCode:   propInt(props, "ExecMainCode"),
 		ExecMainStatus: propInt(props, "ExecMainStatus"),
 		StopTimeout:    usecDuration(propInt(props, "TimeoutStopUSec")),
+		Caps:           propCaps(props),
+		ControlGroup:   propString(props, "ControlGroup"),
 	}
+}
+
+// propCaps reads the unit's caps back as the manager holds them: a
+// uint64 each, "infinity" (uint64 max) meaning none. A TasksMax= or a
+// CPU quota too large for an int reads as none too, rather than as a
+// bogus bound.
+func propCaps(props map[string]any) resourceCaps {
+	var c resourceCaps
+	if v := propUint64(props, "MemoryMax"); v != infinityUSec {
+		c.memoryMax = v
+	}
+	if v := propUint64(props, "TasksMax"); v != infinityUSec && v <= uint64(math.MaxInt) {
+		c.tasksMax = int(v)
+	}
+	if v := propUint64(props, "CPUQuotaPerSecUSec"); v != infinityUSec && v/usecPerPercent <= uint64(math.MaxInt) {
+		c.cpuQuota = int(v / usecPerPercent)
+	}
+	return c
+}
+
+// propUint64 reads a "t" property; absent reads as infinity (no cap),
+// never as 0, which these properties never mean.
+func propUint64(props map[string]any, key string) uint64 {
+	switch v := props[key].(type) {
+	case uint64:
+		return v
+	case int64:
+		if v >= 0 {
+			return uint64(v)
+		}
+	}
+	return infinityUSec
 }
 
 // usecDuration converts a systemd USec property; "infinity" (uint64
