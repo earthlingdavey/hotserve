@@ -136,22 +136,43 @@ with the off-box machine's key; then on the box
 
 ## 6. A read-only key
 
-A key that may read and not write, on a box that is not your real one.
-`setup` only reads an existing repository, so it should take the key;
-whether it does is part of the check:
+A key that may read and not write, on a box that is not your real one,
+and a repository made beforehand with a key that may write:
 
 ```sh
-sudo hotserve-backup setup <url>
-time sudo systemctl start hotserve-backup.service
-hotserve-backup status
+time sudo hotserve-backup setup <url>
 ```
 
-What `status` says, and after how long: **unverified**, and not run on
-the e2e server, which has no read-only key. Read from the code, the
-upload fails and the app is
-`demo: failed: restic failed (exit 1): the storage could not be reached, or refused the key, or something else went wrong; …`,
-after however long restic retries. `setup` again with the box's own
-key afterwards.
+`setup` holds the key to writing a lock file into a repository that is
+there already, and should refuse this one: at once where the storage
+says so plainly, at its two-minute clock where restic retries.
+**Unverified** on a provider; on the e2e server behind a proxy that
+refuses writes, both:
+
+```
+checking that this key can write to it (up to 2m0s)
+hotserve-backup: this key read the repository and could not write a lock file to it (exit 1): a key that may only read cannot back up (restic said: Save(<lock/9b04fe1141>) failed: client.PutObject: Access Denied. unable to create lock in backend: client.PutObject: Access Denied.)
+```
+
+after 2 s, and after 122 s:
+
+```
+checking that this key can write to it (up to 2m0s)
+still waiting for s3:http://…/box1 (Ctrl-C is safe: nothing has been written)
+hotserve-backup: this key read the repository and wrote no lock file to it within 2m0s: a key that may only read cannot back up (restic said: Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: client.PutObject: 500 Internal Server Error …)
+```
+
+each exit 1, with nothing written: `status` after either is `backups
+are not set up`.
+
+**On B2**, `v0.3.0-rc1`, whose `setup` did not check yet, took a
+console Read Only key (`repository ready … (existing, …)`). The run
+after it retried the lock about once a minute
+(`b2_get_upload_url: 401:`) and failed after 868 s:
+`demo: failed: restic failed (exit 1): the storage could not be reached, or refused the key, or something else went wrong; …`;
+the drill failed after 832 s in #170's words; `status` exited 1. Where
+a `setup` does take such a key, `setup` again with the box's own
+afterwards.
 
 ## 7. Restore onto a second box, with another uid for `hotserve`
 

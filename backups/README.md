@@ -930,9 +930,11 @@ It needs no privilege.
   control character, or one that is not UTF-8 — the file cannot hold
   it — three times; and a password not confirmed `stored`.
 - `setup`, after two minutes with no answer from the repository (ten
-  seconds for the look that comes first): the look or the opening is
-  stopped, and nothing has been written; init is left running, said,
-  and waited for by whatever comes next.
+  seconds for the look that comes first): the look, the opening or the
+  write is stopped, and nothing has been written; init is left running,
+  said, and waited for by whatever comes next.
+- `setup`, for a repository that is there already: a key that reads it
+  and cannot write a lock file to it ("Setup", 7).
 
 ## The Caddyfile is read without the server's environment
 
@@ -1075,7 +1077,20 @@ What can be known to fail is refused before anything is asked for
    reused — is asked for its own password (echo off), and nothing is
    made or shown; setup opens it with `restic cat config`, and a wrong
    password is refused (exit 12) and asked for again, up to three
-   times; a storage that refuses the opening is said in restic's words. Where the look could not tell and init finds the repository
+   times; a storage that refuses the opening is said in restic's words.
+   The opening only reads, so the key is then held to **writing**: the
+   same command without `--no-lock`, which writes a lock file and
+   removes it (0.7 s [measured]), said as "checking that this key can
+   write to it". A key that may read and not write is refused, in
+   restic's words, before anything is written: at once where the
+   storage says so plainly (S3's 403: restic exits 1), at the two-minute
+   clock where restic retries (B2's 401, which it retried for a quarter
+   of an hour [measured, RC check 6]) — a run with such a key fails
+   that long after it starts, every hour. Where another restic holds
+   the repository (exit 11: a prune or a check from elsewhere) nothing
+   was learned of the key; that is said, and setup goes on. A
+   repository setup itself made was written by its init, and is not
+   asked. Where the look could not tell and init finds the repository
    there after all ("already initialized", whatever the password), the
    same follows, and the password just shown is said not to be the
    one;
@@ -1184,7 +1199,7 @@ severity × occurrence × detection, then the fix's size and risk.
 | A candidate validated in a directory others may not enter, which imports a file beside it, is refused at `validate` for that directory ("which others may not enter"), though a run reads the file installed at `/etc/hotserve/Caddyfile`. | `checkBackups` (`cmd/hotserve/backupcheck.go`) | 2 | 5 | 1 | 10 | size 2, risk 1 (stop a candidate's walk at its own directory) | Rule 2 holds (refused, the directory named); under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-18). A box push carries no import, so step 6 never meets it; and a candidate's relative imports resolve beside the candidate, not where it will be installed, so a candidate validated away from `/etc/hotserve` is asked about other files than a run would read anyway. |
 | The box suite's push of a backup path into a sibling's `shared/` (e2e box apply 3) holds the refusal to `hotserve validate:` alone, so a push refused at step 6 for another reason would pass it too. | e2e/box/apply.sh, box apply 3 | 3 | 2 | 3 | 18 | size 1, risk 2 (a substring of the bounded refusal: tried, and it flaked, since Caddy's module chain before the reason follows its servers' map order) | Under rule 3 the product is under 20 (2026-10-18). The same file is shown to fail `hotserve validate` for the path just before the push; the refusal can name the path once step 6's bound keeps the reason rather than the head of Caddy's line (owed on main, in box). |
 | On a box with a box repository, an operator who follows the guide's "without one" branch edits `/etc/hotserve/Caddyfile` in place and reloads; the next push finds the edit and puts the commit's file back, the edit's backup block with it unless it was also committed. | docs/backups.md, "Set it up", step 1 | 3 | 5 | 1 | 15 | size 1, risk 2 (a sentence no test checks) | Rule 2 holds: the push ends applied, the box correct by its own contract (the signed file is the whole config), and it names the out-of-band edit (`caddyfile_edited_out_of_band`, a warning in the template's `bin/apply`). If that leaves an app with no backup block, the next run says once that it no longer declares a backup, naming its last snapshot — only where the record before held one: an app never backed up leaves in silence (`engine.go`, the run's `apps`; `TestAnAppThatLeftThePlanIsSaidOnce`). A path dropped from a block still declared is not said either. Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-18). The step names the box repo first and says to skip the two lines there. |
-| With a key that may read but not write — `setup` accepts one, since it only reads — every drill fetch and every `restore` spends restic's quarter of an hour retrying the lock's `Save` before exit 1 (`restore` fetches the same way, and on a rebuilt box nothing is backed up first), and a fetch's exit 1 is that app's own, so a drill of N apps holds the run lock for about 15 N minutes, hourly runs refused meanwhile; the line, "restic could not restore all of it (exit 1)", is said of a fetch that restored nothing. | `fetch` (`backups/engine/restore.go`, the exit-1 branch: `wide` false; `drillApp` returns `errors.As(err, new(repositoryWideError))`; `Drill` sets `refused` on a wide error alone; `restore` reaches `fetch` through `bring`) | 2 | 5 | 1 | 10 | size 2, risk 2 (a branch on the fetch's `--json` summary, absent when the lock was never written; and a decision on `wide`, where a snapshot path not held also exits 1 with nothing restored; restic's stderr is not to hand — the unit keeps stdout alone, stderr goes to the journal, and its other lines carry an app's file names — and `--no-lock` on the fetch would drop the lock that keeps an off-box prune away from it, unmeasured) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-22, #170, PR #346). Red and named by the drill's own line: it exits 1 with "restore not proven", names no wrong cause, and gives the exact `journalctl -u …fetch…` command, where restic's `Save(<lock/…>)` lines name the key. On the timers the hourly runs have been red for days before a Sunday drill (RC check 6: the run 868 s, the drill 832 s); a drill or a `restore` run by hand before any run has no run line to lean on, and `status`'s `running:` line shows the fetch and since when without flagging it. Exit 1 stays app-own by design: one app's failure never skips the next (the 2026-09-19 review, where it once did). The owner chose the one neutral line over a wording per cause. |
+| With a key that may read but not write — one that lost writing after `setup` (a bucket policy, a key replaced by a narrower one), or one `setup` took because another restic held the repository at the write check (exit 11, said) — every drill fetch and every `restore` spends restic's quarter of an hour retrying the lock's `Save` before exit 1 (`restore` fetches the same way, and on a rebuilt box nothing is backed up first), and a fetch's exit 1 is that app's own, so a drill of N apps holds the run lock for about 15 N minutes, hourly runs refused meanwhile; the line, "restic could not restore all of it (exit 1)", is said of a fetch that restored nothing. | `fetch` (`backups/engine/restore.go`, the exit-1 branch: `wide` false; `drillApp` returns `errors.As(err, new(repositoryWideError))`; `Drill` sets `refused` on a wide error alone; `restore` reaches `fetch` through `bring`) | 2 | 1 | 1 | 2 | size 2, risk 2 (a branch on the fetch's `--json` summary, absent when the lock was never written; and a decision on `wide`, where a snapshot path not held also exits 1 with nothing restored; restic's stderr is not to hand — the unit keeps stdout alone, stderr goes to the journal, and its other lines carry an app's file names — and `--no-lock` on the fetch would drop the lock that keeps an off-box prune away from it, unmeasured) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-22, #170, PR #346; narrowed 2026-10-23 when `setup` was made to write a lock file to a repository that is there already before it takes the key, RC check 6 — the key the row first described is refused at setup, so what is left is one that could write then and cannot now). Red and named by the drill's own line: it exits 1 with "restore not proven", names no wrong cause, and gives the exact `journalctl -u …fetch…` command, where restic's `Save(<lock/…>)` lines name the key. On the timers the hourly runs have been red for days before a Sunday drill (RC check 6, on `v0.3.0-rc1`, whose setup did not check: the run 868 s, the drill 832 s); a drill or a `restore` run by hand before any run has no run line to lean on, and `status`'s `running:` line shows the fetch and since when without flagging it. Exit 1 stays app-own by design: one app's failure never skips the next (the 2026-09-19 review, where it once did). The owner chose the one neutral line over a wording per cause. |
 
 ## Development
 
@@ -1210,7 +1225,8 @@ severity × occurrence × detection, then the fix's size and risk.
 - and what the manager makes of each shape of line in the credential
   file, held against what `envfile` reads; what `restic init` and
   `cat config` say of a repository that exists, and with a wrong
-  password.
+  password; that `cat config` writes a lock file unless told not to,
+  and exits 11 at once where another restic holds the repository.
 - and every other behaviour of restic, sqlite3, systemd and Caddy that
   the code leans on, each a test of its own whose comment names what
   rests on it: restic's exit statuses (3 with the snapshot still named,

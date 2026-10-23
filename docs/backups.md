@@ -314,6 +314,7 @@ another uid, which a restore does not mind:
    looking for a repository at s3:https://s3.example.com/my-backups (up to 10s)
    the repository exists; its password is needed
    Repository password:
+   checking that this key can write to it (up to 2m0s)
    repository ready: s3:https://s3.example.com/my-backups (existing, id e9157010)
    ```
 
@@ -571,9 +572,14 @@ Each is **unverified**, and a check the release candidate runs
   not delete is read in restic's own code, not seen.
 - **The recovery copy** on a real provider, and whether it is copied
   there without coming down to your machine.
-- **A read-only key**: what `status` says. Traced, not run: the upload
-  fails, `demo: failed: restic failed (exit 1): the storage could not
-  be reached, or refused the key, …`, after however long restic retries.
+- **A read-only key**: `setup` writes a lock file to a repository that
+  is there already before it takes the key, and refuses one that
+  cannot — at once where the storage says so plainly, at its two-minute
+  clock where restic retries. Seen on the e2e server behind a proxy
+  that refuses writes, both ways; on B2, `v0.3.0-rc1`'s `setup`, which
+  did not check yet, took a console Read Only key, and every run then
+  failed after 14½ minutes of retries (`b2_get_upload_url: 401:`), as
+  did every drill. The check itself is **unverified** on B2.
 - **A bucket that does not exist** on a provider that will not make
   one for the box's key. The e2e S3 server makes a bucket when asked,
   so `setup` there makes it.
