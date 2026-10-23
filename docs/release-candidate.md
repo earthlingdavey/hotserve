@@ -44,11 +44,12 @@ time sudo hotserve-backup setup <url of a bucket nobody has made>
 time sudo hotserve-backup setup <url>    # the right key id, a wrong secret, three times
 ```
 
-The first is refused at once, exit 1, nothing written:
-<!-- i354: verify against code -->
+The first is refused before it asks anything, exit 1, nothing written,
+naming the same bucket and path at B2's S3-compatible endpoint, the
+region left for you to read from the bucket's page:
 
 ```
-hotserve-backup: b2: is not supported: Backblaze B2 is reached through its S3-compatible endpoint — s3:https://s3.<region>.backblazeb2.com/<bucket>/<path>, the endpoint shown on the bucket's page — with a B2 application key's keyID and applicationKey as the storage key id and secret; restic's own b2: backend, in Debian 13's restic, retries a failed upload without end (#354)
+hotserve-backup: b2: is not supported: B2 is reached at its S3-compatible endpoint, s3:https://s3.<region>.backblazeb2.com/<bucket>/rc-check1, with an application key, not the master key; restic's own B2 backend retries a failed upload without end
 ```
 
 What the other two say, and how long each takes: **unverified**. On the
@@ -84,12 +85,23 @@ both its lines. Each as [Backups](backups.md) shows it: **unverified**
 over a provider's TLS; the e2e server over TLS from a private CA gave
 exactly those lines, and MinIO the look's.
 
-On B2, the credential file then holds five keys — `RESTIC_REPOSITORY`,
-`RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
-`AWS_DEFAULT_REGION`, the region from the endpoint's name — and no
-`B2_` key, and both keys work without `listAllBucketNames` or
-`readBuckets`, which the guide does not give them: **unverified**.
-<!-- i354: verify against code -->
+On B2, `setup` says
+`B2's region, <region>, from the endpoint's name, goes in the file as AWS_DEFAULT_REGION`
+before it asks for the key — for a host exactly
+`s3.<region>.backblazeb2.com`, in lower case — and the credential file
+then holds five keys: `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`,
+`AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+That both keys work without `listAllBucketNames` or `readBuckets`,
+which the guide does not give them: **unverified**.
+
+Where `setup` finds a repository there already — check 4's copy, check
+7's second box, check 9 — it holds the key to writing a lock file and
+removing it. After such a `setup`, and before the next run,
+`restic list locks --no-lock | wc -l` from the off-box machine should
+be 0: where B2 refused a delete by name to a key without `deleteFiles`
+(check 3's first step), restic would exit 0 with a warning, `setup`
+would pass, and the lock would stay, holding off a `prune` until
+`restic unlock` removes it.
 
 ## 3. Keys that cannot destroy a version
 
@@ -295,11 +307,21 @@ the drill 7 s, its check included.
 
 On a box that an earlier release set up with a `b2:` repository, with
 the candidate installed: `sudo systemctl start hotserve-backup.service`,
-then `hotserve-backup status`. The run should refuse at once, before
-any unit starts, in the words check 1 shows, and `status` say so.
-<!-- i354: verify against code -->
-Then, with the same bucket and path, the same key id and secret, and
-the repository's password:
+then `sudo hotserve-backup status`. The run refuses at once, before
+any unit starts, in these words (in its journal,
+`journalctl -u hotserve-backup.service`):
+
+```
+the repository is b2:, which is not supported: sudo hotserve-backup setup s3:https://s3.<region>.backblazeb2.com/<bucket>/<path>, B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; restic's own B2 backend retries a failed upload without end
+```
+
+and `status` says `the last run ended early: the repository is b2:,
+which is not supported: …`, and as root warns of the file in setup's
+words: `warning: /etc/hotserve-backup/repository.env:
+RESTIC_REPOSITORY: b2: is not supported: …`.
+
+A restore and a drill refuse the same way. Then, with the same bucket
+and path, the same key id and secret, and the repository's password:
 
 ```sh
 sudo cat /var/lib/hotserve-backup/repository-id
@@ -307,9 +329,11 @@ sudo hotserve-backup setup s3:https://s3.<region>.backblazeb2.com/<bucket>/<path
 sudo cat /var/lib/hotserve-backup/repository-id
 ```
 
-`setup` should find the repository (`existing, id …`, the id beside the
-record unchanged), put no record aside, and write the file with
-`AWS_DEFAULT_REGION` and no `B2_` line; then a run, the drill and
+then, from the off-box machine, `restic list locks --no-lock | wc -l`
+(check 2: 0). `setup` should find the repository (`existing, id …`,
+the id beside the record unchanged), put no record aside, leave no
+lock, and write the file with `AWS_DEFAULT_REGION` and no `B2_` line;
+then a run, the drill and
 `status` as before the candidate, the last backup and the restore last
 proven going on from there: **unverified**.
 
@@ -352,5 +376,4 @@ its request and status lines,
 the region there should be no `?location` request. Without it, whether
 B2 takes the `us-east-1` signature decides whether the region is needed
 or only spares a request: **unverified**. `setup` writes the region for
-a B2 endpoint either way.
-<!-- i354: verify against code -->
+a B2 endpoint either way (check 2).
