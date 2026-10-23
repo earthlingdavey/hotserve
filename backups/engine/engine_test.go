@@ -305,7 +305,12 @@ func (b *box) Run(ctx context.Context, s unit.Spec) (unit.Outcome, error) {
 		// As the real runner: the unit is stopped by name once the
 		// context ends, and what could not be confirmed gone wraps the
 		// cause in ErrNotConfirmedGone. Init runs on a context nothing
-		// cancels; its hang ends with the test.
+		// cancels; its hang ends with the test. A write that hangs is
+		// restic retrying, and its retry lines are on stderr before the
+		// clock ends it: written first where the test gives them.
+		if role == "write" && s.StderrFile != "" && b.writeErr != "" {
+			must(b.t, os.WriteFile(s.StderrFile, []byte(b.writeErr), 0o600))
+		}
 		select {
 		case <-ctx.Done():
 		case <-b.release:

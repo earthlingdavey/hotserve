@@ -799,11 +799,11 @@ func (s *setup) tryShown(ctx context.Context, rep *SetupReport, needsOwn func())
 	}
 	if opened {
 		s.term.Say("the repository exists, and the password shown above opens it: it was made by an earlier attempt of this setup")
-		if err := s.writable(ctx); err != nil {
-			return err
-		}
+		// Made, before the key is held to writing: a refusal there, or
+		// Ctrl-C, says the password is the repository's, which the
+		// opening has just proven.
 		rep.RepositoryID, rep.New, s.made = id, true, true
-		return nil
+		return s.writable(ctx)
 	}
 	needsOwn()
 	return nil
@@ -1021,8 +1021,15 @@ func (s *setup) writable(ctx context.Context) error {
 	o, message, err := s.repository(ctx, "write", setupClock, s.cfg.Restic, "cat", "config")
 	switch {
 	case errors.Is(err, errDidNotAnswer):
-		// The clock's error carries no message: read from the unit's file.
-		return fmt.Errorf("this key read the repository, and restic was still retrying a lock file's write to it at %s%s%s", setupClock, cannot, said(resticMessage(filepath.Join(s.dir, "write.err"))))
+		// The clock's error carries no message: read from the unit's
+		// file. A write restic retries leaves its retry lines there; a
+		// storage that took the connection and never answered leaves
+		// nothing, and says nothing of the key.
+		m := resticMessage(filepath.Join(s.dir, "write.err"))
+		if m == "" {
+			return fmt.Errorf("this key read the repository, and the storage had not answered a lock file's write to it at %s: whether this key can write to it is not known", setupClock)
+		}
+		return fmt.Errorf("this key read the repository, and restic was still retrying a lock file's write to it at %s%s%s", setupClock, cannot, said(m))
 	case err != nil:
 		return err
 	case o.OK():

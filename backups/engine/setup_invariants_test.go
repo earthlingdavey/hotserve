@@ -91,8 +91,11 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		{"the storage refuses the write at once (S3's 403: exit 1)", func(b *box) {
 			b.outcome["write"], b.writeErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, denied
 		}, "this key read the repository, and restic could not write a lock file to it, or remove the one it wrote (exit 1): a key that may only read, or a storage that refuses writes, cannot back up (restic said: " + denied + ")", ""},
-		{"restic retries the write to the clock (B2's 401)", func(b *box) { b.hang = "write" },
-			"this key read the repository, and restic was still retrying a lock file's write to it at 200ms: a key that may only read, or a storage that refuses writes, cannot back up", ""},
+		{"restic retries the write to the clock (B2's 401)", func(b *box) {
+			b.hang, b.writeErr = "write", "Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: b2_get_upload_url: 401: \n"
+		}, "this key read the repository, and restic was still retrying a lock file's write to it at 200ms: a key that may only read, or a storage that refuses writes, cannot back up (restic said: Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: b2_get_upload_url: 401:)", ""},
+		{"the storage took the write and never answered (nothing from restic)", func(b *box) { b.hang = "write" },
+			"this key read the repository, and the storage had not answered a lock file's write to it at 200ms: whether this key can write to it is not known", ""},
 		{"the unit could not be set up", func(b *box) { b.outcome["write"] = unit.Outcome{Result: "exit-code", ExitStatus: 217} },
 			"writing to the repository: systemd could not set the unit up (status 217)", ""},
 		{"the unit could not be started", func(b *box) { b.err["write"] = errors.New("starting hotserve_backup_write: no such user") },
@@ -155,7 +158,7 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	b.outcome["write"], b.writeErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, denied
 	m.answers = []string{"AKIDX", "wrong", "stored", "AKIDRO", "the-read-only-secret"}
 	_, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
-	if err == nil || !strings.Contains(err.Error(), "could not write a lock file to it, or remove the one it wrote (exit 1): a key that may only read, or a storage that refuses writes, cannot back up") || !strings.Contains(err.Error(), "keep the password shown above") {
+	if err == nil || !strings.Contains(err.Error(), "could not write a lock file to it, or remove the one it wrote (exit 1): a key that may only read, or a storage that refuses writes, cannot back up") || !strings.Contains(err.Error(), "the password shown above is the repository's: keep it") {
 		t.Fatalf("err = %v\nsaid:\n%s", err, m.saidAll())
 	}
 	if got, want := b.roles(), "plan probe init probe open write"; got != want {
