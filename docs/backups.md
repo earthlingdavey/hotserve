@@ -16,8 +16,9 @@ package installed: against the e2e suites' S3 server over TLS, and,
 where a bucket's versions matter, against MinIO standing in for a
 provider. On your box the URL, the ids, the times and the password
 differ. Of the real providers only B2 has been tried, on `v0.3.0-rc1`,
-through restic's own `b2:` backend, which the box no longer uses; where
-that run bears on a claim it is named. What depends on a provider and
+through B2's native API — restic's own `b2:` backend, which the box no
+longer uses, and rclone's and `backblaze-b2`'s B2 code; where that run
+bears on a claim it is named. What depends on a provider and
 has not been seen through the door the box uses says **unverified**,
 and [the last section](#not-yet-tried-against-a-real-provider) lists it all.
 
@@ -83,8 +84,11 @@ restic's own `b2:` backend is refused, by `setup` and by every run,
 restore and drill: the B2 library Debian 13's restic is built with
 retries a failed upload without end, and held a run for 27 hours with
 nothing said ([#177](https://github.com/smallhoursorg/hotserve/issues/177),
-[#354](https://github.com/smallhoursorg/hotserve/issues/354)); restic's
-own documentation recommends B2's S3 endpoint for the same reason.
+[#354](https://github.com/smallhoursorg/hotserve/issues/354)). restic's
+own documentation points B2 users to the S3 endpoint "due to issues
+with error handling in the current B2 library that restic uses"
+([Backblaze B2](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html#backblaze-b2),
+`doc/030_preparing_a_new_repo.rst`).
 Given the endpoint as the bucket's page writes it, `setup` writes the
 region, its second part (`eu-central-003` in
 `s3.eu-central-003.backblazeb2.com`), beside the key — `B2's region,
@@ -98,7 +102,7 @@ with its bucket and path and `<region>` for you to fill in from the
 bucket's page:
 
 ```
-b2: is not supported: B2 is reached at its S3-compatible endpoint, s3:https://s3.<region>.backblazeb2.com/my-backups, with an application key, not the master key; restic's own B2 backend retries a failed upload without end
+hotserve-backup: b2: is not supported: B2 is reached at its S3-compatible endpoint, s3:https://s3.<region>.backblazeb2.com/my-backups, with an application key, not the master key; restic's own B2 backend retries a failed upload without end
 ```
 
 Each key is an application key for the bucket alone, with the
@@ -110,8 +114,11 @@ version ([Delete Object](https://www.backblaze.com/apidocs/s3-delete-object)),
 so `deleteFiles` would add nothing but a stolen key's power to destroy
 history. The key's keyID and applicationKey are what `setup` asks for
 as the storage key id and secret. Never the account's master key, which
-the S3 endpoint does not take, and no key or bucket made before 4 May
-2020, which are not S3-compatible (Backblaze's documentation). The web
+the S3 endpoint does not take
+([S3-compatible API](https://www.backblaze.com/apidocs/introduction-to-the-s3-compatible-api)),
+and no key or bucket made before 4 May 2020, which are not
+S3-compatible (Backblaze's help,
+[archived](https://web.archive.org/web/20230925042836/https://help.backblaze.com/hc/en-us/articles/360047425453)). The web
 console offers presets rather than single capabilities, so make the
 keys with the `b2` command line.
 
@@ -122,8 +129,9 @@ that a delete by name needs `writeFiles` and a delete of a version
 alone. Were it refused, every command longer than restic's five-minute
 lock refresh would be stopped as above, every lock would be left
 behind, and `setup`'s check that the key can write would pass all the
-same — restic exits 0 there, saying only that it could not remove its
-lock ([release-candidate check 3](release-candidate.md)).
+same — restic exits 0 there, its failed unlock only logged (restic
+0.18.0, `internal/repository/lock.go:132-134`)
+([release-candidate check 2](release-candidate.md#2-set-up-a-first-backup-status-and-the-drill-over-real-tls)).
 
 In the bucket's Lifecycle Settings, "Keep prior versions for this
 number of days": 180. B2 then removes a hide marker itself once the
@@ -490,12 +498,14 @@ Each needs the repository to itself, and without `--retry-lock` gives up
 at once while a run of the box's holds a lock: `repository is already
 locked`, exit 11 [measured]; with it, it waits. A lock no command
 holds any more is waited on all the same: restic never passes a stale
-lock by itself [M75]. Two things leave one [measured, against the e2e
-S3 server behind a proxy that injects the fault]:
+lock by itself [M75]. Two things leave one, each measured against the
+e2e S3 server behind a proxy that injects the fault:
 
 - **A storage outage that begins during a box's backup** leaves its
-  lock. The box's next runs go on; a `prune` waits out its hour and
-  exits 11.
+  lock, and the box's next backup goes on [measured]. A `prune` then
+  waits out its hour and exits 11: restic refuses an exclusive lock
+  over any lock there, never asking whether it is stale (restic 0.18.0,
+  `internal/restic/lock.go:188-189`; M75, measured for a backup).
 - **A `prune` that fails or is stopped** leaves its own, which no
   other command may share — after 35 minutes with every delete
   refused, three of them. Every run and drill of the box's then waits
@@ -589,8 +599,9 @@ On another S3 provider, `RCLONE_CONFIG_STORE_PROVIDER=Other` and
 region. On B2, `RCLONE_CONFIG_STORE_TYPE=b2` with `…_ACCOUNT` and
 `…_KEY` (a key's keyID and applicationKey), and the same
 `store,version_at='…'`: rclone's own B2 code, which speaks B2's own API
-rather than the S3 endpoint the box uses, and which takes any key B2
-gives, the account's master key among them — a key that may list and
+rather than the S3 endpoint the box uses, and which takes an
+application key or the account's master key
+([rclone's B2 page](https://rclone.org/b2/)) — a key that may list and
 read files reads every version (on `v0.3.0-rc1` the box's own key did).
 On B2 that copy was made and checked clean
 ([RC-check4-recover.out](design/backups/rc-runs/RC-check4-recover.out));
@@ -682,14 +693,19 @@ Each is **unverified**, and a check the release candidate runs
 - **The bucket above**: versioning, keys that cannot destroy a
   version, the 180-day rule, and B2 removing its own hide markers. On
   MinIO the whole of it worked, an attack and its recovery included; not
-  yet on AWS or Hetzner. On B2 it was run on `v0.3.0-rc1` through
-  restic's own `b2:` backend, which hides where its key may not delete;
-  through the S3 endpoint the box now uses, a delete by name is a hide
-  by Backblaze's documentation, and whether a key without `deleteFiles`
+  yet on AWS or Hetzner. On B2 it was run on `v0.3.0-rc1` through B2's
+  native API — restic's own `b2:` backend, which hides where its key
+  may not delete, and rclone's and `backblaze-b2`'s B2 code; through
+  the S3 endpoint the box now uses, a delete by name is a hide by
+  Backblaze's documentation, and whether a key without `deleteFiles`
   may make one is not settled by it (above) — **unverified**, as is
   B2's warning that a file hidden within the same second it was
-  uploaded may not be hidden, which a restic command shorter than a
-  second does to its own lock file.
+  uploaded may not be hidden
+  ([calling the S3-compatible API](https://www.backblaze.com/docs/cloud-storage-call-the-s3-compatible-api)),
+  which a restic command shorter than a second does to its own lock
+  file. One native data point: an upload and its hide in the same
+  second, 11:47:00, and the hide held
+  ([RC-lifecycle-day0.out](design/backups/rc-runs/RC-lifecycle-day0.out)).
 - **The recovery copy** on a real provider, and whether it is copied
   there without coming down to your machine.
 - **A read-only key**: `setup` writes a lock file to a repository that
