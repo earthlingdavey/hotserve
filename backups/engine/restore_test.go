@@ -187,8 +187,11 @@ func TestHowAFetchEnds(t *testing.T) {
 		10: "no repository",
 		11: "locked",
 		12: "password is wrong",
-		1:  "out of room", // of a restore, 1 is first of all this fetch's own
-		3:  "exit 3",
+		// Of a restore, 1 covers causes restic does not tell apart by
+		// status [measured]: the detail names none, and ends at the
+		// journal pointer.
+		1: "restic could not restore all of it (exit 1); `journalctl -u ",
+		3: "exit 3",
 	} {
 		t.Run(fmt.Sprint(exit), func(t *testing.T) {
 			b := restoreBox(t)
@@ -642,8 +645,8 @@ func TestADrillOfOneAppFailingIsThatAppsOwnAndAnInterruptIsNoVerdict(t *testing.
 	b.install = `{"plan":{"files":["uploads"]},"items":[{"kind":"files","path":"uploads","class":"ok"}]}`
 	failBlog := true
 	b.before = func(s unit.Spec) {
-		// Exit 1 of a fetch is a full disk before it is anything else:
-		// the app after it is drilled all the same.
+		// Exit 1 of a fetch is that fetch's own, whatever restic's
+		// words name: the app after it is drilled all the same.
 		if strings.Contains(s.Name, "_fetch_blog_") && failBlog {
 			b.outcome["fetch"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 		} else {
