@@ -77,8 +77,23 @@ mount --make-rshared /
 
 stage "stage 1: install, service basics, reload"
 # The image ships without apt lists; refresh them so the package's
-# Depends (libpam-systemd, dbus) resolve the way they would on a real
-# box — that resolution is part of what this stage proves.
+# Depends (systemd's floor, libpam-systemd, dbus, openssh-client,
+# restic, sqlite3, ca-certificates) resolve the way they would on a
+# real box — that resolution is part of what this stage proves. The
+# image installs no recommended package (packaging/test/Dockerfile), as
+# Hetzner's Debian 13 has it: what the package needs has to arrive
+# there too, so it is all Depends, and the premise is checked first.
+[ "$(apt-config dump APT::Install-Recommends)" = 'APT::Install-Recommends "false";' ] \
+	|| die "the image's apt setting is '$(apt-config dump APT::Install-Recommends)', want 'APT::Install-Recommends \"false\";' as packaging/test/Dockerfile writes it: the install below would prove nothing of a box that installs no recommended package"
+# And none of the three is here before the install, or their presence
+# after it would prove nothing of what the package brings. That they
+# came by Depends, and not by another package's pull, is the
+# declaration check below (beside the systemd floor's): this is the
+# precondition, that is the proof.
+for p in restic sqlite3 ca-certificates; do
+	[ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" != installed ] \
+		|| die "$p is in the image already: the install below cannot show the package brings it"
+done
 apt-get update -qq
 apt-get install -y "$deb" >/tmp/install.out 2>&1 \
 	|| { cat /tmp/install.out; die "apt-get install of the package failed"; }
@@ -207,13 +222,21 @@ systemctl is-active --quiet hotserve-box-apply.path \
 [ "$(systemctl is-enabled hotserve-box-apply.service)" = static ] \
 	|| die "hotserve-box-apply.service is '$(systemctl is-enabled hotserve-box-apply.service)', want static: the path unit is its only start"
 [ "$(command -v ssh-keygen)" = /usr/bin/ssh-keygen ] || die "ssh-keygen is not installed: the openssh-client Depends did not resolve"
-# The floor that makes apt refuse an older release at install, as
-# docs/first-deploy.md step 2 quotes it. Debian 13 meets it, so this
-# image cannot show the refusal; this is what keeps the quote true.
-# One entry per line, matched whole: a substring match would also
-# accept `libpam-systemd (>= 257)`.
-dpkg-deb -f "$deb" Depends | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -qxF 'systemd (>= 257)' \
-	|| die "the package does not depend on systemd (>= 257): apt would install it where no app can run"
+# The declaration, one entry per line, matched whole: a substring
+# match would also accept `libpam-systemd (>= 257)`. The floor is what
+# makes apt refuse an older release at install, as docs/first-deploy.md
+# step 2 quotes it; Debian 13 meets it, so this image cannot show the
+# refusal, and this is what keeps the quote true. The backups' programs
+# and the CA store are Depends so that a provider's image that installs
+# no recommended package gets them (this image is one; stage 2c runs
+# the programs, and the store is read back below).
+deps=$(dpkg-deb -f "$deb" Depends | tr ',' '\n' | sed 's/^ *//; s/ *$//')
+for p in 'systemd (>= 257)' restic sqlite3 ca-certificates; do
+	printf '%s\n' "$deps" | grep -qxF "$p" \
+		|| die "the package does not depend on $p: $(printf '%s' "$deps" | tr '\n' ',')"
+done
+[ -s /etc/ssl/certs/ca-certificates.crt ] \
+	|| die "ca-certificates did not come with the package, installed without recommended packages: restic and hotserve would verify no certificate"
 # The tree as the shipped tmpfiles.d file says, read back off the disk
 # (the file itself is held to the Paths table by box/units_test.go).
 conf=/usr/lib/tmpfiles.d/hotserve-box.conf
@@ -866,8 +889,9 @@ echo "SIGKILL: systemd restarted hotserve (NRestarts=1); app pid $pid_live reatt
 
 stage "stage 2c: backups — the guide's 'Set it up' lines, as an administrator"
 # What the package set up, before any line of the guide runs: the
-# programs it recommends (apt brings Recommends by default), the
-# account as setup makes it, the four unit files, the timers enabled
+# programs it depends on (installed in stage 1 without recommended
+# packages, so they came by Depends alone), the account as setup makes
+# it, the four unit files, the timers enabled
 # and running and their services untouched, and no credential file —
 # that is setup's, and postinstall says so.
 S3REPO=s3:http://127.0.0.1:9000/hotserve
@@ -893,8 +917,8 @@ expect_backup_state() {
 	fi
 	echo "$1: timers $2, $3; credential file $4 — as the table says"
 }
-command -v restic >/dev/null && command -v sqlite3 >/dev/null \
-	|| die "restic and sqlite3 did not come with the package: Recommends: did not resolve (apt installs them by default)"
+[ "$(command -v restic)" = /usr/bin/restic ] && [ "$(command -v sqlite3)" = /usr/bin/sqlite3 ] \
+	|| die "restic and sqlite3 did not come with the package, installed without recommended packages: they have to be Depends (restic '$(command -v restic)', sqlite3 '$(command -v sqlite3)')"
 getent passwd hotserve-backup | grep -q ':/nonexistent:/usr/sbin/nologin$' \
 	|| die "postinstall did not make the hotserve-backup account as setup does: $(getent passwd hotserve-backup || echo none)"
 for u in hotserve-backup.service hotserve-backup-drill.service $TIMERS; do
@@ -912,7 +936,7 @@ grep -q "sudo hotserve-backup setup <repository>" /tmp/install.out \
 grep -q "refuse that account" /tmp/install.out \
 	&& die "postinstall warned of the account it had just made: $(grep hotserve-backup /tmp/install.out)" || true
 hotserve-backup account >/dev/null || die "the account postinstall made is not one setup accepts: $(hotserve-backup account 2>&1)"
-echo "the package's own: restic and sqlite3 by Recommends, the account, the units, the timers enabled and waiting"
+echo "the package's own: restic, sqlite3 and ca-certificates by Depends, the account, the units, the timers enabled and waiting"
 
 # The repository the guide's lines are pointed at: rclone serve s3
 # here, on the loopback, with a key that is no secret.

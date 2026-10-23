@@ -165,13 +165,15 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	// for since: that key is held to writing the same, and refused the
 	// same, the shown password said to be kept (init ran with it).
 	b, m = setupBox(t)
-	b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+	b.hang = "probe"
 	b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
-	b.initOut, b.initErr = "", wrongKey
+	b.initOut, b.initErr = "", keyWriteFailed // past the opening: it may have made the repository
 	inits := 0
 	b.before = func(s unit.Spec) {
 		if strings.Contains(s.Name, "_init_") {
 			if inits++; inits == 1 {
+				// The second attempt's look finds a repository.
+				b.hang = ""
 				b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 			}
 		}
@@ -390,7 +392,7 @@ func TestEveryExitAfterTheShowingSaysOneOfThreeFates(t *testing.T) {
 		must(b.t, record.Write(filepath.Join(b.cfg.StateDir, "status.json"), &record.Status{Apps: map[string]*record.App{"blog": {Class: record.OK}}}))
 	}
 	existsOwn := func(b *box, m *term) { // the look could not tell, init says exists, the operator's own password opens it
-		b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+		b.hang = "probe"
 		b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 		b.initOut, b.initErr = "", alreadyInit
 		m.answers = []string{"AKIDX", "the-secret", "stored", "its-own-password"}
@@ -430,11 +432,48 @@ func TestEveryExitAfterTheShowingSaysOneOfThreeFates(t *testing.T) {
 			commit = func(string, string) error { return errors.New("EIO on the rename") }
 		}, made},
 		{"init was left running at its clock", func(b *box, m *term) { b.hang = "init" }, ran},
-		{"init failed three times on the key", func(b *box, m *term) {
+		{"init refused three times at the opening", func(b *box, m *term) {
 			b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 			b.initOut, b.initErr = "", wrongKey
 			m.answers = []string{"AKIDX", "wrong", "stored", "AKIDX", "wrong", "AKIDX", "wrong"}
+		}, dead},
+		{"init failed three times past the opening", func(b *box, m *term) {
+			b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+			b.initOut, b.initErr = "", keyWriteFailed
+			m.answers = []string{"AKIDX", "wrong", "stored", "AKIDX", "wrong", "AKIDX", "wrong"}
 		}, ran},
+		{"init failed past the opening once, then was refused at it twice", func(b *box, m *term) {
+			b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+			b.initOut, b.initErr = "", keyWriteFailed
+			inits := 0
+			b.before = func(s unit.Spec) {
+				if strings.Contains(s.Name, "_init_") {
+					if inits++; inits == 2 {
+						b.initErr = wrongKey
+					}
+				}
+			}
+			m.answers = []string{"AKIDX", "wrong", "stored", "AKIDX", "wrong", "AKIDX", "wrong"}
+		}, ran},
+		{"init found files of a repository and no config", func(b *box, m *term) {
+			b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 10}
+			b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+			b.initOut, b.initErr = "", halfThere
+		}, dead},
+		{"init failed past the opening once, then found files and no config — its own key file, which nothing opens", func(b *box, m *term) {
+			b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 10}
+			b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+			b.initOut, b.initErr = "", keyWriteFailed
+			inits := 0
+			b.before = func(s unit.Spec) {
+				if strings.Contains(s.Name, "_init_") {
+					if inits++; inits == 2 {
+						b.initErr = halfThere
+					}
+				}
+			}
+			m.answers = []string{"AKIDX", "wrong", "stored", "AKIDX", "wrong"}
+		}, dead},
 		{"it existed, its own password opened it; the credential directory's sync fails", func(b *box, m *term) {
 			existsOwn(b, m)
 			syncDir = func(path string) error {
@@ -473,13 +512,14 @@ func TestEveryExitAfterTheShowingSaysOneOfThreeFates(t *testing.T) {
 		}, dead},
 		{"init exited 0 and said nothing of the id", func(b *box, m *term) { b.initOut = "not json at all\n" }, made},
 		{"the shown password opened what an earlier init made; the commit fails", func(b *box, m *term) {
-			b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+			b.hang = "probe"
 			b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
-			b.initOut, b.initErr = "", wrongKey
+			b.initOut, b.initErr = "", keyWriteFailed
 			inits := 0
 			b.before = func(s unit.Spec) {
 				if strings.Contains(s.Name, "_init_") {
 					if inits++; inits == 1 {
+						b.hang = ""
 						b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 					}
 				}

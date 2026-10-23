@@ -27,10 +27,11 @@ its restore proven, and
 `hotserve-backup validate <Caddyfile>` says whether a run could plan
 from a Caddyfile before it goes live. The `hotserve` package carries
 the program, an hourly timer for the run and a Sunday one for the
-drill ("On a fresh box", below), and recommends Debian 13's `restic`
-and `sqlite3`; `setup` and every run need those, and systemd 257
-(`PrivatePIDs=`), which is Debian 13's, and say so before anything
-else.
+drill ("On a fresh box", below), and depends on Debian 13's `restic`,
+`sqlite3` and `ca-certificates` (the CA store restic verifies the
+storage's certificate against); `setup` and every run need the
+programs, and systemd 257 (`PrivatePIDs=`), which is Debian 13's, and
+say so before anything else.
 
 ## On a fresh box
 
@@ -40,12 +41,13 @@ line; `hotserve-backup.timer`, hourly — on the hour plus an offset of
 up to ten minutes that is this box's own and stays the same — and
 `hotserve-backup-drill.timer`, Sunday between 03:30 and 03:40 — an
 offset of the same kind — both enabled, both catching
-up a missed elapse at boot; and `restic` and `sqlite3` as recommended
-packages (`apt install ./hotserve_….deb` brings them; with
-`--no-install-recommends` it does not, and setup and every run then say
-which to install). Nothing runs until `setup` has written the credential
-file: each service is conditioned on `/etc/hotserve-backup/repository.env`,
-and a start before that is skipped, not failed. The lines that set it
+up a missed elapse at boot; and `restic`, `sqlite3` and
+`ca-certificates` as packages it depends on (`apt install
+./hotserve_….deb` brings them, with or without recommended packages:
+Hetzner's Debian 13 image installs none). Nothing runs until `setup`
+has written the credential file: each service is conditioned on
+`/etc/hotserve-backup/repository.env`, and a start before that is
+skipped, not failed. The lines that set it
 up — the declaration, `validate`, `setup`, a first run, `status`, a
 restore — are under "Set it up" in
 [docs/backups.md](../docs/backups.md#set-it-up). Those under `sudo` are
@@ -1030,13 +1032,25 @@ What can be known to fail is refused before anything is asked for
    **looked for**: `restic cat config` as `hotserve-backup`, under a
    ten-second clock, said as "looking for a repository at …". With a
    right key restic says at once whether there is no repository (exit
-   10) or one this password does not open (exit 12) [measured]; a
-   bucket not there yet, a wrong key or a host that does not resolve
-   make it retry, so the look is given up on, said as such — the
-   three look alike there — and init answers instead. A look that
-   failed on its own account — a unit the manager could not set up, one
-   that could not be started — is said as that, before any password is
-   made;
+   10) or one this password does not open (exit 12) [measured]. A
+   storage that **refuses at once** — restic's exit 1 within the clock:
+   B2 answers a wrong key or a bucket the key may not reach with `401`
+   [measured, on real B2]; S3 an `AccessDenied`, which restic 0.18.0's
+   retry wrapper treats as permanent under its default feature set
+   [read in its source, `internal/backend/s3`; not measured] — is said
+   in restic's own words ("restic could not open the repository (exit
+   1): …"; any other exit 1 within the clock is said the same, with
+   restic's words, see the residuals), and
+   the key id and secret are asked for again, up to three times in all
+   with init's refusals below, before any password is made: init's
+   first step is the same opening, and would be refused the same. Where
+   restic is still **retrying at the clock** — S3 on a bucket not there
+   yet, a wrong secret or a host that does not resolve [measured] — the
+   look is given up on, said as such ("no repository answered within
+   10s": the three look alike there), and init answers instead. A look
+   that failed on its own account — a unit the manager could not set
+   up, one that could not be started — is said as that, before any
+   password is made;
 6. where none was found, a repository password is made — 32 random
    bytes, base32, 52 characters — and **shown**, once, with what to
    store beside it (the repository URL and the storage key: with those
@@ -1049,10 +1063,11 @@ What can be known to fail is refused before anything is asked for
    the repository with the password shown, so that password is to be
    kept (for the look and the opening, which only read, Ctrl-C stops
    the unit, and is safe). Init is never stopped, by Ctrl-C or by the
-   clock: stopped half way it would leave a repository with a config
-   and no key, which no password opens, where left to its few seconds
-   it makes the repository with the password that was shown — what the
-   next setup asks for. It is recorded instead
+   clock: stopped half way it would leave a key file and no config
+   (restic 0.18.0 writes the key first, then the config), which nothing
+   opens and a later init will not write over, where left to its few
+   seconds it makes the repository with the password that was shown —
+   what the next setup asks for. It is recorded instead
    (`/run/hotserve-backup/init-unit`) for the next run or setup to
    wait for, up to three minutes, saying which unit, and the message
    names it and the `systemctl stop` that ends it if it must be. restic answers at once whatever is
@@ -1060,17 +1075,37 @@ What can be known to fail is refused before anything is asked for
    key id and secret again, up to three times, the one password
    standing: it has taken effect nowhere until the repository is made
    with it. When setup ends after the showing, the error it ends on
-   says what became of the password: before `restic init` has been started with
-   it (a refusal at the `stored` prompt, Ctrl-C there, a file that
-   could not be written), "never used: discard it"; once init has been
-   started with it — three storage refusals, Ctrl-C or the clock
-   during init, any failure after — "keep the password shown above:
-   restic init ran with it, and may have made the repository", since an
-   init still running, or one that failed, may have written some or all
-   of one, and the next setup looks first and asks for it if the
-   repository is there; and where
-   init itself answers that the repository exists, it made nothing with
-   the password, and "discard it" is said again. The clock is
+   says what became of the password, from what restic said: before
+   `restic init` has been started with it (a refusal at the `stored`
+   prompt, Ctrl-C there, a file that could not be written), "never
+   used: discard it"; the same where every init started with it was
+   refused at the opening — restic's "unable to open repository at …",
+   its word for a backend it could not open, which comes before anything
+   of a repository is written (restic 0.18.0, `cmd/restic/global.go`):
+   a key refused, a bucket out of reach, a host that does not resolve;
+   once an init has got past the opening — "create key in repository
+   at … failed", Ctrl-C or the clock during init, any failure after —
+   "keep the password shown above: restic init ran with it, and may
+   have made the repository", since an init still running, or one that
+   failed past the opening, may have written some or all of one, and
+   the next setup looks first and asks for it if the repository is
+   there (one such init keeps the password through any later refusal
+   at the opening); and where init itself answers that the repository
+   exists, it made nothing with the password, and "discard it" is said
+   again. Where init answers that the storage holds **key files or
+   snapshots and no config** ("repository already contains keys", or
+   "… snapshots": a repository whose config was removed — a lifecycle
+   rule, a deletion — or an init that ended between its two writes),
+   nothing opens them as they stand and init will not write over them,
+   so setup ends at once — no asking for the key again — says what is
+   there and the way out, recovery before removal: if a backup was ever
+   made there, its earlier state is recovered from the storage's kept
+   versions first ([After an attack](../docs/backups.md#after-an-attack))
+   and nothing removed; only an unfinished repository that never held
+   one is removed at the storage; or setup is given another path. Setup
+   cannot tell the two apart, so it never removes anything. And
+   "discard it": whatever an earlier init of this setup may have
+   written there, nothing opens it. The clock is
    for a storage that takes the connection and never answers: the
    waiting ends, and the unit runs on, recorded as above, with the
    staged file it reads and the run directory it writes to left in
@@ -1221,6 +1256,7 @@ severity × occurrence × detection, then the fix's size and risk.
 | On a box with a box repository, an operator who follows the guide's "without one" branch edits `/etc/hotserve/Caddyfile` in place and reloads; the next push finds the edit and puts the commit's file back, the edit's backup block with it unless it was also committed. | docs/backups.md, "Set it up", step 1 | 3 | 5 | 1 | 15 | size 1, risk 2 (a sentence no test checks) | Rule 2 holds: the push ends applied, the box correct by its own contract (the signed file is the whole config), and it names the out-of-band edit (`caddyfile_edited_out_of_band`, a warning in the template's `bin/apply`). If that leaves an app with no backup block, the next run says once that it no longer declares a backup, naming its last snapshot — only where the record before held one: an app never backed up leaves in silence (`engine.go`, the run's `apps`; `TestAnAppThatLeftThePlanIsSaidOnce`). A path dropped from a block still declared is not said either. Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-18). The step names the box repo first and says to skip the two lines there. |
 | With a key that may read but not write — one that lost writing after `setup` (a bucket policy, a key replaced by a narrower one), or one `setup` took because another restic held the repository at the write check (exit 11, said) — every drill fetch and every `restore` spends restic's quarter of an hour retrying the lock's `Save` before exit 1 (`restore` fetches the same way, and on a rebuilt box nothing is backed up first), and a fetch's exit 1 is that app's own, so a drill of N apps holds the run lock for about 15 N minutes, hourly runs refused meanwhile; the line, "restic could not restore all of it (exit 1)", is said of a fetch that restored nothing. | `fetch` (`backups/engine/restore.go`, the exit-1 branch: `wide` false; `drillApp` returns `errors.As(err, new(repositoryWideError))`; `Drill` sets `refused` on a wide error alone; `restore` reaches `fetch` through `bring`) | 2 | 1 | 1 | 2 | size 2, risk 2 (a branch on the fetch's `--json` summary, absent when the lock was never written; and a decision on `wide`, where a snapshot path not held also exits 1 with nothing restored; restic's stderr is not to hand — the unit keeps stdout alone, stderr goes to the journal, and its other lines carry an app's file names — and `--no-lock` on the fetch would drop the lock that keeps an off-box prune away from it, unmeasured) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-22, #170, PR #346; narrowed 2026-10-23 when `setup` was made to write a lock file to a repository that is there already before it takes the key, RC check 6 — the key the row first described is refused at setup, so what is left is one that could write then and cannot now). Red and named by the drill's own line: it exits 1 with "restore not proven", names no wrong cause, and gives the exact `journalctl -u …fetch…` command, where restic's `Save(<lock/…>)` lines name the key. On the timers the hourly runs have been red for days before a Sunday drill (RC check 6, on `v0.3.0-rc1`, whose setup did not check: the run 868 s, the drill 832 s); a drill or a `restore` run by hand before any run has no run line to lean on, and `status`'s `running:` line shows the fetch and since when without flagging it. Exit 1 stays app-own by design: one app's failure never skips the next (the 2026-09-19 review, where it once did). The owner chose the one neutral line over a wording per cause. |
 | A key that may write and not delete — narrower than the guide's policies, which grant the delete (on B2 `writeFiles` covers the hide restic deletes by) — passes `setup`'s write check: restic's failed removal of its own lock file is logged, not an exit status (restic 0.18, `internal/repository/lock.go`, the deferred unlock), so `cat config` exits 0 and `repository ready` is said; every run, restore and drill then leaves one more lock file the key cannot remove, which restic never passes by itself [M75], so the first prune, or an exclusive check from elsewhere, exits 11, "locked by another restic", until `restic unlock` with a key that may delete. | `writable` (`backups/engine/setup.go`); the same key fails the same way on `backup` before and without the check | 2 | 5 | 3 | 30 | size 3, risk 2 (a `list locks` unit before and after the write, compared, and a refusal; a lock taken from elsewhere between the two would refuse a right key) | By rule 3 the product is 30 and this is a fix; recorded here pending the owner's call (2026-10-23, the write-check PR, review round 2), since the key is one the guide's two policies never make, the failure is older than the check, and the guard is a third unit on every setup of a repository that is there already. Red at the first prune or exclusive check, named as a lock (the drill's own check takes none); `restic unlock` is the remedy, which that key cannot run either: a key that may delete, from your own machine ("Look from your own machine" in the guide). |
+| `setup`'s look (`restic cat config`) exiting 1 within its clock for a reason other than the storage refusing — a config file restic cannot read, a TLS trust failure — is said as every exit 1 is, "restic could not open the repository (exit 1): <restic's words>" then "the storage refused the key, or could not be reached: the key id and secret again", and setup ends after three askings with restic's words; before #175 the look was given up on and init said the same words after a password had been shown. | `look` (`backups/engine/setup.go`), `lookRefused` | 2 | 3 | 1 | 6 | size 1, risk 2 (reading the look's exit 1 by restic's wording, as init's is, would send a storage that refuses at once in another shape — S3's `AccessDenied` comes through the config's Stat, not the opening — back to the password-first path) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, #175). Rule 2 holds: red, with restic's own words on the line, and nothing written. |
 
 ## Development
 

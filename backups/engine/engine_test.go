@@ -67,6 +67,7 @@ type box struct {
 	// a role whose unit never ends, the manager's version, which
 	// programs are installed and whether the account is
 	initOut, initErr, probeOut string
+	probeErr                   string // what the look says on stderr
 	openErr                    string // what the open unit says on stderr
 	writeErr                   string // what the write unit says on stderr
 	planErr                    string // what the plan unit says on stderr
@@ -387,7 +388,7 @@ func (b *box) Run(ctx context.Context, s unit.Spec) (unit.Outcome, error) {
 	case "probe", "open", "write":
 		write(b.probeOut)
 		if s.StderrFile != "" {
-			stderr := ""
+			stderr := b.probeErr
 			switch role {
 			case "open":
 				stderr = b.openErr
