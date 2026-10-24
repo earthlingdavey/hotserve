@@ -1140,13 +1140,15 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 		// raw error. The Fatal line alone is not the write: restic's
 		// look for other locks before it writes anything ends on the
 		// same wrapper [restic 0.18, internal/restic/lock.go,
-		// checkForOtherLocks]. So the refusal is the Save line, among
-		// the lines restic ended on; anything else is the opening's own
-		// words. The password had opened the repository, and the key is
+		// checkForOtherLocks]. So the refusal is the Save line that
+		// failed, among the lines restic ended on — not one it retried
+		// and then made ("returned error, retrying after"), which a
+		// failure after it can leave two lines back; anything else is
+		// the opening's own words. The password had opened the repository, and the key is
 		// refused at the write — opened, so that the caller knows the
 		// password is the repository's, with no id, since restic prints
 		// the config after the lock.
-		if save := s.tailLine("open", "Save(<lock/"); save != "" {
+		if save := s.tailLine("open", "Save(<lock/"); save != "" && strings.Contains(save, ") failed:") {
 			return "", true, errors.New("this key opened the repository, and restic exited 1 at its lock file's write" + tail + resticSaid(save))
 		}
 		return "", false, errors.New("restic could not open the repository (exit 1): " + record.Text(message))
@@ -1190,9 +1192,9 @@ func (s *setup) reopen(ctx context.Context, before []string, held string) (id st
 		// restic exits 11 for it as for a live one: every run and drill
 		// after would exit 11 until someone ran restic unlock [M75].
 		if s.made {
-			s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: this key wrote the repository a moment ago; whether it can remove a lock file was not checked" + "; restic never passes a lock nothing holds by itself: if the holder is gone, restic unlock clears it" + resticSaid(held))
+			s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: this key wrote the repository a moment ago; whether it can remove a lock file was not checked" + "; restic never passes a lock nothing holds by itself: if the holder is gone, restic unlock clears it from the holder's own host at once, from elsewhere once it is half an hour old, or with --remove-all when nothing else holds the repository" + resticSaid(held))
 		} else {
-			s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked" + "; restic never passes a lock nothing holds by itself: if the holder is gone, restic unlock clears it" + resticSaid(held))
+			s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked" + "; restic never passes a lock nothing holds by itself: if the holder is gone, restic unlock clears it from the holder's own host at once, from elsewhere once it is half an hour old, or with --remove-all when nothing else holds the repository" + resticSaid(held))
 		}
 		// restic writes its own lock before its second look for others
 		// and removes it on a conflict [restic 0.18, internal/restic/

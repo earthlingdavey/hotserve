@@ -125,6 +125,9 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		{"the write refused (exit 1) after reads that were retried: the Save line is the one appended", func(b *box) {
 			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, strings.Repeat("Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down\n", 3)+denied+"\n"
 		}, "this key opened the repository, and restic exited 1 at its lock file's write: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: " + denied + ")", ""},
+		{"a lock write retried once and made, then restic's look for other locks failed: the retry's Save line is no refusal — the opening's own words", func(b *box) {
+			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, "Save(<lock/0a11f6bb7c>) returned error, retrying after 1.494715917s: client.PutObject: 500 Internal Server Error\nFatal: unable to create lock in backend: unexpected end of JSON input\n"
+		}, "restic could not open the repository (exit 1): ", ""},
 		{"restic's look for other locks failed before it wrote (the same Fatal wrapper, no Save line): the opening's own words, not the key's", func(b *box) {
 			// The shape restic's lock.go gives a lock it could not read
 			// in checkForOtherLocks — the Fatal wrapper round the raw
@@ -207,7 +210,7 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 			"no such user", ""},
 		{"another restic holds the repository (exit 11): read again without the lock, the holder said as restic names it, not the key's doing", func(b *box) {
 			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 11}, "Fatal: unable to create lock in backend: repository is already locked exclusively by PID 31337 on laptop by alice (UID 1000, GID 1000)\nlock was created at 2026-10-24 19:40:12 (2m10s ago)\nstorage ID 0a11f6bb\n"
-		}, "", "the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked; restic never passes a lock nothing holds by itself: if the holder is gone, restic unlock clears it (restic said: Fatal: unable to create lock in backend: repository is already locked exclusively by PID 31337 on laptop by alice (UID 1000, GID 1000) lock was created at 2026-10-24 19:40:12 (2m10s ago) storage ID 0a11f6bb)"},
+		}, "", "the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked; restic never passes a lock nothing holds by itself: if the holder is gone, restic unlock clears it from the holder's own host at once, from elsewhere once it is half an hour old, or with --remove-all when nothing else holds the repository (restic said: Fatal: unable to create lock in backend: repository is already locked exclusively by PID 31337 on laptop by alice (UID 1000, GID 1000) lock was created at 2026-10-24 19:40:12 (2m10s ago) storage ID 0a11f6bb)"},
 		{"the key writes", func(*box) {}, "", "repository ready"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
