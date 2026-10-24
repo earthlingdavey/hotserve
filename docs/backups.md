@@ -89,7 +89,7 @@ apt-get update && apt-get install -y backblaze-b2
 backblaze-b2 authorize-account     # asks for the master key's id, then the key
 backblaze-b2 create-key --bucket my-backups hotserve-box listBuckets,listFiles,readFiles,writeFiles
 backblaze-b2 create-key --bucket my-backups hotserve-laptop listBuckets,listFiles,readFiles,writeFiles
-backblaze-b2 clear-account         # forgets the master key the first line stored on this machine
+backblaze-b2 clear-account         # forgets the master key authorize-account stored on this machine
 ```
 
 Each `create-key` prints the new key's id and the key itself, once.
@@ -377,8 +377,9 @@ repo, which the first deploy makes
 applied before step 4, since until then the box has no env file for
 the app ([A rebuilt box](secrets.md#a-rebuilt-box)). A `deploy_trust
 local` public key is a file the Caddyfile names, not a commit, and
-`hotserve init` refuses a Caddyfile whose key file is missing: before
-step 1, put the `.pub` back from where the pair is kept, or make a new
+`hotserve init` refuses a Caddyfile whose key file is missing: in
+step 1, after the install and before `hotserve init`, put the `.pub`
+back from where the pair is kept, or make a new
 pair there with `hotserve deploy-keygen` — on the machine that mints
 the tokens, a runner's secret or your own — and copy only the `.pub`
 to the box.
@@ -629,6 +630,13 @@ the password and, through the key files, the master key that encrypts
 every backup — and restic changes a master key only by moving the data
 into a new repository (`restic copy`) or starting a new one. Anyone who
 later reads the bucket with them can read the backups.
+
+The apps' secrets are the attacker's too: root read every env file
+under `/etc/hotserve/secrets` in clear, and the box's key with them.
+Every value changes — database passwords, third-party keys — set anew
+with `make secret` ([Add a secret](secrets.md#add-a-secret)) before
+the first deploy to the rebuilt box; `make rekey` alone re-encrypts
+the values the attacker holds.
 
 ## Against a real provider
 

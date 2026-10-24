@@ -1,4 +1,4 @@
-## L11, 2026-10-24: the guide's tar line (docs/backups.md, A rebuilt box) on Debian 13, dev container
+## L11, 2026-10-24: a kept-copy tar line for a box without a box repo, carried by docs/backups.md "A rebuilt box" in PR #356 until the owner dropped the recipe the same day (the guide's way back is the box repo); a record, not guidance. On Debian 13, dev container
  Container hotserve-dev-run-016a8ffd374f Creating 
  Container hotserve-dev-run-016a8ffd374f Created 
 Debian GNU/Linux 13 (trixie)

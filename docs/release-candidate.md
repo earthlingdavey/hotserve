@@ -248,9 +248,10 @@ two before installing the package). Then
 box's uid. **Unverified** on a provider; on the e2e server (uids 996
 and 993) the restore put back the database and the files, owned by
 993, and the first run and drill there were `ok` and proven. **On B2:**
-the same, uids 996 and 993, the restore 10 s. The guide's way back to
-the Caddyfile is the box repo; the e2e run (L5 in the design record,
-before the box channel) put `/etc/hotserve` back from a copy instead.
+a second box with no box repo, its Caddyfile copied over (as the e2e
+run, L5 in the design record, before the box channel), uids 996 and
+993, the restore 10 s. The guide's way back — the box repo and
+`hotserve init` — is **unverified** on any box.
 
 ## 8. One drill, timed, and its egress
 
