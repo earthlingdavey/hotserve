@@ -386,6 +386,7 @@ func TestARepositoryTheBoxCannotUseIsRefusedBeforeAnyPrompt(t *testing.T) {
 		{"s3:http://s3.eu-central-003.backblazeb2.com/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
 		{"s3:http://S3.EU-CENTRAL-003.BACKBLAZEB2.COM.:443/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
 		{"s3:http://s3.us-west-004.backblazeb2.com:80/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
+		{"s3:http://s3.us-west-004.backblazeb2.com:/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
 		{"rest:user:pass@host:8000/", "rest:, gs: and swift: are not set up by this command"},
 		{"s3:http://e2e-s3:9000/b\x01x", "the repository URL cannot go in the file: it holds a control character"},
 		{"ftp://host/x", "(setup asks for s3:)"},
@@ -566,8 +567,11 @@ func TestStatusAdvisesB2sRegionWhereAFileHasNone(t *testing.T) {
 	for _, tc := range []struct{ repo, region, want string }{
 		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "", "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set: add AWS_DEFAULT_REGION=eu-central-003, as setup writes it"},
 		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "eu-central-003", ""},
+		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "us-east-1", "the repository is at B2's S3-compatible endpoint in eu-central-003, and AWS_DEFAULT_REGION is us-east-1: set AWS_DEFAULT_REGION=eu-central-003, as setup writes it"},
 		{"s3:https://s3.example.com/b", "", ""},
 		{"b2:b:p", "", ""},
+		// A URL setup refuses: status has said so, and nothing more.
+		{"s3:http://s3.eu-central-003.backblazeb2.com/b", "", ""},
 	} {
 		if got := RegionAdvice(tc.repo, tc.region); got != tc.want {
 			t.Errorf("%s, %q: %q, want %q", tc.repo, tc.region, got, tc.want)

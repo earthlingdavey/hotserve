@@ -975,7 +975,11 @@ It needs no privilege.
   unchanged; and of a file written by hand for B2's S3-compatible
   endpoint with no region, `warning: <file>: the repository is at
   B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set: add
-  AWS_DEFAULT_REGION=<region>, as setup writes it`.
+  AWS_DEFAULT_REGION=<region>, as setup writes it`, or with another
+  region than the endpoint's name holds, `… in <region>, and
+  AWS_DEFAULT_REGION is <other>: set AWS_DEFAULT_REGION=<region>, as
+  setup writes it` — neither of a URL setup refuses, which status has
+  already said.
 - `setup`, at a prompt: an empty value, one with a line break or a
   control character, or one that is not UTF-8 — the file cannot hold
   it — three times; and a password not confirmed `stored`.

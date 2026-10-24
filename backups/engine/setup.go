@@ -480,7 +480,8 @@ func b2RegionOf(authority string, loose bool) string {
 	}
 	host := strings.ToLower(authority)
 	if loose {
-		if i := strings.LastIndexByte(host, ':'); i >= 0 && isDigits(host[i+1:]) {
+		// An empty port too, which url.Parse takes for the scheme's own.
+		if i := strings.LastIndexByte(host, ':'); i >= 0 && (i == len(host)-1 || isDigits(host[i+1:])) {
 			host = host[:i]
 		}
 		host = strings.TrimSuffix(host, ".")
@@ -502,11 +503,21 @@ func isDigits(s string) bool {
 
 // RegionAdvice is what status as root says of a credential file whose
 // repository is at B2's S3-compatible endpoint and which sets no
-// AWS_DEFAULT_REGION — one written by hand — or "": what setup would
-// have written (b2Region).
+// AWS_DEFAULT_REGION, or another than the endpoint's name holds — one
+// written by hand — or "": what setup would have written (b2Region).
+// Nothing of a URL setup refuses, which status has said instead.
 func RegionAdvice(repo, region string) string {
-	if r := b2Region(repo); r != "" && region == "" {
+	if RepositoryUsable(repo, "") != nil {
+		return ""
+	}
+	r := b2Region(repo)
+	switch {
+	case r == "":
+		return ""
+	case region == "":
 		return "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set: add AWS_DEFAULT_REGION=" + r + ", as setup writes it"
+	case region != r:
+		return "the repository is at B2's S3-compatible endpoint in " + r + ", and AWS_DEFAULT_REGION is " + record.Clean(region) + ": set AWS_DEFAULT_REGION=" + r + ", as setup writes it"
 	}
 	return ""
 }
