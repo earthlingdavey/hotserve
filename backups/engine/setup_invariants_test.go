@@ -88,10 +88,24 @@ func TestWhateverLeavesInitRunningLeavesItWhatItNeeds(t *testing.T) {
 func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten(t *testing.T) {
 	const denied = "Save(<lock/b8e7993d85>) failed: client.PutObject: Access Denied."
 	host, _ := os.Hostname()
-	// A lock the opening left bears a time after setup read its clock:
-	// the rows that refuse write it a few seconds on.
-	ownLock := func(at time.Time) string {
-		return `{"time":"` + at.UTC().Format(time.RFC3339Nano) + `","exclusive":false,"hostname":"` + host + `","username":"hotserve-backup","pid":4242,"uid":993,"gid":993}` + "\n"
+	// A lock file as restic writes it, by this box's backup account.
+	ownLock := func() string {
+		return `{"time":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","exclusive":false,"hostname":"` + host + `","username":"hotserve-backup","pid":4242,"uid":993,"gid":993}` + "\n"
+	}
+	// lockListings is what each `list locks` of the setup prints in
+	// turn: before the opening, after it, and again after a lock could
+	// not be read; the last given stands for the rest.
+	lockListings := func(b *box, listings ...string) {
+		n := 0
+		b.locksOut = listings[0]
+		b.before = func(s unit.Spec) {
+			if strings.Contains(s.Name, "_locks_") {
+				if n < len(listings) {
+					b.locksOut = listings[n]
+				}
+				n++
+			}
+		}
 	}
 	const lockID = "0a11f6bb7c3d0f41d8d8f4e2b6c1a0f3e9d7c5b4a3928170605f4e3d2c1b0a99"
 	for _, tc := range []struct {
@@ -133,37 +147,37 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 			b.hang, b.openErr = "open", "signal terminated received, cleaning up\n"
 		}, "restic had not finished opening the repository and writing a lock file to it within 200ms: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here", ""},
 		{"the key wrote the lock file and could not remove it: the lock the opening left names it", func(b *box) {
-			b.locksOut, b.lockOut = lockID+"\n", ownLock(time.Now().Add(5*time.Second))
-		}, "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository", ""},
+			lockListings(b, "", lockID)
+			b.lockOut = ownLock()
+		}, "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb): unless some other restic of that account was running beside setup, or on another machine with this hostname, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository", ""},
+		{"a lock there before the opening is never read, whoever wrote it: no refusal, no reading", func(b *box) {
+			lockListings(b, lockID, lockID)
+			b.lockOut, b.err["lock"] = ownLock(), errors.New("a lock listed before the opening was read")
+		}, "", "repository ready"},
 		{"a lock from another host is not the opening's: no refusal", func(b *box) {
-			b.locksOut, b.lockOut = lockID+"\n", strings.Replace(ownLock(time.Now().Add(5*time.Second)), host, "laptop", 1)
+			lockListings(b, "", lockID)
+			b.lockOut = strings.Replace(ownLock(), host, "laptop", 1)
 		}, "", "repository ready"},
 		{"a lock by another user on this host is not the opening's: no refusal", func(b *box) {
-			b.locksOut, b.lockOut = lockID+"\n", strings.Replace(ownLock(time.Now().Add(5*time.Second)), "hotserve-backup", "root", 1)
-		}, "", "repository ready"},
-		{"a lock this account left an hour ago is not the opening's: no refusal", func(b *box) {
-			b.locksOut, b.lockOut = lockID+"\n", ownLock(time.Now().Add(-time.Hour))
-		}, "", "repository ready"},
-		{"a lock this account left seconds before the opening began is not the opening's: no refusal", func(b *box) {
-			b.locksOut, b.lockOut = lockID+"\n", ownLock(time.Now().Add(-5*time.Second))
+			lockListings(b, "", lockID)
+			b.lockOut = strings.Replace(ownLock(), "hotserve-backup", "root", 1)
 		}, "", "repository ready"},
 		{"another restic held the repository (exit 11), and the lock restic wrote before its second look stayed: refused by it", func(b *box) {
-			b.outcome["open"], b.locksOut, b.lockOut = unit.Outcome{Result: "exit-code", ExitStatus: 11}, lockID+"\n", ownLock(time.Now().Add(5*time.Second))
+			b.outcome["open"] = unit.Outcome{Result: "exit-code", ExitStatus: 11}
+			lockListings(b, "", lockID)
+			b.lockOut = ownLock()
 		}, "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb)", ""},
 		{"a lock listed, and gone by its reading: another restic's, passed over", func(b *box) {
-			b.locksOut, b.outcome["lock"] = lockID+"\n", unit.Outcome{Result: "exit-code", ExitStatus: 1}
-			locks := 0
-			b.before = func(s unit.Spec) {
-				if strings.Contains(s.Name, "_locks_") {
-					if locks++; locks == 2 {
-						b.locksOut = ""
-					}
-				}
-			}
+			lockListings(b, "", lockID, "")
+			b.outcome["lock"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 		}, "", "was gone before it could be read: another restic's, not this key's"},
 		{"a lock listed, unreadable, and still listed: not passed over", func(b *box) {
-			b.locksOut, b.outcome["lock"] = lockID+"\n", unit.Outcome{Result: "exit-code", ExitStatus: 1}
+			lockListings(b, "", lockID, lockID)
+			b.outcome["lock"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 		}, "lock 0a11f6bb could not be read: whether this setup's opening left it is not known; run setup again (restic failed (exit 1)", ""},
+		{"the listing before the opening could not answer: setup ends, named, before anything is written", func(b *box) {
+			b.outcome["locks"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+		}, "listing the repository's locks: restic failed (exit 1)", ""},
 		{"the listing could not answer", func(b *box) { b.outcome["locks"] = unit.Outcome{Result: "exit-code", ExitStatus: 1} },
 			"listing the repository's locks: restic failed (exit 1)", ""},
 		{"the listing printed what is no lock id", func(b *box) { b.locksOut = "not-an-id\n" },
@@ -190,7 +204,7 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 				if envOf(t, b.cfg.EnvFile)["RESTIC_PASSWORD"] != "its-own-password" {
 					t.Fatal("the file was not put in place")
 				}
-				if strings.Contains(tc.said, "exit 11") && (b.roles() != "plan probe open reopen locks" || !strings.Contains(strings.Join(b.spec("reopen").Argv, " "), "--no-lock")) {
+				if strings.Contains(tc.said, "exit 11") && (b.roles() != "plan probe locks open reopen locks" || !strings.Contains(strings.Join(b.spec("reopen").Argv, " "), "--no-lock")) {
 					t.Fatalf("units %s; reopen %v", b.roles(), b.spec("reopen").Argv)
 				}
 				return
@@ -214,11 +228,12 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	// the lock once, for the lock a key that may not delete leaves —
 	// and refused by it the same.
 	b, m := setupBox(t)
-	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err != nil || b.roles() != "plan probe init open locks" {
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err != nil || b.roles() != "plan probe init locks open locks" {
 		t.Fatalf("err %v, units %s", err, b.roles())
 	}
 	b, m = setupBox(t)
-	b.locksOut, b.lockOut = lockID+"\n", ownLock(time.Now().Add(5*time.Second))
+	lockListings(b, "", lockID)
+	b.lockOut = ownLock()
 	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb)") || !strings.Contains(err.Error(), "the password shown above is the repository's: keep it") {
 		t.Fatalf("err %v, units %s", err, b.roles())
 	}
@@ -262,7 +277,7 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	if err == nil || !strings.Contains(err.Error(), "this key opened the repository, and restic exited 1 at its lock file's write: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here") || !strings.Contains(err.Error(), "the password shown above is the repository's: keep it") {
 		t.Fatalf("err = %v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe init probe open"; got != want {
+	if got, want := b.roles(), "plan probe init probe locks open"; got != want {
 		t.Fatalf("units %s, want %s", got, want)
 	}
 	if _, err := os.Lstat(b.cfg.EnvFile); !errors.Is(err, os.ErrNotExist) {

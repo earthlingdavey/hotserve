@@ -179,7 +179,7 @@ finds the lock it left and refuses the key by it, naming the lock
 (on the e2e server, behind a proxy that refuses DELETE alone):
 
 ```
-hotserve-backup: this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock …): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository
+hotserve-backup: this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock …): unless some other restic of that account was running beside setup, or on another machine with this hostname, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository
 ```
 
 `restic unlock` from your own machine, with the key that may delete,
