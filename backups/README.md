@@ -1123,7 +1123,8 @@ What can be known to fail is refused before anything is asked for
    for again, up to three times; a storage that refuses the opening is
    said in restic's words. A key that may read and not write is refused
    before anything of setup's is written: at once where the storage
-   says so plainly (S3's 403: restic exits 1 on its "Save(<lock/" line),
+   says so plainly (S3's 403: restic exits 1, ending on "Fatal: unable
+   to create lock in backend"),
    at the two-minute clock where restic retries (B2's 401, which it
    retried for a quarter of an hour [measured, RC check 6]) — a run with
    such a key fails that long after it starts, every hour. What is said
@@ -1133,9 +1134,11 @@ What can be known to fail is refused before anything is asked for
    only read and a storage that refuses or does not answer writes, and
    the last line restic said, which tells them apart (a 403 or 401 the
    key, a 500 or 503 the storage, a `Load` line a read that never
-   reached the write); nothing is inferred from that line beyond its
-   "Save(<lock/" head, and no remedy named, since a key replaced for a
-   storage that throttled reads is the wrong one. A stop or Ctrl-C
+   reached the write); nothing is inferred from that line beyond
+   restic's "unable to create lock" ending, and no remedy named, since
+   a key replaced for a storage that throttled reads is the wrong one
+   — but for a repository init made a moment ago, where the key is
+   known to write and the storage is named. A stop or Ctrl-C
    between the lock file's writing and its removal leaves it, which
    restic never passes by itself [M75] and `restic unlock` removes; the
    waiting note and the interrupt say so. **A key that may write and
@@ -1151,12 +1154,17 @@ What can be known to fail is refused before anything is asked for
    records the unit's hostname and user [measured: the e2e's
    write-not-delete case] — since the opening began, a minute either
    way for the clocks, is the opening's own, and the key is refused,
-   naming the lock: "a key that may not delete cannot prune, and every
-   run would leave one more lock; restic unlock, from a machine with a
-   key that may delete, clears it". A lock from elsewhere — another
-   host, another user, another time — is not the opening's, and never
+   naming the lock: unless some other restic of that account was
+   running beside setup (a run's own units cannot be: setup holds the
+   run lock), this key wrote it and could not remove it; "a key that
+   may not delete cannot prune, and every run would leave one more
+   lock; restic unlock, from a machine with a key that may delete,
+   clears a lock nothing holds". A lock from elsewhere — another host,
+   another user, another time — is not the opening's, and never
    refuses a right key: that match is what keeps an off-box prune's
-   lock from being taken for ours. A lock gone, or unreadable, by the
+   lock from being taken for ours; a restic of this account run by
+   hand beside setup refreshes its lock in that window and is refused
+   once, said as above ("Accepted residuals"). A lock gone, or unreadable, by the
    time it is read is nobody's: said, no refusal. Where another restic
    holds the repository (exit 11: a prune or a check from elsewhere)
    the opening is read again without the lock, which proves the
@@ -1282,7 +1290,9 @@ severity × occurrence × detection, then the fix's size and risk.
 | At the opening's clock, the line appended is the last restic said before the stop's own — known by restic 0.18.0's wording ("context canceled", "signal terminated received") — so a restic that rewords its stop would have its stop line quoted in place of the storage's. | `lastSaid` (`backups/engine/setup.go`) | 2 | 2 | 3 | 12 | size 2, risk 2 (cut at the stop's moment instead of its words: the unit's stderr carries no timestamps) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, the write-check PR). The e2e's clock case asserts the retry line is the one appended, so a rewording goes red there before it ships. |
 | An exit 1 at the opening whose own last line says "context canceled" is appended as the storage's word. | `lastSaid` | 2 | 1 | 3 | 6 | size 1, risk 2 | restic's stuck-request watchdog is five minutes and the opening's clock two, so within the clock the only cancel is setup's own, which is passed over; accepted (2026-10-23, the write-check PR). |
 | At the opening's clock, a stop of the unit the manager could not confirm ends setup in the runner's words ("the unit could not be confirmed gone: hotserve_backup_open_…"), with no word of the key, the lock file that may stay, or `restic unlock`. | `openRepository` (`backups/engine/setup.go`), the `err != nil` arm; the look's clock ends the same way | 2 | 2 | 1 | 4 | size 2, risk 2 (a wording for `unit.ErrNotConfirmedGone` in the opening, as `check.go`'s probe has) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, the write-check PR, scored three times). The line names the unit, and `systemctl status` of it shows restic still at its retries; the operator's remedy is the one the clock refusal gives. |
-| A Ctrl-C at the opening that lands before restic has started (between the password's prompt and the manager taking the unit) ends with the interrupt's word that a lock file restic was writing may stay, though nothing ran. | `openRepository` sets `writing` before the unit; `err` (`backups/engine/setup.go`) | 2 | 5 | 1 | 10 | size 2, risk 2 (set the flag from the runner once the unit has started) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, the write-check PR). "May stay" holds either way, and `restic list locks` from your own machine answers it; nothing after the opening returns an interrupt, so the flag standing afterwards reaches no line. |
+| A Ctrl-C at the opening that lands before restic has started (between the password's prompt and the manager taking the unit) ends with the interrupt's word that a lock file restic was writing may stay, though nothing ran. | `openRepository` sets `writing` before the unit; `err` (`backups/engine/setup.go`) | 2 | 5 | 1 | 10 | size 2, risk 2 (set the flag from the runner once the unit has started) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, the write-check PR). "May stay" holds either way, and `restic list locks` from your own machine answers it; the units after the opening (the locks listing, a lock's reading) run on the same context, and an interrupt there says the same, which is right of them: the opening may have left one. |
+| A restic of the backup account run by hand beside `setup` (`sudo -u hotserve-backup restic …`; a run's own units cannot be, since setup holds the run lock) refreshes its lock within the opening's window, on this host, as this user: the opening takes it for its own and refuses the key once. | `ownLock` (`backups/engine/setup.go`) | 2 | 3 | 1 | 6 | size 2, risk 2 (list the lock ids before the opening too, and read only the ids new since; a refresh in the window still matches) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-24, the write-check PR). Red and named: the refusal says "unless some other restic of that account was running beside setup", and says `restic unlock` clears a lock nothing holds; setup again when it has ended passes. |
+| A repository holding many locks already (a key that may not delete ran for days before this setup) costs one `cat lock` unit per lock, in the listing's order, before the opening's own is found; one that stalls ends setup at its clock, named as the lock's reading. | `locksLeft` | 2 | 3 | 1 | 6 | size 2, risk 2 (the ids listed before the opening, and only the new ones read) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-24). A repository in that state is already what the refusal warns of, and `restic unlock` from a machine with a key that may delete is the way out of it either way. |
 | `setup`'s look (`restic cat config`) exiting 1 within its clock for a reason other than the storage refusing — a config file restic cannot read, a TLS trust failure — is said as every exit 1 is, "restic could not open the repository (exit 1): <restic's words>" then "the storage refused the key, or could not be reached: the key id and secret again", and setup ends after three askings with restic's words; before #175 the look was given up on and init said the same words after a password had been shown. | `look` (`backups/engine/setup.go`), `lookRefused` | 2 | 3 | 1 | 6 | size 1, risk 2 (reading the look's exit 1 by restic's wording, as init's is, would send a storage that refuses at once in another shape — S3's `AccessDenied` comes through the config's Stat, not the opening — back to the password-first path) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-23, #175). Rule 2 holds: red, with restic's own words on the line, and nothing written. |
 
 ## Development

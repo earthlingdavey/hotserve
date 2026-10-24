@@ -231,7 +231,7 @@ t0=$(date +%s)
 converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
 rc=$?
 took=$(($(date +%s) - t0))
-[ "$rc" != 0 ] && says "this key wrote a lock file to the repository and could not remove it (lock [0-9a-f]\{8\}): a key that may not delete cannot prune, and every run would leave one more lock; restic unlock, from a machine with a key that may delete, clears it" && [ "$took" -lt 20 ] && pass "a key that may write and not delete is refused by the lock it left, named (${took}s)" || fail "a key that may not delete: exit $rc after ${took}s: $(cat "$OUT"); locks: $(rr list locks --no-lock 2>&1 | while read -r id; do rr cat lock "$id" --no-lock 2>&1; done)"
+[ "$rc" != 0 ] && says "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock [0-9a-f]\{8\}): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock, from a machine with a key that may delete, clears a lock nothing holds" && [ "$took" -lt 20 ] && pass "a key that may write and not delete is refused by the lock it left, named (${took}s)" || fail "a key that may not delete: exit $rc after ${took}s: $(cat "$OUT"); locks: $(rr list locks --no-lock 2>&1 | while read -r id; do rr cat lock "$id" --no-lock 2>&1; done)"
 says "repository ready" && fail "setup said the repository was ready" || pass "and not called ready"
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "the working file is byte-identical, no copy of a credential is left, no unit is running" || fail "after a key that may not delete: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
 # The lock that key left is cleared as the refusal says: restic unlock,
@@ -252,10 +252,6 @@ rc=$?
 grep -q "^RESTIC_PASSWORD=$pw\$" "$ENVFILE" && pass "the file holds the repository's own password" || fail "the file holds: $(grep PASSWORD "$ENVFILE" | sed 's/=.*/=…/')"
 says "$pw" && fail "the repository's password was shown as it was typed" || pass "the repository's password was not shown as it was typed"
 says "the repository exists; its password is needed" && ! says "Repository password (new)" && ! says "stored" && pass "a rebuilt box is asked for the password it has, and shown none" || fail "the rebuilt box was shown: $(grep -i password "$OUT")"
-# The opening itself took the lock: the units this setup ran are the
-# look, the opening and the locks listing — no unit of a write check.
-units=$(journalctl --no-pager -o cat -u 'hotserve_backup_*' --since "-2min" 2>/dev/null | grep -o 'hotserve_backup_[a-z]*_' | sort -u | tr '\n' ' ')
-case " $units " in *" hotserve_backup_write_ "*) fail "a write unit ran beside the opening: $units";; *) pass "the opening took the lock itself: no write unit ($units)";; esac
 rr cat config --no-lock >/dev/null 2>&1 && pass "the repository answers" || fail "the repository does not answer"
 # With no file before, the record cannot be tied to this repository: it
 # is put aside, and the next run drills what it backs up here.

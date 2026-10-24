@@ -132,7 +132,7 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		}, "restic had not finished opening the repository and writing a lock file to it within 200ms: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here", ""},
 		{"the key wrote the lock file and could not remove it: the lock the opening left names it", func(b *box) {
 			b.locksOut, b.lockOut = lockID+"\n", ownLock(time.Now())
-		}, "this key wrote a lock file to the repository and could not remove it (lock 0a11f6bb): a key that may not delete cannot prune, and every run would leave one more lock; restic unlock, from a machine with a key that may delete, clears it", ""},
+		}, "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock, from a machine with a key that may delete, clears a lock nothing holds", ""},
 		{"a lock from another host is not the opening's: no refusal", func(b *box) {
 			b.locksOut, b.lockOut = lockID+"\n", strings.Replace(ownLock(time.Now()), host, "laptop", 1)
 		}, "", "repository ready"},
@@ -197,7 +197,14 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	}
 	b, m = setupBox(t)
 	b.locksOut, b.lockOut = lockID+"\n", ownLock(time.Now())
-	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "this key wrote a lock file to the repository and could not remove it (lock 0a11f6bb)") || !strings.Contains(err.Error(), "the password shown above is the repository's: keep it") {
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb)") || !strings.Contains(err.Error(), "the password shown above is the repository's: keep it") {
+		t.Fatalf("err %v, units %s", err, b.roles())
+	}
+	// A refusal at that opening is not the key's reading: init wrote
+	// the repository with it a moment ago, and the line says so.
+	b, m = setupBox(t)
+	b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, denied+"\nFatal: unable to create lock in backend: client.PutObject: 500 Internal Server Error\n"
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "restic exited 1 at its lock file's write: this key wrote the repository a moment ago, so the storage refused or did not answer the write; run setup again, which looks first and asks for the password (restic said: Fatal: unable to create lock in backend: client.PutObject: 500 Internal Server Error); the password shown above is the repository's: keep it") {
 		t.Fatalf("err %v, units %s", err, b.roles())
 	}
 	// One an earlier attempt's init made, opened with the password
