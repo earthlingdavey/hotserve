@@ -414,7 +414,7 @@ func b2Refused(repo string) error {
 // names a b2: repository: what to run, first, so that the record's cut
 // (record.Text, 300 runes) takes the reason before the remedy — short,
 // so that the cut takes neither for a bucket and path of up to 59
-// characters, the slash between them counted. The URL is in single quotes, so that the command pasted as
+// characters as escaped (b2AsS3), the slash between them counted. The URL is in single quotes, so that the command pasted as
 // it is reaches setup whole: the placeholder's < and >, and a $, & or ;
 // the path may hold, are the shell's otherwise; b2AsS3 leaves no ' in it
 // to end the quotes.
@@ -512,7 +512,7 @@ func RegionAdvice(repo, region string) string {
 	case r == "":
 		return ""
 	case region == "":
-		return "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set: add AWS_DEFAULT_REGION=" + r + ", as setup writes it"
+		return "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set, or set to nothing: add AWS_DEFAULT_REGION=" + r + ", as setup writes it"
 	case region != r:
 		return "the repository is at B2's S3-compatible endpoint in " + r + ", and AWS_DEFAULT_REGION is " + record.Clean(region) + ": set AWS_DEFAULT_REGION=" + r + ", as setup writes it"
 	}

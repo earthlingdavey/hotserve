@@ -960,7 +960,7 @@ It needs no privilege.
   quotes, so that the command pasted as it is reaches setup whole, the
   escaping leaving no `'` in it, and short enough that the record's
   300 runes keep all of it for a bucket and path of up to 59
-  characters. A credential file they cannot read is refused there
+  characters as escaped. A credential file they cannot read is refused there
   too, "the credential file <path> could not be read: <why>", where
   every unit would otherwise fail to start — one that is not a
   regular file among them, "it is not a regular file (p---------)"
@@ -977,7 +977,8 @@ It needs no privilege.
   RESTIC_REPOSITORY: b2: is not supported: …`, its exit status
   unchanged; and of a file written by hand for B2's S3-compatible
   endpoint with no region, `warning: <file>: the repository is at
-  B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set: add
+  B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set, or set
+  to nothing: add
   AWS_DEFAULT_REGION=<region>, as setup writes it`, or with another
   region than the endpoint's name holds, `… in <region>, and
   AWS_DEFAULT_REGION is <other>: set AWS_DEFAULT_REGION=<region>, as
@@ -1373,6 +1374,7 @@ severity × occurrence × detection, then the fix's size and risk.
 | The run's `b2:` refusal has 114 runes before its URL's bucket and 127 after its path, and the record keeps 300 (`record.Text`): a bucket and path (escaped, with the slash between them) over 59 characters lose the end of the reason, and over 186 the end of the URL to paste, cut with a "…". | `b2RunRefused` (`backups/engine/setup.go`); `record.Text` | 2 | 5 | 1 | 10 | size 2, risk 2 (a wording for the record alone, or no URL in it past the cut; the wording was shortened in round 4 of #357's review, a fix to text a test checks) | Rule 2 holds: the cut is marked, and the journal keeps the whole line (`journalctl -u hotserve-backup.service`), since the error goes to stderr whole. The remedy is first by design, so the reason goes before it does. Under rule 3 the product is under 20 (2026-10-24, #357 review round 2). |
 | The run's remedy, pasted without its placeholder filled in (`<region>`, or `<bucket>` for a bare `b2:`), is taken by setup, which asks for the key and secret before restic refuses the host, and asks again up to its limit. | `backendOf` (`backups/engine/setup.go`) | 2 | 5 | 1 | 10 | size 2, risk 1 (a refusal of a URL holding `<` or `>` before any prompt) | Rule 2 holds: each look is refused at once in restic's words, which name the host with its `<region>` in it, and nothing is written. Under rule 3 the product is under 20 (2026-10-24, #357 review round 4). |
 | `status` as root reads the credential file with a plain read: a FIFO in its place, which the run refuses, holds `status` until interrupted. | `showStatus` (`backups/cmd/hotserve-backup/main.go`) | 2 | 1 | 5 | 10 | size 1, risk 2 (the run's `readRegular`, exported; no test of status's own read) | Only root makes the file anything but setup's regular one, and `status` is run at a terminal, where the wait is seen and interrupted; the run, which no one watches, refuses it. Under rule 3 the product is under 20 (2026-10-24, #357 review round 5). |
+| The run opens what the credential file's path leads to, a link followed as the manager follows it, before it asks whether it is a regular file: a device node there is opened by root (`O_RDONLY|O_NONBLOCK`) before it is refused. | `readRegular` (`backups/engine/setup.go`) | 2 | 1 | 5 | 10 | size 2, risk 1 (a stat before the open, as `box/envfiles.go` reads its files) | Only root puts anything but setup's regular file there, and the open reads nothing; the run then refuses it, named. Under rule 3 the product is under 20 (2026-10-24, #357 review round 8). |
 | A box on a `b2:` repository whose bucket or key is from before 4 May 2020, which B2's S3-compatible endpoint does not take [Backblaze's archived help, cited in the guide], has no hotserve-backup path to restore: the run, restore and drill refuse the `b2:` file, and the S3 URL they name cannot reach that bucket with that key. | `repositoryInUse` (`backups/engine/setup.go`), through `begin` | 4 | 5 | 1 | 20 | size 2, risk 2 (let `restore` alone run on a `b2:` file, said, since an operator watches a restore and can stop it where a hang is the run's) | **Owed to the owner's call, not fixed here:** the product clears rule 3, but the fix reverses the owner's choice that a restore refuses `b2:` too (2026-10-23, #354). Until then the remedy is restic by hand ("By hand", above), with the file's own `b2:` URL and keys, or copying the bucket to one made since. Only a box set up on `b2:` before #354 can meet it. |
 
 ## Development

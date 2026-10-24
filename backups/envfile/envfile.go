@@ -232,9 +232,32 @@ func Parse(raw []byte) (Values, []string) {
 		push(state == inValue)
 	}
 	if notUTF8 > 0 {
-		return Values{}, []string{fmt.Sprintf("line %d holds a byte that is not UTF-8: %s", notUTF8, wholeFile)}
+		return Values{}, []string{fmt.Sprintf("line %d holds a byte that is not UTF-8: %s", firstInvalidLine(raw, notUTF8), wholeFile)}
 	}
 	return v, findings
+}
+
+// firstInvalidLine is the line of the first byte that is not UTF-8 at or
+// after the start of line from: the byte itself, in a value that runs
+// over several lines, not the line its key is on. Lines are counted at
+// \n alone, as Parse counts them.
+func firstInvalidLine(raw []byte, from int) int {
+	off := 0
+	for l := 1; l < from; l++ {
+		j := bytes.IndexByte(raw[off:], '\n')
+		if j < 0 {
+			break
+		}
+		off += j + 1
+	}
+	for i := off; i < len(raw); {
+		r, size := utf8.DecodeRune(raw[i:])
+		if r == utf8.RuneError && size == 1 {
+			return 1 + bytes.Count(raw[:i], []byte("\n"))
+		}
+		i += size
+	}
+	return from
 }
 
 // wholeFile is what a finding says of a file the manager refuses whole.

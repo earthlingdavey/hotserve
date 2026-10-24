@@ -120,10 +120,13 @@ func TestParseReadsAsTheManagerDoes(t *testing.T) {
 		"OK=1\nBAD=caf\xe9\nAFTER=2\n":     "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
 		"OK=1\nBAD=\"caf\xe9\"\nAFTER=2\n": "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
 		"OK=1\ncaf\xe9=1\nAFTER=2\n":       "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\n# a\x00b\nAFTER=2\n":        "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\nBAD=a\x00b\nAFTER=2\n":      "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\n# caf\xe9\nAFTER=2\n":       "",
-		"OK=1\ncaf\xe9\nAFTER=2\n":         "",
+		// The byte's own line, in a value over three.
+		"OK=1\nNOTE=\"first\nsecond\ncaf\xe9\"\nAFTER=2\n": "line 4 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\nNOTE=a \\\ncaf\xe9\nAFTER=2\n":              "line 3 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\n# a\x00b\nAFTER=2\n":                        "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\nBAD=a\x00b\nAFTER=2\n":                      "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\n# caf\xe9\nAFTER=2\n":                       "",
+		"OK=1\ncaf\xe9\nAFTER=2\n":                         "",
 	} {
 		got, findings = Parse([]byte(raw))
 		if RefusedWhole(findings) != want || want != "" && len(got) != 0 {

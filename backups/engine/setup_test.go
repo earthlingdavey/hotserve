@@ -566,7 +566,7 @@ func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 // one that has it or of another host.
 func TestStatusAdvisesB2sRegionWhereAFileHasNone(t *testing.T) {
 	for _, tc := range []struct{ repo, region, want string }{
-		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "", "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set: add AWS_DEFAULT_REGION=eu-central-003, as setup writes it"},
+		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "", "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set, or set to nothing: add AWS_DEFAULT_REGION=eu-central-003, as setup writes it"},
 		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "eu-central-003", ""},
 		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "us-east-1", "the repository is at B2's S3-compatible endpoint in eu-central-003, and AWS_DEFAULT_REGION is us-east-1: set AWS_DEFAULT_REGION=eu-central-003, as setup writes it"},
 		{"s3:https://s3.example.com/b", "", ""},
