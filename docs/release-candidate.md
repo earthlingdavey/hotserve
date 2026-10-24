@@ -69,7 +69,8 @@ reach; measured, check 1 of `v0.3.0-rc1`, nothing written). What
 until the storage takes a key, and three refusals end in restic's
 words with nothing said of a password — **unverified** on B2, where
 rc1's three askings, each running the init the current `setup` does
-not, took 7.5 s and 3.8 s, in the order above.
+not, took 7.5 s for the bucket nobody made and 3.8 s for the wrong
+secret.
 
 ## 2. Set up, a first backup, status and the drill, over real TLS
 
@@ -163,8 +164,10 @@ three tries each over some three minutes, and all 17 remained; the
 deletion hid every file; the run failed `exit 10` and `status` exited
 1. The copy at `status`'s minute held the backup before the last and
 checked clean, as the guide says of that minute; one at a moment from
-the bucket's history (`backblaze-b2 ls --long --versions -r … | sort
--k3,4`: B2 lists by name) held the last backup too and checked clean;
+the bucket's history (`backblaze-b2 ls --long --versions -r …`, sorted
+by its date and time columns, since B2 lists by name; the guide now
+sorts by the millisecond stamp in each file id) held the last backup
+too and checked clean;
 `setup` onto it kept the record, and the run, the drill and `status`
 were healthy. Both copies were made with the *box's* key — on B2
 `listFiles` and `readFiles` read old versions — into a folder of the

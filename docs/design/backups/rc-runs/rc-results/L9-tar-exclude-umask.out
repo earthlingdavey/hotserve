@@ -1,6 +1,6 @@
 ## L9, 2026-10-24: the guide's tar line (docs/backups.md, A rebuilt box) on Debian 13, dev container
- Container hotserve-dev-run-478654cdf713 Creating 
- Container hotserve-dev-run-478654cdf713 Created 
+ Container hotserve-dev-run-42eacba630aa Creating 
+ Container hotserve-dev-run-42eacba630aa Created 
 Debian GNU/Linux 13 (trixie)
 tar (GNU tar) 1.35
 $ find etc/hotserve | sort
@@ -26,20 +26,17 @@ hotserve/demo.env
 hotserve/deploy.key.pub
 $ stat -c "%A %a %U:%G %n" /root/etc-hotserve.tar.gz
 -rw------- 600 root:root /root/etc-hotserve.tar.gz
-## the same with --exclude=hotserve/deploy.key* (after an attack)
-$ tar -tzf
-hotserve/
-hotserve/secrets/
-hotserve/secrets/demo.env
-hotserve/Caddyfile
-hotserve/demo.env
-## extraction with --exclude=hotserve/deploy.key* from a full archive
+## the after-an-attack extraction as the guide prints it: the same archive, deploy.key* left out of the extraction
+$ sudo tar -xzf etc-hotserve.tar.gz -C /etc --exclude="hotserve/deploy.key*"   (the guide quotes the pattern with single quotes; here -C $d/new, no sudo)
 $ find new/hotserve | sort
 new/hotserve
 new/hotserve/Caddyfile
 new/hotserve/demo.env
 new/hotserve/secrets
 new/hotserve/secrets/demo.env
+$ stat -c "%A %a %n" new/hotserve/secrets new/hotserve/secrets/demo.env
+drwxr-xr-x 755 new/hotserve/secrets
+-rw-r--r-- 644 new/hotserve/secrets/demo.env
 
 ## L9b: a bare debian:13 image — what apt brings with backblaze-b2, restic and rclone
 $ dpkg -l ca-certificates (before)

@@ -202,10 +202,10 @@ next: the first backup runs within the hour and ten minutes (systemctl list-time
 
 A wrong key is asked for again, up to three times, the password shown
 standing — on B2 a wrong key was refused at once (`401`): on
-`v0.3.0-rc1`, at the init after a look that timed out, the password
-shown first; the current look refuses it there and shows none,
-**unverified** on B2; a setup that ends early says whether to keep
-that password or discard it
+`v0.3.0-rc1`, after a look that said it had timed out, the password
+shown, then the init refused; the current look refuses it there and
+shows none, **unverified** on B2; a setup that ends early says
+whether to keep that password or discard it
 ([backups/README.md](../backups/README.md#setup)). Then
 [look from your own machine](#look-from-your-own-machine) with the URL,
 the key and the password as you stored them: a password copied wrong is
@@ -395,10 +395,11 @@ sudo systemctl reload hotserve
 
 It holds the env files under `/etc/hotserve`, in plain text, and a
 `deploy_trust local` key pair kept there: store it as you store the
-password. After an attack the old pair is the attacker's, so leave it
-in the archive and make a new one in its place — `deploy-keygen`
-refuses to overwrite a key, and writes the pair `0600` and `.pub`
-beside it:
+password. After an attack the old pair is the attacker's, and so is
+every value in the env files: leave the pair in the archive and make
+a new one in its place — `deploy-keygen` refuses to overwrite a key,
+and writes the private key `0600` with its `.pub` beside it — and
+change every value the env files hold:
 
 ```sh
 sudo tar -xzf etc-hotserve.tar.gz -C /etc --exclude='hotserve/deploy.key*'
@@ -642,16 +643,17 @@ start:
   here. A deletion of snapshots and data alone looks like a `prune`:
   compare it with when you last pruned. On B2, a run ends by hiding
   its lock, and Debian's `backblaze-b2` lists each upload and hide with
-  its time — by name, so sort it by its date and time columns:
+  its time to the second — by name, so sort it by the upload stamp
+  inside each file id, milliseconds since the epoch in the ninth `_`
+  field:
 
   ```bash
-  backblaze-b2 ls --long --versions -r b2://my-backups | sort -k3,4
+  backblaze-b2 ls --long --versions -r b2://my-backups | sort -t_ -k9,9
   ```
 
-  Within one second the order is the listing's, not the writes': where
-  the last run's writes and the first foreign one share a second, take
-  the moment before that second. Not rclone's `lsl --b2-versions`: it
-  lists no version of a hidden
+  On the RC's own listing a hide and its upload in one second came
+  out upload first, 346 ms apart [measured, L10 in the design record].
+  Not rclone's `lsl --b2-versions`: it lists no version of a hidden
   file, and of a bucket whose every file was hidden it listed nothing
   [measured].
 
