@@ -185,10 +185,14 @@ says "Repository password (new)" && fail "a password was made for a repository t
 # box's own that passes every read and refuses every write: plainly
 # (403), where restic exits 1 at once, and then in a way restic retries
 # (500, as B2's 401 was retried for a quarter of an hour [RC check 6]),
-# which the clock ends — 30 s in this box's binary. The opening only
-# reads, so both were taken, and every run after failed.
-readonly_storage() { # <the status a write gets>
-	printf '{\n\tadmin off\n\tauto_https off\n}\nhttp://127.0.0.1:9100 {\n\t@write method PUT POST DELETE\n\trespond @write %s\n\treverse_proxy e2e-s3:9000\n}\n' "$1" >/root/readonly.Caddyfile
+# which the clock ends — 30 s in this box's binary. The opening once
+# only read, so both were taken, and every run after failed; it takes
+# the repository's lock now, and is refused. Then a key that may write
+# and not delete (the proxy refuses DELETE alone): restic writes the
+# lock file, cannot remove it, logs that and exits 0 — the opening
+# finds the lock it left, and refuses the key by it.
+readonly_storage() { # <the status a write gets> [<the methods refused: PUT POST DELETE>]
+	printf '{\n\tadmin off\n\tauto_https off\n}\nhttp://127.0.0.1:9100 {\n\t@write method %s\n\trespond @write %s\n\treverse_proxy e2e-s3:9000\n}\n' "${2:-PUT POST DELETE}" "$1" >/root/readonly.Caddyfile
 	# The one name each time, collected whatever it ended as, so that
 	# a proxy that ended failed does not keep the second from starting;
 	# and the start is checked, so that the second case never runs
@@ -210,7 +214,7 @@ t0=$(date +%s)
 converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
 rc=$?
 took=$(($(date +%s) - t0))
-[ "$rc" != 0 ] && says "the repository exists; its password is needed" && says "checking that this key can write to it (up to 30s)" && says "this key read the repository, and restic exited 1 before its lock file's write completed: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: .*Access Denied" && [ "$took" -lt 20 ] && pass "a key the storage refuses every write, plainly, is refused at once (${took}s), in restic's words" || fail "a read-only key, refused plainly: exit $rc after ${took}s: $(cat "$OUT")"
+[ "$rc" != 0 ] && says "the repository exists; its password is needed" && says "this key opened the repository, and restic exited 1 at its lock file's write: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: .*Access Denied" && [ "$took" -lt 20 ] && pass "a key the storage refuses every write, plainly, is refused at the opening, at once (${took}s), in restic's words" || fail "a read-only key, refused plainly: exit $rc after ${took}s: $(cat "$OUT")"
 says "repository ready" && fail "setup said the repository was ready" || pass "and not called ready"
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "the working file is byte-identical, no copy of a credential is left, no unit is running" || fail "after a read-only key: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
 fi
@@ -219,8 +223,21 @@ t0=$(date +%s)
 converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
 rc=$?
 took=$(($(date +%s) - t0))
-[ "$rc" != 0 ] && says "still waiting for $RO (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it)" && says "this key read the repository, and restic had not completed a lock file's write to it within 30s: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: Save(<lock/.*returned error, retrying after" && [ "$took" -ge 30 ] && [ "$took" -lt 90 ] && pass "a write restic retries is given up on at the clock (${took}s), restic's retry line appended" || fail "a read-only key, retried: exit $rc after ${took}s: $(cat "$OUT")"
+[ "$rc" != 0 ] && says "still waiting for $RO (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it)" && says "restic had not finished opening the repository and writing a lock file to it within 30s: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: Save(<lock/.*returned error, retrying after" && [ "$took" -ge 30 ] && [ "$took" -lt 90 ] && pass "a write restic retries is given up on at the clock (${took}s), restic's retry line appended" || fail "a read-only key, retried: exit $rc after ${took}s: $(cat "$OUT")"
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "and left the working setup as it was, its unit stopped" || fail "after the clock: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
+fi
+if readonly_storage 403 DELETE; then
+t0=$(date +%s)
+converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
+rc=$?
+took=$(($(date +%s) - t0))
+[ "$rc" != 0 ] && says "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock [0-9a-f]\{8\}): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository" && [ "$took" -lt 20 ] && pass "a key that may write and not delete is refused by the lock it left, named (${took}s)" || fail "a key that may not delete: exit $rc after ${took}s: $(cat "$OUT"); locks: $(rr list locks --no-lock 2>&1 | while read -r id; do rr cat lock "$id" --no-lock 2>&1; done)"
+says "repository ready" && fail "setup said the repository was ready" || pass "and not called ready"
+[ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "the working file is byte-identical, no copy of a credential is left, no unit is running" || fail "after a key that may not delete: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
+# The lock that key left is cleared as the refusal says: restic unlock,
+# with a key that may delete — the suite's own, at the storage itself.
+[ "$(rr list locks --no-lock 2>/dev/null | wc -l)" = 1 ] && pass "the one lock it left is listed" || fail "locks after the refusal: $(rr list locks --no-lock 2>&1)"
+rr unlock >/dev/null 2>&1 && pass "and restic unlock with a key that may delete clears it" || fail "restic unlock: $(rr unlock 2>&1)"
 fi
 systemctl stop readonly-storage.service 2>/dev/null
 # The listing must answer, not merely print nothing: a listing that
@@ -235,7 +252,6 @@ rc=$?
 grep -q "^RESTIC_PASSWORD=$pw\$" "$ENVFILE" && pass "the file holds the repository's own password" || fail "the file holds: $(grep PASSWORD "$ENVFILE" | sed 's/=.*/=…/')"
 says "$pw" && fail "the repository's password was shown as it was typed" || pass "the repository's password was not shown as it was typed"
 says "the repository exists; its password is needed" && ! says "Repository password (new)" && ! says "stored" && pass "a rebuilt box is asked for the password it has, and shown none" || fail "the rebuilt box was shown: $(grep -i password "$OUT")"
-says "checking that this key can write to it (up to 30s)" && pass "and its key is held to writing, before the file is put in place" || fail "the write check was not said: $(cat "$OUT")"
 rr cat config --no-lock >/dev/null 2>&1 && pass "the repository answers" || fail "the repository does not answer"
 # With no file before, the record cannot be tied to this repository: it
 # is put aside, and the next run drills what it backs up here.
