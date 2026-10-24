@@ -757,8 +757,9 @@ and says, as `warning:` lines, where a hand-edited line is not what the
 manager reads (a key with whitespace around it, a key set twice — the
 last wins — a line that is not `KEY=value` or whose name the manager
 does not take, a quote never closed, which takes the rest of the file,
-a byte that is not UTF-8, which makes the manager refuse the whole
-file), where `RESTIC_REPOSITORY` or `RESTIC_PASSWORD` is not set or
+a NUL anywhere, or a byte that is not UTF-8 in a key or a value, either
+of which makes the manager refuse the whole file, though such a byte
+in a comment does not [M91]), where `RESTIC_REPOSITORY` or `RESTIC_PASSWORD` is not set or
 set to nothing, where the repository is one the box cannot use or a
 value setup would refuse, and where the file is there and cannot be
 read at all; its exit status does not change for it.
@@ -965,7 +966,9 @@ It needs no privilege.
   regular file among them, "it is not a regular file (p---------)"
   for a FIFO, which is opened without waiting on it — or that the
   manager refuses whole, "the credential file <path>: line <n> holds a
-  byte that is not UTF-8: …"; and so is
+  NUL byte: …" or "… a byte that is not UTF-8: …" (in a key or a value;
+  in a comment the manager takes it, and so does the run [M91]); and so
+  is
   one that sets `RESTIC_REPOSITORY_FILE`, from which restic would take
   a repository no refusal here reads: "the credential file <path>
   names the repository in RESTIC_REPOSITORY_FILE, which is not
@@ -1074,9 +1077,9 @@ What can be known to fail is refused before anything is asked for
    `AWS_SECRET_ACCESS_KEY` — on B2, an application key's keyID and
    applicationKey. For a host that is `s3.<region>.backblazeb2.com`,
    the region two letters, a word and three digits (`eu-central-003`) —
-   in ASCII, in any case, and nothing more: not with a port or a
-   trailing dot, whose reception by B2 is not measured, nor a longer
-   name ending so — the file also gets
+   in ASCII, in any case, read past a port or a trailing dot (the
+   region is the name's; whether B2 takes a host written so is not
+   measured), but never a longer name ending so — the file also gets
    `AWS_DEFAULT_REGION=<region>` (in lower case), not asked, and setup says "B2's
    region, <region>, from the endpoint's name, goes in the file as
    AWS_DEFAULT_REGION"; any other host gets nothing more. With it

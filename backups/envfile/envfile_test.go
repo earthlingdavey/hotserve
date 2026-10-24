@@ -113,11 +113,25 @@ func TestParseReadsAsTheManagerDoes(t *testing.T) {
 	if got["B"] != "abc " || len(findings) != 0 {
 		t.Errorf("a backslash at the end of the file: %q %q", got, findings)
 	}
-	// A byte that is not UTF-8 is not a line the manager skips: it
-	// refuses the whole file, and no unit that needs it starts.
-	got, findings = Parse([]byte("OK=1\nBAD=caf\xe9\nAFTER=2\n"))
-	if len(got) != 0 || len(findings) != 1 || !strings.Contains(findings[0], "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts") {
-		t.Errorf("a non-UTF-8 file: %v %q", got, findings)
+	// The manager refuses the whole file for a NUL anywhere, and for a
+	// byte that is not UTF-8 in a key or a value, quoted or not; not for
+	// one in a comment or a line with no = [M91].
+	for raw, want := range map[string]string{
+		"OK=1\nBAD=caf\xe9\nAFTER=2\n":     "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\nBAD=\"caf\xe9\"\nAFTER=2\n": "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\ncaf\xe9=1\nAFTER=2\n":       "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\n# a\x00b\nAFTER=2\n":        "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\nBAD=a\x00b\nAFTER=2\n":      "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\n# caf\xe9\nAFTER=2\n":       "",
+		"OK=1\ncaf\xe9\nAFTER=2\n":         "",
+	} {
+		got, findings = Parse([]byte(raw))
+		if RefusedWhole(findings) != want || want != "" && len(got) != 0 {
+			t.Errorf("%q: %v %q, want refused %q", raw, got, findings, want)
+		}
+		if want == "" && (got["OK"] != "1" || got["AFTER"] != "2") {
+			t.Errorf("%q: %v, want OK and AFTER read", raw, got)
+		}
 	}
 }
 

@@ -506,11 +506,11 @@ func TestTheRunsRemedyPastesAsOneLiteralArgument(t *testing.T) {
 }
 
 // B2's region is in the name of its S3-compatible endpoint, and is read
-// from that host alone, as restic reads the host out of the URL, in any
-// ASCII case — but not past a port or a trailing dot (what B2 makes of
-// them is not measured), not from a longer name ending in it, a host
-// named only in a path or behind userinfo, or one whose letters are not
-// ASCII.
+// from that host's name, as restic reads the host out of the URL, in
+// any ASCII case and past a port or a trailing dot (the region is the
+// name's, whatever B2 makes of the rest) — but not from a longer name
+// ending in it, a host named only in a path or behind userinfo, or one
+// whose letters are not ASCII.
 func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 	longS := string(rune(0x17f))   // ſ, which (?i) would fold into s
 	kelvin := string(rune(0x212a)) // K, which strings.ToLower makes k
@@ -524,16 +524,17 @@ func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 		"s3://s3.eu-central-003.backblazeb2.com/bucket":            "eu-central-003",
 		"s3:s3.eu-central-003.backblazeb2.com":                     "eu-central-003",
 
-		"s3:https://s3.eu-central-003.backblazeb2.com:443/bucket":          "",
-		"s3:https://s3.eu-central-003.backblazeb2.com./bucket":             "",
-		"s3:s3.eu-central-003.backblazeb2.com.:443/bucket":                 "",
+		"s3:https://s3.eu-central-003.backblazeb2.com:443/bucket":          "eu-central-003",
+		"s3:https://s3.eu-central-003.backblazeb2.com./bucket":             "eu-central-003",
+		"s3:s3.eu-central-003.backblazeb2.com.:443/bucket":                 "eu-central-003",
+		"s3:https://s3.eu-central-003.backblazeb2.com:/bucket":             "eu-central-003",
 		"s3:https://s3.eu-central-003.backblazeb2.com.evil.example/bucket": "",
 		"s3:https://evil.example/s3.eu-central-003.backblazeb2.com/bucket": "",
 		"s3:https://x.s3.eu-central-003.backblazeb2.com/bucket":            "",
 		"s3:https://bucket.s3.eu-central-003.backblazeb2.com/path":         "",
 		"s3:https://S3.EU-CENTRAL-003.BACKBLAZEB2.COM/bucket":              "eu-central-003",
 		"s3:https://s3.eu-central-003.backblazeb2.com:443x/bucket":         "",
-		"s3:https://s3.eu-central-003.backblazeb2.com:9000/bucket":         "", // not B2's endpoint
+		"s3:https://s3.eu-central-003.backblazeb2.com:9000/bucket":         "eu-central-003", // the name's region, whatever the port
 		"s3:https://s3.eu-central-003.backblazeb2.com..:443/bucket":        "",
 		"s3:https://s3.eu-central-003.backblazeb2.com@evil.example/bucket": "",
 		"s3:https://u:p@s3.eu-central-003.backblazeb2.com/bucket":          "", // refused by setup before this

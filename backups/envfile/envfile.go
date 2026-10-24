@@ -49,10 +49,14 @@ var keyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 func Parse(raw []byte) (Values, []string) {
 	v := Values{}
 	var findings []string
-	if !utf8.Valid(raw) {
-		n := 1 + bytes.Count(raw[:utf8FirstInvalid(raw)], []byte("\n"))
-		return v, []string{fmt.Sprintf("line %d holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts", n)}
+	// The manager refuses the whole file for a NUL anywhere in it, and
+	// for a byte that is not UTF-8 in a key or a value it reads — quoted
+	// or not — but not in a comment or a line with no = [M91].
+	if i := bytes.IndexByte(raw, 0); i >= 0 {
+		n := 1 + bytes.Count(raw[:i], []byte("\n"))
+		return v, []string{fmt.Sprintf("line %d holds a NUL byte: %s", n, wholeFile)}
 	}
+	notUTF8 := 0 // the line of the first key or value that is not UTF-8
 	const (
 		preKey = iota
 		inKey
@@ -80,6 +84,9 @@ func Parse(raw []byte) (Values, []string) {
 		val := value.String()
 		if strip && valueWS >= 0 {
 			val = val[:valueWS]
+		}
+		if notUTF8 == 0 && (!utf8.ValidString(name) || !utf8.ValidString(val)) {
+			notUTF8 = keyLine
 		}
 		switch {
 		case !keyRe.MatchString(name):
@@ -224,19 +231,22 @@ func Parse(raw []byte) (Values, []string) {
 	case preValue, inValue, valueEscape:
 		push(state == inValue)
 	}
+	if notUTF8 > 0 {
+		return Values{}, []string{fmt.Sprintf("line %d holds a byte that is not UTF-8: %s", notUTF8, wholeFile)}
+	}
 	return v, findings
 }
 
-// utf8FirstInvalid is the offset of the first byte that is not UTF-8.
-func utf8FirstInvalid(raw []byte) int {
-	for i := 0; i < len(raw); {
-		r, size := utf8.DecodeRune(raw[i:])
-		if r == utf8.RuneError && size == 1 {
-			return i
-		}
-		i += size
+// wholeFile is what a finding says of a file the manager refuses whole.
+const wholeFile = "the manager refuses the whole file, and no unit that needs it starts"
+
+// RefusedWhole is the finding Parse gives of a file the manager refuses
+// whole, or "": what a run refuses the file in, before any unit.
+func RefusedWhole(findings []string) string {
+	if len(findings) == 1 && strings.HasSuffix(findings[0], wholeFile) {
+		return findings[0]
 	}
-	return len(raw)
+	return ""
 }
 
 // Refuse says why value cannot be written so that the manager reads it

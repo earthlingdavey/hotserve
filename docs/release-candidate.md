@@ -34,9 +34,12 @@ export AWS_DEFAULT_REGION=<region> AWS_ENDPOINT_URL=https://s3.<region>.backblaz
 export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
 ```
 
-Nothing here prints a secret: keys are read with `read`, never typed on
-a command line, and the credential file is shown by its keys alone
-(`sudo sed 's/=.*/=…/' /etc/hotserve-backup/repository.env`).
+Nothing here prints a storage key or secret: keys are read with
+`read`, never typed on a command line, and the credential file is shown
+by its keys alone (`sudo sed 's/=.*/=…/' /etc/hotserve-backup/repository.env`).
+One secret is shown: `setup` on a new repository shows its password
+once, on the terminal (`Repository password (new): …`). Before you
+share a transcript of a check, put `<N characters>` in its place.
 
 ## 1. A `b2:` URL, a bucket that does not exist, and a wrong secret
 
@@ -97,8 +100,8 @@ exactly those lines, and MinIO the look's.
 On B2, `setup` says
 `B2's region, <region>, from the endpoint's name, goes in the file as AWS_DEFAULT_REGION`
 before it asks for the key — for a host that is
-`s3.<region>.backblazeb2.com` in any case, with no port or trailing
-dot — and the credential file
+`s3.<region>.backblazeb2.com` in any case, read past a port or a
+trailing dot — and the credential file
 then holds five keys: `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`,
 `AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 That both keys work without `listAllBucketNames` or `readBuckets`,
