@@ -392,6 +392,11 @@ func SyncDir(path string) error {
 // Lint is what status says of the file: what the manager reads other
 // than as written, and what a run needs that is not set.
 func Lint(v Values, findings []string) []string {
+	// A file the manager refuses whole is that and nothing more: Parse
+	// read no value of it, so none can be said to be missing.
+	if w := RefusedWhole(findings); w != "" {
+		return []string{w}
+	}
 	out := append([]string(nil), findings...)
 	for _, k := range []string{"RESTIC_REPOSITORY", "RESTIC_PASSWORD"} {
 		if val, ok := v[k]; !ok {

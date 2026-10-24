@@ -439,7 +439,15 @@ func b2AsS3(repo string) string {
 	}
 	u := "s3:https://s3.<region>.backblazeb2.com/" + bucket
 	if prefix != "" {
-		if prefix = strings.TrimPrefix(path.Clean(prefix), "/"); prefix != "" && prefix != "." {
+		prefix = strings.TrimPrefix(path.Clean(prefix), "/")
+		switch {
+		case prefix == ".." || strings.HasPrefix(prefix, "../"):
+			// A path that climbs, which path.Clean leaves: B2 takes it as
+			// written, but a server or a proxy on the way may resolve the
+			// dot segments of an S3 request's path, so no URL is named that
+			// may reach other objects.
+			u += "/<path>"
+		case prefix != "" && prefix != ".":
 			// Each segment escaped: B2 reads the path as written, and restic
 			// reads an s3:https URL's path as url.Parse decodes it
 			// (internal/backend/s3/config.go), where a # or a ? would end the

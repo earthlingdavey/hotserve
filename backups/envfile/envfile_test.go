@@ -276,6 +276,13 @@ func TestLintNamesWhatARunNeeds(t *testing.T) {
 	if len(lines) != 2 || !strings.Contains(lines[0], "RESTIC_REPOSITORY is set to nothing") || !strings.Contains(lines[1], "RESTIC_PASSWORD is set to nothing") {
 		t.Errorf("lint of empty values = %q", lines)
 	}
+	// A file the manager refuses whole: that alone, not keys "not set"
+	// that are there.
+	got, findings = Parse([]byte("RESTIC_REPOSITORY=s3:https://h/b\n# a\x00b\nRESTIC_PASSWORD=x\n"))
+	lines = Lint(got, findings)
+	if len(lines) != 1 || !strings.Contains(lines[0], "line 2 holds a NUL byte: the manager refuses the whole file") {
+		t.Errorf("lint of a file the manager refuses whole = %q", lines)
+	}
 }
 
 func must(t *testing.T, err error) {
