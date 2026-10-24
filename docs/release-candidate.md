@@ -68,7 +68,7 @@ reach; measured, check 1 of `v0.3.0-rc1`, nothing written). What
 until the storage takes a key, and three refusals end in restic's
 words with nothing said of a password — **unverified** on B2, where
 rc1's three askings, each running the init the current `setup` does
-not, took 3.8 s and 7.5 s.
+not, took 7.5 s and 3.8 s, in the order above.
 
 ## 2. Set up, a first backup, status and the drill, over real TLS
 
@@ -108,12 +108,13 @@ runs end `ok`, and the drill proves and its check is `clean`:
 nothing, on the other hand, stopped the probe at 22 minutes —
 `failed to refresh stale lock: client.RemoveObject: Access Denied.`,
 `Fatal: unable to save snapshot: context canceled`, exit 1, seven locks
-left. Remove the probe after: `restic forget <its id>`. **On B2**, with
+left. Remove the probe after: `restic forget <its id>`, then
+`unset RESTIC_PASSWORD`, so that restic asks again. **On B2**, with
 the box's key without `deleteFiles`: `processed 1 files, 6 B in 30:01`,
 `snapshot … saved`, no lock left; the timers started again and
-`status` said `dev: ok`; the drill after it proved the restore and
-checked 41/52 `clean` (untimed); and the `forget` hid the snapshot's
-file and left its version
+`status` said `dev: ok`; the drill after it is check 8's below, which
+proved the restore and checked 41/52 `clean`; and the `forget` hid
+the snapshot's file and left its version
 (`backblaze-b2 ls --long --versions` showed its upload, then its
 upload and a hide).
 

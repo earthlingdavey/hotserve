@@ -80,8 +80,8 @@ its lock for 30 minutes ended `snapshot … saved`, no lock left
 [measured]. The web console offers three presets and no single
 capabilities — Read and Write, which may delete, Read Only and Write
 Only — so make the two keys once from the command line, with Debian
-13's `backblaze-b2` (3.19; a `debian:13` container will do, and apt
-brings the CA certificates with it):
+13's `backblaze-b2` (3.19; a `debian:13` container will do: apt
+brings the CA certificates with it [measured]):
 
 ```sh
 apt-get update && apt-get install -y backblaze-b2
@@ -203,9 +203,8 @@ A wrong key is asked for again, up to three times, the password shown
 standing — on B2 a wrong key is refused at the look itself, at once
 (`401`, measured on `v0.3.0-rc1`), and no password is then shown
 (what `setup` says of it since #353: **unverified** on B2); a setup
-that ends early says
-whether to keep that password or
-discard it ([backups/README.md](../backups/README.md#setup)). Then
+that ends early says whether to keep that password or discard it
+([backups/README.md](../backups/README.md#setup)). Then
 [look from your own machine](#look-from-your-own-machine) with the URL,
 the key and the password as you stored them: a password copied wrong is
 otherwise found only when the box is gone.
@@ -387,6 +386,7 @@ and on the rebuilt box, before step 2:
 
 ```sh
 sudo tar -xzf etc-hotserve.tar.gz -C /etc
+hotserve validate --config /etc/hotserve/Caddyfile
 hotserve-backup validate /etc/hotserve/Caddyfile
 sudo systemctl reload hotserve
 ```
@@ -663,7 +663,7 @@ retention:
   `exit 10`, and the recovery copy, at `status`'s minute and from the
   bucket's history, checked clean and was set up onto. B2 removed a
   hidden file's version and its hide marker within two days of a
-  1-day rule. Still **unverified**: a drill's egress on a bill.
+  1-day rule.
 - **A bucket that does not exist**: the key could not make one, and
   `setup` ended after three askings in 7.5 s, nothing written
   (`NewBucket: b2_list_buckets: 401:`). **A wrong secret**: three
@@ -677,16 +677,20 @@ retention:
   Seen on the e2e server behind a proxy that refuses writes, all three
   ways; on B2, `v0.3.0-rc1`'s `setup`, which only read, took a console
   Read Only key, and every run then failed after 14½ minutes of retries
-  (`b2_get_upload_url: 401:`), as did every drill. The refusals
-  themselves are **unverified** on B2.
+  (`b2_get_upload_url: 401:`), as did the drill after it, after 14.
+  The refusals themselves are **unverified** on B2.
 - **A rebuilt box** with another uid for `hotserve`: restored before
   the first deploy in 10 s, every file the new uid's.
+- **One drill, timed**: with 500 MB of new uploads, the run that
+  uploaded them 24 s, the drill that fetched them back 14 s, its check
+  included. Its egress on a bill: **unverified**.
 - **A run's upload hung**, on the owner's box, for 27 hours with no
   output, and no later run was scheduled meanwhile: `status` said
   `running: upload of dev, since …` and, after 3 hours, exited 1 with
   the backups stale. `kill -QUIT` on the unit's restic ended it, and
   the timer caught up at once. Open as #177: restic's B2 library
-  retries a refused upload without limit, below restic's own retries.
+  retries an upload B2 answers with an error without limit, below
+  restic's own retries; which answer it was is not known.
 - **Retention off the box**: **unverified**.
 
 **On AWS S3 and Hetzner** none of this has been run, and every line
