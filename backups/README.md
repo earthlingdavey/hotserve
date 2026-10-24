@@ -1152,8 +1152,9 @@ What can be known to fail is refused before anything is asked for
    are listed (`list locks --no-lock`) and each read (`cat lock <id>
    --no-lock`): one written by this box's backup account — restic
    records the unit's hostname and user [measured: the e2e's
-   write-not-delete case] — since the opening began, a minute either
-   way for the clocks, is the opening's own, and the key is refused,
+   write-not-delete case] — since the opening began (both times this
+   box's clock: nothing from before it is the opening's), is the
+   opening's own, and the key is refused,
    naming the lock: unless some other restic of that account was
    running beside setup (a run's own units cannot be: setup holds the
    run lock), this key wrote it and could not remove it; "a key that
@@ -1169,7 +1170,9 @@ What can be known to fail is refused before anything is asked for
    holds the repository (exit 11: a prune or a check from elsewhere)
    the opening is read again without the lock, which proves the
    password and the id; nothing was learned of the key's writing, that
-   is said, and setup goes on. A repository setup itself made was
+   is said, the locks are listed all the same (restic writes its own
+   lock before its second look for others, and a key that cannot
+   delete leaves it on a conflict), and setup goes on. A repository setup itself made was
    written by its init, which proved the key may write and deleted
    nothing: it is opened with the lock once, so that a key that may
    write and not delete is refused by the lock it leaves on a first
