@@ -259,9 +259,9 @@ func begin(ctx context.Context, cfg Config, r Runner) (x *run, end func(), err e
 	if err := programsInstalled(cfg); err != nil {
 		return x, end, err
 	}
-	// The repository too, as setup refuses it: a b2: file is one written
-	// by hand, or before setup refused b2:, and every unit would run
-	// restic's own B2 backend.
+	// The repository too, where setup refuses it and every unit would
+	// run restic's own B2 backend: a b2: file is one written by hand, or
+	// before setup refused b2:.
 	if err := repositoryInUse(cfg.EnvFile); err != nil {
 		return x, end, err
 	}
