@@ -9,7 +9,8 @@
 // reads or removes anything an app wrote — it opens an app's
 // directories only as O_PATH, to name them (pin.go) — reads the
 // credential file only for the repository it names, to refuse a b2:
-// one before any unit (repositoryInUse), and otherwise passes its path
+// one, or one named in another file, before any unit (repositoryInUse),
+// and otherwise passes its path
 // to the manager — and takes
 // nothing from a unit but an exit status and a small JSON file, of
 // which it keeps only what it recognises, cleaned (record.Text).
@@ -50,7 +51,7 @@ import (
 // installation, none of it an operator's or an app's string.
 type Config struct {
 	ConfigDir string // /etc/hotserve: what the plan unit sees, for the Caddyfile's imports
-	EnvFile   string // /etc/hotserve-backup/repository.env: root-only; read by the manager, and here for its RESTIC_REPOSITORY alone
+	EnvFile   string // /etc/hotserve-backup/repository.env: root-only; read by the manager, and parsed here for RESTIC_REPOSITORY and RESTIC_REPOSITORY_FILE alone
 	// OldEnvFile is where an earlier version of this branch kept the
 	// credential file. It is never read: named, when it is there and
 	// EnvFile is not, so that a box set up by hand is told to run setup

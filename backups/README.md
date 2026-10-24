@@ -940,8 +940,11 @@ It needs no privilege.
   application key, not the master key; restic's own B2 backend retries
   a failed upload without end" — the bucket and path filled in as
   restic reads them from the `b2:` URL (the path cleaned, its leading
-  slash dropped, and left out when there is none), the region left
-  for the operator, since a `b2:` URL does not hold it. A run, a
+  slash dropped, and left out when there is none; each segment
+  URL-escaped, so that restic, which `url.Parse`s an `s3:https` URL,
+  reads back the path B2 holds and not a shorter one at a `#` or a
+  `?`), the region left for the operator, since a `b2:` URL does not
+  hold it. A run, a
   restore and a drill read the credential file's `RESTIC_REPOSITORY`
   as the manager would (the last assignment) and refuse a `b2:` one
   before any unit, the run recording it as its error: "the repository
@@ -951,7 +954,11 @@ It needs no privilege.
   key, finds the same repository; restic's own B2 backend retries a
   failed upload without end". A credential file they cannot read is
   refused there too, "the credential file <path> could not be read:
-  <why>", where every unit would otherwise fail to start. `status` as
+  <why>", where every unit would otherwise fail to start; and so is
+  one that sets `RESTIC_REPOSITORY_FILE`, from which restic would take
+  a repository no refusal here reads: "the credential file <path>
+  names the repository in RESTIC_REPOSITORY_FILE, which is not
+  supported: name it in RESTIC_REPOSITORY". `status` as
   root says setup's line as a warning, `warning: <file>:
   RESTIC_REPOSITORY: b2: is not supported: …`, its exit status
   unchanged.
@@ -1047,11 +1054,12 @@ What can be known to fail is refused before anything is asked for
    what was shown). The error a setup ends on goes to stderr, as every
    command's does. They are `AWS_ACCESS_KEY_ID` and
    `AWS_SECRET_ACCESS_KEY` — on B2, an application key's keyID and
-   applicationKey. For a host that is exactly
-   `s3.<region>.backblazeb2.com`, the region two lower-case letters, a
-   word and three digits (`eu-central-003`) — no port, no trailing dot,
-   no longer name ending so, as B2 writes it — the file also gets
-   `AWS_DEFAULT_REGION=<region>`, not asked, and setup says "B2's
+   applicationKey. For a host that is `s3.<region>.backblazeb2.com`,
+   the region two letters, a word and three digits (`eu-central-003`) —
+   in any case, with or without a trailing dot or a port, all of which
+   reach the same endpoint, but never a longer name ending so — the
+   file also gets
+   `AWS_DEFAULT_REGION=<region>` (in lower case), not asked, and setup says "B2's
    region, <region>, from the endpoint's name, goes in the file as
    AWS_DEFAULT_REGION"; any other host gets nothing more. With it
    restic never asks B2 where the bucket is (its S3 library, minio-go,

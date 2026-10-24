@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -399,8 +401,12 @@ func TestAB2RepositoryIsRefusedBeforeAnyPromptNamingItsS3URL(t *testing.T) {
 		{"b2:hs-backups:/srv//dev/", "s3:https://s3.<region>.backblazeb2.com/hs-backups/srv/dev"},
 		{"b2:hs-backups:/", "s3:https://s3.<region>.backblazeb2.com/hs-backups"},
 		{"b2:hs-backups:a:b", "s3:https://s3.<region>.backblazeb2.com/hs-backups/a:b"},
-		// Said whole, and cleaned: what is not printable is not echoed.
-		{"b2:hs-backups:d\x01v", "s3:https://s3.<region>.backblazeb2.com/hs-backups/d v"},
+		// Escaped, so that restic's url.Parse reads back the path B2 holds;
+		// what is not printable is escaped too, so never echoed.
+		{"b2:hs-backups:dev#daily", "s3:https://s3.<region>.backblazeb2.com/hs-backups/dev%23daily"},
+		{"b2:hs-backups:dev?x/y", "s3:https://s3.<region>.backblazeb2.com/hs-backups/dev%3Fx/y"},
+		{"b2:hs-backups:dev%2Fdaily", "s3:https://s3.<region>.backblazeb2.com/hs-backups/dev%252Fdaily"},
+		{"b2:hs-backups:d\x01v", "s3:https://s3.<region>.backblazeb2.com/hs-backups/d%01v"},
 	} {
 		t.Run(tc.repo, func(t *testing.T) {
 			b, m := setupBox(t)
@@ -412,6 +418,40 @@ func TestAB2RepositoryIsRefusedBeforeAnyPromptNamingItsS3URL(t *testing.T) {
 			nothingWritten(t, b, m)
 			if b.roles() != "" || b.accountsMade != 0 {
 				t.Fatalf("units ran: %q; accounts made: %d", b.roles(), b.accountsMade)
+			}
+		})
+	}
+}
+
+// The S3 URL setup names for a b2: repository reaches the same objects:
+// read back as restic 0.18.0 reads an s3:https URL
+// (internal/backend/s3/config.go: url.Parse, the decoded path, the
+// bucket up to the first slash, the rest cleaned), it gives the bucket
+// and the path restic's b2 backend reads from the b2: URL
+// (internal/backend/b2/config.go: the bucket up to the first colon, the
+// path cleaned, its leading slash dropped).
+func TestTheS3URLNamedForAB2RepositoryIsTheSameRepository(t *testing.T) {
+	for _, repo := range []string{
+		"b2:hs-backups:dev", "b2:hs-backups:dev#daily", "b2:hs-backups:dev?x=1",
+		"b2:hs-backups:dev%2Fdaily", "b2:hs-backups:100%", "b2:hs-backups:a b/c;d,e",
+		"b2:hs-backups:/srv//dev/", "b2:hs-backups:a:b/c@d", "b2:hs-backups:a+b&c=d",
+	} {
+		t.Run(repo, func(t *testing.T) {
+			wantBucket, wantPath, _ := strings.Cut(strings.TrimPrefix(repo, "b2:"), ":")
+			wantPath = strings.TrimPrefix(path.Clean(wantPath), "/")
+			u, err := url.Parse(strings.TrimPrefix(b2AsS3(repo), "s3:"))
+			if err != nil {
+				t.Fatalf("%s: %v", b2AsS3(repo), err)
+			}
+			if u.RawQuery != "" || u.Fragment != "" {
+				t.Fatalf("%s: query %q, fragment %q", b2AsS3(repo), u.RawQuery, u.Fragment)
+			}
+			bucket, p, _ := strings.Cut(u.Path[1:], "/")
+			if p != "" {
+				p = path.Clean(p)
+			}
+			if bucket != wantBucket || p != wantPath {
+				t.Fatalf("%s reads as bucket %q path %q; b2: holds %q %q", b2AsS3(repo), bucket, p, wantBucket, wantPath)
 			}
 		})
 	}
@@ -430,13 +470,16 @@ func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 		"s3://s3.eu-central-003.backblazeb2.com/bucket":            "eu-central-003",
 		"s3:s3.eu-central-003.backblazeb2.com":                     "eu-central-003",
 
-		"s3:https://s3.eu-central-003.backblazeb2.com:443/bucket":              "",
-		"s3:https://s3.eu-central-003.backblazeb2.com./bucket":                 "",
+		"s3:https://s3.eu-central-003.backblazeb2.com:443/bucket":              "eu-central-003",
+		"s3:https://s3.eu-central-003.backblazeb2.com./bucket":                 "eu-central-003",
+		"s3:s3.eu-central-003.backblazeb2.com.:443/bucket":                     "eu-central-003",
 		"s3:https://s3.eu-central-003.backblazeb2.com.evil.example/bucket":     "",
 		"s3:https://evil.example/s3.eu-central-003.backblazeb2.com/bucket":     "",
 		"s3:https://x.s3.eu-central-003.backblazeb2.com/bucket":                "",
 		"s3:https://bucket.s3.eu-central-003.backblazeb2.com/path":             "",
-		"s3:https://S3.EU-CENTRAL-003.BACKBLAZEB2.COM/bucket":                  "",
+		"s3:https://S3.EU-CENTRAL-003.BACKBLAZEB2.COM/bucket":                  "eu-central-003",
+		"s3:https://s3.eu-central-003.backblazeb2.com:443x/bucket":             "",
+		"s3:https://s3.eu-central-003.backblazeb2.com..:443/bucket":            "",
 		"s3:https://s3.eu-central-003.backblazeb2.com@evil.example/bucket":     "",
 		"s3:https://u:p@s3.eu-central-003.backblazeb2.com/bucket":              "eu-central-003",
 		"s3:s3.eu-central-003.backblazeb2.com@evil.example/bucket":             "",

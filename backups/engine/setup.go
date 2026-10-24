@@ -379,7 +379,15 @@ func b2AsS3(repo string) string {
 	u := "s3:https://s3.<region>.backblazeb2.com/" + bucket
 	if prefix != "" {
 		if prefix = strings.TrimPrefix(path.Clean(prefix), "/"); prefix != "" && prefix != "." {
-			u += "/" + prefix
+			// Each segment escaped: B2 reads the path as written, and restic
+			// reads an s3:https URL's path as url.Parse decodes it
+			// (internal/backend/s3/config.go), where a # or a ? would end the
+			// path and a %2F would be a slash — another repository's objects.
+			segments := strings.Split(prefix, "/")
+			for i, s := range segments {
+				segments[i] = url.PathEscape(s)
+			}
+			u += "/" + strings.Join(segments, "/")
 		}
 	}
 	return record.Clean(u)
@@ -387,10 +395,11 @@ func b2AsS3(repo string) string {
 
 // b2Host is the host of Backblaze B2's S3-compatible endpoint,
 // s3.<region>.backblazeb2.com, its second label the region [Backblaze's
-// documentation] — exactly that, in the lower case B2 writes it: a
-// port, a trailing dot, a longer name ending so, or another case is no
-// host this reads a region from.
-var b2Host = regexp.MustCompile(`^s3\.([a-z]{2}-[a-z]+-[0-9]{3})\.backblazeb2\.com$`)
+// documentation] — that name in any case (DNS reads none), with or
+// without the trailing dot of a fully qualified name or a port, all of
+// which reach the same endpoint; a longer name ending so, or a host
+// named only in a path, is no host this reads a region from.
+var b2Host = regexp.MustCompile(`^(?i)s3\.([a-z]{2}-[a-z]+-[0-9]{3})\.backblazeb2\.com\.?(:[0-9]+)?$`)
 
 // b2Region is the region of a repository at B2's S3-compatible
 // endpoint, read from the host as restic reads the host from the URL
@@ -417,7 +426,7 @@ func b2Region(repo string) string {
 		host, _, _ = strings.Cut(repo[len("s3:"):], "/")
 	}
 	if m := b2Host.FindStringSubmatch(host); m != nil {
-		return m[1]
+		return strings.ToLower(m[1])
 	}
 	return ""
 }
@@ -435,6 +444,12 @@ func repositoryInUse(envFile string) error {
 		return fmt.Errorf("the credential file %s could not be read: %w", envFile, err)
 	}
 	v, _ := envfile.Parse(raw)
+	// restic also takes the repository from a file named by
+	// RESTIC_REPOSITORY_FILE, which this does not read: a repository
+	// named there is one no refusal here could see.
+	if v["RESTIC_REPOSITORY_FILE"] != "" {
+		return fmt.Errorf("the credential file %s names the repository in RESTIC_REPOSITORY_FILE, which is not supported: name it in RESTIC_REPOSITORY", envFile)
+	}
 	if repo := v["RESTIC_REPOSITORY"]; strings.HasPrefix(repo, "b2:") {
 		return b2RunRefused(repo)
 	}

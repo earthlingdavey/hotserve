@@ -1329,12 +1329,19 @@ func TestARunReadsTheRepositoryAsTheUnitsAreGivenIt(t *testing.T) {
 		{"b2: in another key", "RESTIC_REPOSITORY_OLD=b2:hs-backups:dev\n" + s3, false},
 		{"b2: inside the value", "RESTIC_REPOSITORY=s3:http://e2e-s3:9000/b2:x\n", false},
 		{"no repository", "", false},
+		{"the repository named in a file restic reads", "RESTIC_REPOSITORY_FILE=/etc/hotserve-backup/repo\n", true},
+		{"RESTIC_REPOSITORY_FILE beside RESTIC_REPOSITORY", s3 + "RESTIC_REPOSITORY_FILE=/etc/hotserve-backup/repo\n", true},
+		{"RESTIC_REPOSITORY_FILE set empty", "RESTIC_REPOSITORY_FILE=\n" + s3, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newBox(t)
 			must(t, os.WriteFile(b.cfg.EnvFile, []byte(tc.file+"RESTIC_PASSWORD=the-secret\n"), 0o600))
 			st, err := Run(context.Background(), b.cfg, b)
-			refused := err != nil && strings.HasPrefix(err.Error(), "the repository is b2:, which is not supported: ")
+			want := "the repository is b2:, which is not supported: "
+			if strings.Contains(tc.file, "RESTIC_REPOSITORY_FILE=/") {
+				want = "the credential file " + b.cfg.EnvFile + " names the repository in RESTIC_REPOSITORY_FILE, which is not supported: name it in RESTIC_REPOSITORY"
+			}
+			refused := err != nil && strings.HasPrefix(err.Error(), want)
 			if refused != tc.refused {
 				t.Fatalf("refused %v, want %v: %v", refused, tc.refused, err)
 			}
@@ -1344,7 +1351,7 @@ func TestARunReadsTheRepositoryAsTheUnitsAreGivenIt(t *testing.T) {
 				}
 				return
 			}
-			if b.roles() != "" || st == nil || !strings.HasPrefix(st.Error, "the repository is b2:") {
+			if b.roles() != "" || st == nil || !strings.HasPrefix(st.Error, want[:30]) {
 				t.Fatalf("units %q; record %+v", b.roles(), st)
 			}
 		})
