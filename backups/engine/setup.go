@@ -335,7 +335,7 @@ func backendOf(repo, envFile string) ([]credential, error) {
 		// B2's S3-compatible endpoint takes HTTPS alone [Backblaze's
 		// documentation]: said here, before any prompt, not by the storage
 		// after the key is typed.
-		if scheme, _ := s3Split(repo); b2Region(repo) != "" && scheme == "http" {
+		if urlScheme, authority := s3Split(repo); urlScheme == "http" && b2RegionOf(authority, true) != "" {
 			return nil, errors.New("B2's S3-compatible endpoint takes HTTPS alone: give the URL as s3:https://…")
 		}
 		return []credential{{"Storage key id", "AWS_ACCESS_KEY_ID", false}, {"Storage secret key", "AWS_SECRET_ACCESS_KEY", true}}, nil
@@ -463,12 +463,53 @@ func s3Escape(s string) string {
 
 // b2Host is the host of Backblaze B2's S3-compatible endpoint,
 // s3.<region>.backblazeb2.com, its second label the region [Backblaze's
-// documentation] — that name in any case (DNS reads none), with or
-// without the trailing dot of a fully qualified name or HTTPS's own
-// port, 443, all of which reach the same endpoint; another port, a
-// longer name ending so, or a host named only in a path is no host
-// this reads a region from.
-var b2Host = regexp.MustCompile(`^(?i)s3\.([a-z]{2}-[a-z]+-[0-9]{3})\.backblazeb2\.com\.?(:443)?$`)
+// documentation], matched in lower case (b2RegionOf lowers an ASCII
+// host first: DNS and SigV4's signed host read no case). A port or a
+// trailing dot is no host this reads a region from: what B2 makes of
+// them is not measured.
+var b2Host = regexp.MustCompile(`^s3\.([a-z]{2}-[a-z]+-[0-9]{3})\.backblazeb2\.com$`)
+
+// b2RegionOf is the region in an authority that is B2's S3-compatible
+// endpoint, or "". loose takes it past a port and a trailing dot too:
+// for refusing http to B2, not for writing a region.
+func b2RegionOf(authority string, loose bool) string {
+	for i := 0; i < len(authority); i++ {
+		if authority[i] >= utf8.RuneSelf {
+			return "" // no B2 host; and a fold of ſ or K into [a-z] is never read as one
+		}
+	}
+	host := strings.ToLower(authority)
+	if loose {
+		if i := strings.LastIndexByte(host, ':'); i >= 0 && isDigits(host[i+1:]) {
+			host = host[:i]
+		}
+		host = strings.TrimSuffix(host, ".")
+	}
+	if m := b2Host.FindStringSubmatch(host); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+func isDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// RegionAdvice is what status as root says of a credential file whose
+// repository is at B2's S3-compatible endpoint and which sets no
+// AWS_DEFAULT_REGION — one written by hand — or "": what setup would
+// have written (b2Region).
+func RegionAdvice(repo, region string) string {
+	if r := b2Region(repo); r != "" && region == "" {
+		return "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set: add AWS_DEFAULT_REGION=" + r + ", as setup writes it"
+	}
+	return ""
+}
 
 // b2Region is the region of a repository at B2's S3-compatible
 // endpoint, read from the host as restic reads the host from the URL
@@ -485,10 +526,7 @@ func b2Region(repo string) string {
 		return ""
 	}
 	// Userinfo matches no B2 host, and setup refuses it before this.
-	if m := b2Host.FindStringSubmatch(s3Authority(repo)); m != nil {
-		return strings.ToLower(m[1])
-	}
-	return ""
+	return b2RegionOf(s3Authority(repo), false)
 }
 
 // readRegular reads a file that is a regular one, following a link as
@@ -527,7 +565,11 @@ func repositoryInUse(envFile string) error {
 	v, findings := envfile.Parse(raw)
 	if !utf8.Valid(raw) {
 		// The manager refuses the whole file, and every unit with it.
-		return fmt.Errorf("the credential file %s: %s", envFile, findings[0])
+		why := "it holds a byte that is not UTF-8: the manager refuses the whole file"
+		if len(findings) > 0 {
+			why = findings[0]
+		}
+		return fmt.Errorf("the credential file %s: %s", envFile, why)
 	}
 	// restic also takes the repository from a file named by
 	// RESTIC_REPOSITORY_FILE, which this does not read: a repository

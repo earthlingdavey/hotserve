@@ -385,6 +385,7 @@ func TestARepositoryTheBoxCannotUseIsRefusedBeforeAnyPrompt(t *testing.T) {
 		// B2's S3-compatible endpoint takes HTTPS alone.
 		{"s3:http://s3.eu-central-003.backblazeb2.com/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
 		{"s3:http://S3.EU-CENTRAL-003.BACKBLAZEB2.COM.:443/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
+		{"s3:http://s3.us-west-004.backblazeb2.com:80/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
 		{"rest:user:pass@host:8000/", "rest:, gs: and swift: are not set up by this command"},
 		{"s3:http://e2e-s3:9000/b\x01x", "the repository URL cannot go in the file: it holds a control character"},
 		{"ftp://host/x", "(setup asks for s3:)"},
@@ -504,12 +505,17 @@ func TestTheRunsRemedyPastesAsOneLiteralArgument(t *testing.T) {
 }
 
 // B2's region is in the name of its S3-compatible endpoint, and is read
-// from that host, as restic reads the host out of the URL, in any case,
-// with or without a trailing dot or :443 — but from no other port, no
-// longer name ending in it, and no host named only in a path or behind
-// userinfo.
+// from that host alone, as restic reads the host out of the URL, in any
+// ASCII case — but not past a port or a trailing dot (what B2 makes of
+// them is not measured), not from a longer name ending in it, a host
+// named only in a path or behind userinfo, or one whose letters are not
+// ASCII.
 func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
+	longS := string(rune(0x17f))   // ſ, which (?i) would fold into s
+	kelvin := string(rune(0x212a)) // K, which strings.ToLower makes k
 	for repo, want := range map[string]string{
+		"s3:https://s3.u" + longS + "-west-004.backblazeb2.com/b":  "",
+		"s3:https://s3.us-west-004.back" + kelvin + "lazeb2.com/b": "",
 		"s3:https://s3.eu-central-003.backblazeb2.com/bucket/path": "eu-central-003",
 		"s3:https://s3.us-west-004.backblazeb2.com/bucket":         "us-west-004",
 		"s3:http://s3.us-east-005.backblazeb2.com/bucket":          "us-east-005",
@@ -517,9 +523,9 @@ func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 		"s3://s3.eu-central-003.backblazeb2.com/bucket":            "eu-central-003",
 		"s3:s3.eu-central-003.backblazeb2.com":                     "eu-central-003",
 
-		"s3:https://s3.eu-central-003.backblazeb2.com:443/bucket":          "eu-central-003",
-		"s3:https://s3.eu-central-003.backblazeb2.com./bucket":             "eu-central-003",
-		"s3:s3.eu-central-003.backblazeb2.com.:443/bucket":                 "eu-central-003",
+		"s3:https://s3.eu-central-003.backblazeb2.com:443/bucket":          "",
+		"s3:https://s3.eu-central-003.backblazeb2.com./bucket":             "",
+		"s3:s3.eu-central-003.backblazeb2.com.:443/bucket":                 "",
 		"s3:https://s3.eu-central-003.backblazeb2.com.evil.example/bucket": "",
 		"s3:https://evil.example/s3.eu-central-003.backblazeb2.com/bucket": "",
 		"s3:https://x.s3.eu-central-003.backblazeb2.com/bucket":            "",
@@ -549,6 +555,22 @@ func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 	} {
 		if got := b2Region(repo); got != want {
 			t.Errorf("%q: region %q, want %q", repo, got, want)
+		}
+	}
+}
+
+// status as root says what setup would have written of a file written
+// by hand for B2's S3-compatible endpoint with no region, and nothing of
+// one that has it or of another host.
+func TestStatusAdvisesB2sRegionWhereAFileHasNone(t *testing.T) {
+	for _, tc := range []struct{ repo, region, want string }{
+		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "", "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set: add AWS_DEFAULT_REGION=eu-central-003, as setup writes it"},
+		{"s3:https://s3.eu-central-003.backblazeb2.com/b", "eu-central-003", ""},
+		{"s3:https://s3.example.com/b", "", ""},
+		{"b2:b:p", "", ""},
+	} {
+		if got := RegionAdvice(tc.repo, tc.region); got != tc.want {
+			t.Errorf("%s, %q: %q, want %q", tc.repo, tc.region, got, tc.want)
 		}
 	}
 }
