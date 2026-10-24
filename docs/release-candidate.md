@@ -182,10 +182,11 @@ finds the lock it left and refuses the key by it, naming the lock
 hotserve-backup: this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock …): unless some other restic of that account was running beside setup, or on another machine with this hostname, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository
 ```
 
-`restic unlock` from your own machine, with the key that may delete,
-clears it once it is half an hour old (restic removes only the locks it
-takes for stale, which from another machine are those older than that),
-or `restic unlock --remove-all` sooner, when nothing else holds the
+`restic unlock` with the key that may delete clears it: from the box
+at once, once setup has ended (restic takes a same-host lock whose pid
+is gone for stale), from your own machine once it is half an hour old
+(from another machine restic takes only those for stale), or with
+`restic unlock --remove-all` sooner, when nothing else holds the
 repository ([look from your own machine](backups.md#look-from-your-own-machine)).
 
 **On B2**, `v0.3.0-rc1`, whose `setup` only read, took a console Read

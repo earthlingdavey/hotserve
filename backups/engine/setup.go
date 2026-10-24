@@ -1100,7 +1100,7 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 	// opened, nothing written, the caller asks again or says what to do.
 	before, err := s.listLocks(ctx, "before the opening")
 	var listing *listingExit
-	if errors.As(err, &listing) && (listing.status == 12 || listing.status == 10 && s.made) {
+	if errors.As(err, &listing) && s.notOpened(listing.status) {
 		return "", false, nil
 	}
 	if err != nil {
@@ -1122,7 +1122,7 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 			return "", false, errors.New("restic exited 0 but said nothing of the repository's id")
 		}
 		return id, true, s.locksLeft(ctx, before)
-	case o.Result == "exit-code" && (o.ExitStatus == 12 || o.ExitStatus == 10 && s.made):
+	case o.Result == "exit-code" && s.notOpened(o.ExitStatus):
 		// Not opened, nothing written: the key search fails before the
 		// lock (12), or no repository where init just made one — a
 		// storage that does not show new objects for a moment (10). The
@@ -1131,25 +1131,23 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 		s.writing = false
 		return "", false, nil
 	case o.Result == "exit-code" && o.ExitStatus == 11:
-		return s.reopen(ctx, before)
+		return s.reopen(ctx, before, message)
 	case o.Result == "exit-code" && o.ExitStatus == 1:
-		// restic's last line for a lock file it could not write:
-		// "Fatal: unable to create lock in backend: …" [measured: the
-		// e2e's 403 case, M3], or the "Save(<lock/…)" line itself where
-		// it ended on that. The password had opened the repository, and
-		// the key is refused at the write — opened, so that the caller
-		// knows the password is the repository's, with no id, since
-		// restic prints the config after the lock. A Save line earlier
-		// in what it said — a write retried once and then made, before
-		// a read failed — is not read as the refusal.
-		// restic's lock-taking wrapper also wraps its look for other
-		// locks, which comes before anything is written — a lock it
-		// could not read ("… unable to create lock in backend: load
-		// <lock/…>: …"), a listing it could not make ("… List(…) …")
-		// [restic 0.18, internal/restic/lock.go, checkForOtherLocks]:
-		// not the key's writing, and left to the opening's own words.
-		if last := s.lastSaid("open", false); strings.Contains(last, "Save(<lock/") || strings.Contains(last, "unable to create lock") && !strings.Contains(last, "load <lock/") && !strings.Contains(last, "List(") {
-			return "", true, errors.New("this key opened the repository, and restic exited 1 at its lock file's write" + tail + resticSaid(last))
+		// A lock file restic could not write ends, as measured [M3:
+		// rc-results/M3-readonly-proxy.out; the e2e's 403 case], on two
+		// lines: the operation's, "Save(<lock/…>) failed: …", and then
+		// "Fatal: unable to create lock in backend: …" with the backend's
+		// raw error. The Fatal line alone is not the write: restic's
+		// look for other locks before it writes anything ends on the
+		// same wrapper [restic 0.18, internal/restic/lock.go,
+		// checkForOtherLocks]. So the refusal is the Save line, among
+		// the lines restic ended on; anything else is the opening's own
+		// words. The password had opened the repository, and the key is
+		// refused at the write — opened, so that the caller knows the
+		// password is the repository's, with no id, since restic prints
+		// the config after the lock.
+		if save := s.tailLine("open", "Save(<lock/"); save != "" {
+			return "", true, errors.New("this key opened the repository, and restic exited 1 at its lock file's write" + tail + resticSaid(save))
 		}
 		return "", false, errors.New("restic could not open the repository (exit 1): " + record.Text(message))
 	}
@@ -1176,7 +1174,7 @@ func resticSaid(m string) string {
 // reopen is the opening read again without the lock, where another
 // restic holds the repository (exit 11): the password and the id are
 // proven, the key's writing is not, and that is said.
-func (s *setup) reopen(ctx context.Context, before []string) (id string, opened bool, err error) {
+func (s *setup) reopen(ctx context.Context, before []string, held string) (id string, opened bool, err error) {
 	o, message, err := s.repository(ctx, "reopen", setupClock, s.cfg.Restic, "cat", "config", "--no-lock")
 	switch {
 	case err != nil:
@@ -1185,10 +1183,16 @@ func (s *setup) reopen(ctx context.Context, before []string) (id string, opened 
 		if id = configID(s.outFile("reopen")); id == "" {
 			return "", false, errors.New("restic exited 0 but said nothing of the repository's id")
 		}
+		// The holder, as restic names it ("repository is already locked
+		// exclusively by PID … on <host> by <user> … lock was created at
+		// … (… ago)"), and the one fact that matters where the holder is
+		// gone — a check killed hard leaves its exclusive lock [M2], and
+		// restic exits 11 for it as for a live one: every run and drill
+		// after would exit 11 until someone ran restic unlock [M75].
 		if s.made {
-			s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: this key wrote the repository a moment ago; whether it can remove a lock file was not checked")
+			s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: this key wrote the repository a moment ago; whether it can remove a lock file was not checked" + "; restic never passes a lock nothing holds by itself: if the holder is gone, restic unlock clears it" + resticSaid(held))
 		} else {
-			s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked")
+			s.term.Say("the repository is locked by another restic (exit 11) — a prune or a check from elsewhere: whether this key can write to it was not checked" + "; restic never passes a lock nothing holds by itself: if the holder is gone, restic unlock clears it" + resticSaid(held))
 		}
 		// restic writes its own lock before its second look for others
 		// and removes it on a conflict [restic 0.18, internal/restic/
@@ -1277,10 +1281,13 @@ func (s *setup) locksLeft(ctx context.Context, before []string) error {
 // opening reads 12 and 10 as it reads its own.
 type listingExit struct {
 	status int
+	when   string
 	detail string
 }
 
-func (e *listingExit) Error() string { return "listing the repository's locks: " + e.detail }
+func (e *listingExit) Error() string {
+	return "listing the repository's locks, " + e.when + ": " + e.detail
+}
 
 // listLocks is the repository's lock ids, as `restic list locks` prints
 // them, one a line, read without a lock; when says which listing an
@@ -1292,7 +1299,7 @@ func (s *setup) listLocks(ctx context.Context, when string) ([]string, error) {
 	}
 	if !o.OK() {
 		detail, _ := resticFailure(o)
-		e := &listingExit{detail: detail + resticSaid(message)}
+		e := &listingExit{when: when, detail: detail + resticSaid(message)}
 		if o.Result == "exit-code" {
 			e.status = o.ExitStatus
 		}
@@ -1323,6 +1330,36 @@ func (s *setup) listLocks(ctx context.Context, when string) ([]string, error) {
 // setup again when it has ended passes.
 func (s *setup) ownLock(hostname, username string) bool {
 	return hostname == s.host && username == backupUser
+}
+
+// notOpened is restic's exit status for a repository not opened and
+// nothing written: the key search failing before the lock (12), or no
+// repository where init just made one — a storage that does not show
+// new objects for a moment (10).
+func (s *setup) notOpened(status int) bool {
+	return status == 12 || status == 10 && s.made
+}
+
+// tailLine is the last line a unit's restic wrote that holds what,
+// looking back over the lines it ended on — blank lines and the Fatal
+// wrapper that follows an operation's own line — or "" where none of
+// those does. Two lines back is restic's shape for a failed operation
+// [M3]: the operation's line, then the Fatal.
+func (s *setup) tailLine(role, what string) string {
+	raw, _ := os.ReadFile(s.errFile(role))
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	seen := 0
+	for i := len(lines) - 1; i >= 0 && seen < 2; i-- {
+		l := lines[i]
+		if record.Text(l) == "" {
+			continue
+		}
+		if strings.Contains(l, what) {
+			return l
+		}
+		seen++
+	}
+	return ""
 }
 
 // errFile and outFile are where a unit's stderr and stdout go, by its
@@ -1435,7 +1472,11 @@ func (s *setup) repository(ctx context.Context, role string, within time.Duratio
 		}
 	}()
 	errFile := s.errFile(role)
-	spec := resticUnit(s.name(role, ""), "hotserve backup: "+unitDescriptions[role], s.staged, argv, s.outFile(role))
+	what, known := unitDescriptions[role]
+	if !known {
+		what = role + " the repository"
+	}
+	spec := resticUnit(s.name(role, ""), "hotserve backup: "+what, s.staged, argv, s.outFile(role))
 	spec.StderrFile = errFile
 	if role != "init" {
 		o, err := s.startWithin(ctx, within, spec)

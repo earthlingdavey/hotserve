@@ -936,8 +936,10 @@ It needs no privilege.
   stopped, and nothing of setup's has been written (an opening stopped
   between writing restic's lock file and removing it leaves it, and
   restic never passes a stale lock by itself [M75]: `restic unlock`
-  removes it once it is half an hour old, or `restic unlock
-  --remove-all` when nothing else holds the repository); init is left
+  removes it from the box at once, once setup has ended — restic takes
+  a same-host lock whose pid is gone for stale — from another machine
+  once it is half an hour old, or with `--remove-all` when nothing
+  else holds the repository); init is left
   running, said, and waited for by whatever comes next.
 - `setup`, for a repository that is there already: a key that opens it
   and cannot write a lock file to it, or a storage that refuses the
