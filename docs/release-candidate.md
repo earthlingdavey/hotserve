@@ -25,7 +25,8 @@ every one is still **unverified**.
 0.18 and the [look](backups.md#look-from-your-own-machine) lines' first
 three set, with its own key; where it is a `debian:13` container,
 install `ca-certificates` beside `restic` and `rclone`: apt brings it
-with neither, and restic without it fails every https storage,
+with neither (rclone only suggests it; measured, L9 in the design
+record), and restic without it fails every https storage,
 `x509: certificate signed by unknown authority`.
 
 ## 1. A bucket that does not exist, and a wrong secret

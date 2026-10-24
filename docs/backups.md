@@ -81,7 +81,8 @@ its lock for 30 minutes ended `snapshot … saved`, no lock left
 capabilities — Read and Write, which may delete, Read Only and Write
 Only — so make the two keys once from the command line, with Debian
 13's `backblaze-b2` (3.19; a `debian:13` container will do: apt
-brings the CA certificates with it [measured]):
+brings the CA certificates with it, which it does not with `restic`
+or `rclone` [measured, L9 in the design record]):
 
 ```sh
 apt-get update && apt-get install -y backblaze-b2
@@ -200,10 +201,11 @@ next: the first backup runs within the hour and ten minutes (systemctl list-time
 ```
 
 A wrong key is asked for again, up to three times, the password shown
-standing — on B2 a wrong key is refused at the look itself, at once
-(`401`, measured on `v0.3.0-rc1`), and no password is then shown
-(what `setup` says of it since #353: **unverified** on B2); a setup
-that ends early says whether to keep that password or discard it
+standing — on B2 a wrong key was refused at once (`401`): on
+`v0.3.0-rc1`, at the init after a look that timed out, the password
+shown first; the current look refuses it there and shows none,
+**unverified** on B2; a setup that ends early says whether to keep
+that password or discard it
 ([backups/README.md](../backups/README.md#setup)). Then
 [look from your own machine](#look-from-your-own-machine) with the URL,
 the key and the password as you stored them: a password copied wrong is
@@ -392,18 +394,34 @@ sudo systemctl reload hotserve
 ```
 
 It holds the env files under `/etc/hotserve`, in plain text, and a
-`deploy_trust local` key kept there: store it as you store the
-password, and after an attack make a new key pair (`hotserve
-deploy-keygen`) rather than put the old one back. An `env_file` the
-Caddyfile names outside that directory is not in it — keep that file
-the same way, and put it back before step 2. A box rebuilt from a
-plain tar of the directory (a Caddyfile and a deploy key; no `age/`,
-no `secrets/`), with another uid for `hotserve`, found the repository,
-restored before the first deploy, and its next run was `ok` [measured,
-on the e2e server]; that GNU tar leaves `age/` out and, under that
-umask, writes the archive `600` was measured on Debian 13. The lines
-as printed, restoring `secrets/` over the directory the package makes,
-are **unverified**.
+`deploy_trust local` key pair kept there: store it as you store the
+password. After an attack the old pair is the attacker's, so leave it
+in the archive and make a new one in its place — `deploy-keygen`
+refuses to overwrite a key, and writes the pair `0600` and `.pub`
+beside it:
+
+```sh
+sudo tar -xzf etc-hotserve.tar.gz -C /etc --exclude='hotserve/deploy.key*'
+sudo hotserve deploy-keygen --out /etc/hotserve/deploy.key
+hotserve validate --config /etc/hotserve/Caddyfile
+hotserve-backup validate /etc/hotserve/Caddyfile
+sudo systemctl reload hotserve
+```
+
+The `deploy_trust local` block's `public_key` names the new `.pub` if
+it names that path, and the private half is what `hotserve
+deploy-token --key` mints with: hand it to whoever deploys, in place
+of the old. An `env_file` the Caddyfile names outside that directory
+is not in the archive — keep that file the same way, and put it back
+before step 2. A box rebuilt from a plain tar of the directory (a
+Caddyfile and a deploy key; no `age/`, no `secrets/`), with another
+uid for `hotserve`, found the repository, restored before the first
+deploy, and its next run was `ok` [measured, on the e2e server]. That
+GNU tar 1.35 leaves `age/` out of the archive and `deploy.key*` out
+of the extraction, and under that umask writes the archive `600`, was
+measured on Debian 13 (L9 in the design record). The lines as printed,
+restoring `secrets/` over the directory the package makes, are
+**unverified**.
 
 ## The weekly drill, and what it costs
 
@@ -630,7 +648,10 @@ start:
   backblaze-b2 ls --long --versions -r b2://my-backups | sort -k3,4
   ```
 
-  Not rclone's `lsl --b2-versions`: it lists no version of a hidden
+  Within one second the order is the listing's, not the writes': where
+  the last run's writes and the first foreign one share a second, take
+  the moment before that second. Not rclone's `lsl --b2-versions`: it
+  lists no version of a hidden
   file, and of a bucket whose every file was hidden it listed nothing
   [measured].
 
