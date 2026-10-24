@@ -237,7 +237,7 @@ says "repository ready" && fail "setup said the repository was ready" || pass "a
 # The lock that key left is cleared as the refusal says: restic unlock,
 # with a key that may delete — the suite's own, at the storage itself.
 [ "$(rr list locks --no-lock 2>/dev/null | wc -l)" = 1 ] && pass "the one lock it left is listed" || fail "locks after the refusal: $(rr list locks --no-lock 2>&1)"
-rr unlock >/dev/null 2>&1 && pass "and restic unlock with a key that may delete clears it" || fail "restic unlock: $(rr unlock 2>&1)"
+rr unlock >/dev/null 2>&1 && [ "$(rr list locks --no-lock 2>/dev/null | wc -l)" = 0 ] && pass "and restic unlock with a key that may delete clears it" || fail "restic unlock: $(rr unlock 2>&1)"
 fi
 systemctl stop readonly-storage.service 2>/dev/null
 # The listing must answer, not merely print nothing: a listing that

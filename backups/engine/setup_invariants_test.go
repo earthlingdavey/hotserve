@@ -123,6 +123,9 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		{"the write refused (exit 1) after reads that were retried: the Save line is the one appended", func(b *box) {
 			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, strings.Repeat("Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down\n", 3)+denied+"\n"
 		}, "this key opened the repository, and restic exited 1 at its lock file's write: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: " + denied + ")", ""},
+		{"restic could not read another restic's lock, before it wrote (its lock-taking wrapper round a load): the opening's own words, not the key's", func(b *box) {
+			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, "Fatal: unable to create lock in backend: load <lock/ab12cd34ef>: unexpected end of JSON input\n"
+		}, "restic could not open the repository (exit 1): ", ""},
 		{"restic exited 1 on the read, before any write (a storage that went away): the opening's own words, no Save line", func(b *box) {
 			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, strings.Repeat("Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down\n", 3)+"Fatal: unable to open repository at s3:http://e2e-s3:9000/box: Load(<config/>, 0, 0) failed: client.GetObject: 503 Slow Down\n"
 		}, "restic could not open the repository (exit 1): ", ""},
@@ -178,8 +181,16 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		{"the listing before the opening could not answer: setup ends, named, before anything is written", func(b *box) {
 			b.outcome["locks"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 		}, "listing the repository's locks: restic failed (exit 1)", ""},
-		{"the listing could not answer", func(b *box) { b.outcome["locks"] = unit.Outcome{Result: "exit-code", ExitStatus: 1} },
-			"listing the repository's locks: restic failed (exit 1)", ""},
+		{"the listing after the opening could not answer: setup ends, with what the opening may have left", func(b *box) {
+			n := 0
+			b.before = func(s unit.Spec) {
+				if strings.Contains(s.Name, "_locks_") {
+					if n++; n == 2 {
+						b.outcome["locks"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+					}
+				}
+			}
+		}, "listing the repository's locks: restic failed (exit 1): the storage could not be reached, or refused the key, or something else went wrong; nothing of setup's has been written; a lock file restic was writing may stay", ""},
 		{"the listing printed what is no lock id", func(b *box) { b.locksOut = "not-an-id\n" },
 			"listing the repository's locks: restic printed not-an-id, which is no lock id", ""},
 		{"the unit could not be set up", func(b *box) { b.outcome["open"] = unit.Outcome{Result: "exit-code", ExitStatus: 217} },

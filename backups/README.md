@@ -1147,8 +1147,10 @@ What can be known to fail is refused before anything is asked for
    waiting note and the interrupt say so. **A key that may write and
    not delete** (narrower than the guide's policies, which grant the
    delete — on B2, `writeFiles` covers the hide restic deletes by)
-   writes the lock file and cannot remove it; restic logs that and
-   exits 0 [restic 0.18, `internal/repository/lock.go`], and every run
+   writes the lock file and cannot remove it; restic drops the failure
+   silently (its debug log alone, nothing on stderr) and exits 0
+   [restic 0.18, `internal/repository/lock.go`] — which is why the
+   listing is read, not what restic said — and every run
    after would leave one more lock, which restic never passes by itself
    [M75], so the first prune, or a check from elsewhere, would exit 11
    for good. So the repository's locks

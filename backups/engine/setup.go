@@ -507,7 +507,7 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 		hadOld = true
 	}
 
-	p, err := x.planWith(ctx, filepath.Join(x.dir, "plan.err"))
+	p, err := x.planWith(ctx, s.errFile("plan"))
 	if err != nil {
 		return nil, s.err(err)
 	}
@@ -861,15 +861,16 @@ func (s *setup) leaveInit() { s.initLeft, s.keepDir = true, true }
 func (s *setup) tryShown(ctx context.Context, rep *SetupReport, needsOwn func()) error {
 	id, opened, err := s.openRepository(ctx)
 	if opened {
+		// Made, whatever the opening then refused: the password is the
+		// repository's, and a refusal's fate says so.
 		s.term.Say("the repository exists, and the password shown above opens it: it was made by an earlier attempt of this setup")
 		rep.RepositoryID, rep.New, s.made = id, true, true
+		return err
 	}
 	if err != nil {
 		return err
 	}
-	if !opened {
-		needsOwn()
-	}
+	needsOwn()
 	return nil
 }
 
@@ -1141,7 +1142,11 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 		// restic prints the config after the lock. A Save line earlier
 		// in what it said — a write retried once and then made, before
 		// a read failed — is not read as the refusal.
-		if last := s.lastSaid("open", false); strings.Contains(last, "unable to create lock") || strings.Contains(last, "Save(<lock/") {
+		// restic's lock-taking wrapper also wraps a failure to read
+		// another restic's lock, which comes before anything is written
+		// ("… unable to create lock in backend: load <lock/…>: …"): not
+		// the key's writing, and left to the opening's own words below.
+		if last := s.lastSaid("open", false); strings.Contains(last, "Save(<lock/") || strings.Contains(last, "unable to create lock") && !strings.Contains(last, "load <lock/") {
 			return "", true, errors.New("this key opened the repository, and restic exited 1 at its lock file's write" + tail + resticSaid(last))
 		}
 		return "", false, errors.New("restic could not open the repository (exit 1): " + record.Text(message))
@@ -1200,8 +1205,10 @@ func (s *setup) reopen(ctx context.Context, before []string) (id string, opened 
 
 // locksLeft is whether the opening left its lock file behind. A key
 // that may write and not delete writes the lock file and cannot remove
-// it; restic logs the failed removal and exits 0 [restic 0.18,
-// internal/repository/lock.go, the deferred unlock], and every run
+// it; restic drops the failure silently — its debug log alone, nothing
+// on stderr — and exits 0 [restic 0.18, internal/repository/lock.go,
+// the deferred unlock], which is why the listing is read and not what
+// restic said, and every run
 // after would leave one more, which restic never passes by itself
 // [M75]: the first prune, or a check from elsewhere, would exit 11 for
 // good. So after an opening that exited 0 the repository's locks are
