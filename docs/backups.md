@@ -93,7 +93,8 @@ backblaze-b2 clear-account         # forgets the master key authorize-account st
 ```
 
 Each `create-key` prints the new key's id and the key itself, once.
-(The two keys the checks below ran with were made with `create-key`;
+(The two keys the checks of [release-candidate.md](release-candidate.md)
+ran with were made with `create-key`;
 these exact lines, from the tool's own usage text, are **unverified**.)
 The master key has now been typed at a terminal: generate a new one in
 the console, which ends the old. In the bucket's Lifecycle Settings,
@@ -631,12 +632,16 @@ every backup — and restic changes a master key only by moving the data
 into a new repository (`restic copy`) or starting a new one. Anyone who
 later reads the bucket with them can read the backups.
 
-The apps' secrets are the attacker's too: root read every env file
-under `/etc/hotserve/secrets` in clear, and the box's key with them.
-Every value changes — database passwords, third-party keys — set anew
-with `make secret` ([Add a secret](secrets.md#add-a-secret)) before
-the first deploy to the rebuilt box; `make rekey` alone re-encrypts
-the values the attacker holds.
+Whoever had root had the apps' secrets too: every env file under
+`/etc/hotserve/secrets` in clear, and the box's key with them. Then
+every value changes — database passwords, third-party keys — on the
+rebuilt box in this order: `make rekey` first, since `recipients`
+still names the old box's key and a `make secret` before it would
+encrypt to that key and the workflow refuse the push
+([A rebuilt box](secrets.md#a-rebuilt-box)); then each value set anew
+with `make secret` ([Add a secret](secrets.md#add-a-secret)); then
+the first deploy. `make rekey` alone re-encrypts the values the
+attacker holds.
 
 ## Against a real provider
 

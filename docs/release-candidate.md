@@ -115,9 +115,11 @@ left. Remove the probe after: `restic forget <its id>`, then
 `unset RESTIC_PASSWORD`, so that restic asks again. **On B2**, with
 the box's key without `deleteFiles`: `processed 1 files, 6 B in 30:01`,
 `snapshot … saved`, no lock left; the timers started again and
-`status` said `dev: ok`; the drill after it is check 8's below, which
-proved the restore and checked 41/52 `clean`; and the `forget` hid
-the snapshot's file and left its version
+`status` said `dev: ok` (whether the two `systemctl start` runs were
+made is not recorded); the drill after it, the box's first, proved the
+restore and checked `data group 40/52: clean` in 10 s (dummy data, not
+check 8's figure); and the `forget` hid the snapshot's file and left
+its version
 (`backblaze-b2 ls --long --versions` showed its upload, then its
 upload and a hide).
 
