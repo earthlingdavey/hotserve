@@ -134,7 +134,7 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		}, "restic had not finished opening the repository and writing a lock file to it within 200ms: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here", ""},
 		{"the key wrote the lock file and could not remove it: the lock the opening left names it", func(b *box) {
 			b.locksOut, b.lockOut = lockID+"\n", ownLock(time.Now().Add(5*time.Second))
-		}, "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock, from a machine with a key that may delete, clears a lock nothing holds", ""},
+		}, "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository", ""},
 		{"a lock from another host is not the opening's: no refusal", func(b *box) {
 			b.locksOut, b.lockOut = lockID+"\n", strings.Replace(ownLock(time.Now().Add(5*time.Second)), host, "laptop", 1)
 		}, "", "repository ready"},
@@ -150,6 +150,20 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		{"another restic held the repository (exit 11), and the lock restic wrote before its second look stayed: refused by it", func(b *box) {
 			b.outcome["open"], b.locksOut, b.lockOut = unit.Outcome{Result: "exit-code", ExitStatus: 11}, lockID+"\n", ownLock(time.Now().Add(5*time.Second))
 		}, "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock 0a11f6bb)", ""},
+		{"a lock listed, and gone by its reading: another restic's, passed over", func(b *box) {
+			b.locksOut, b.outcome["lock"] = lockID+"\n", unit.Outcome{Result: "exit-code", ExitStatus: 1}
+			locks := 0
+			b.before = func(s unit.Spec) {
+				if strings.Contains(s.Name, "_locks_") {
+					if locks++; locks == 2 {
+						b.locksOut = ""
+					}
+				}
+			}
+		}, "", "was gone before it could be read: another restic's, not this key's"},
+		{"a lock listed, unreadable, and still listed: not passed over", func(b *box) {
+			b.locksOut, b.outcome["lock"] = lockID+"\n", unit.Outcome{Result: "exit-code", ExitStatus: 1}
+		}, "lock 0a11f6bb could not be read: whether this setup's opening left it is not known; run setup again (restic failed (exit 1)", ""},
 		{"the listing could not answer", func(b *box) { b.outcome["locks"] = unit.Outcome{Result: "exit-code", ExitStatus: 1} },
 			"listing the repository's locks: restic failed (exit 1)", ""},
 		{"the listing printed what is no lock id", func(b *box) { b.locksOut = "not-an-id\n" },
@@ -276,6 +290,20 @@ func TestAnInterruptDuringTheOpeningNamesTheLockItMayLeave(t *testing.T) {
 	}
 	if _, err := os.Lstat(b.cfg.EnvFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the working file was written")
+	}
+	// After init made the repository, the interrupt during the opening
+	// after it says the repository was made, not that nothing was.
+	b, m = setupBox(t)
+	ctx, cancel = context.WithCancel(context.Background())
+	b.before = func(s unit.Spec) {
+		if strings.Contains(s.Name, "_open_") {
+			b.hang = "open"
+			cancel()
+		}
+	}
+	_, err = Setup(ctx, b.cfg, b, SetupOptions{Repository: "s3:http://e2e-s3:9000/box", Terminal: m})
+	if !errors.Is(err, context.Canceled) || err.Error() != "interrupted: "+lockLeftMade+"; the password shown above is the repository's: keep it" {
+		t.Fatalf("err = %v\nsaid:\n%s", err, m.saidAll())
 	}
 	// On a repository an earlier attempt's init made, the interrupt's
 	// fate names the password as the repository's.
