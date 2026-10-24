@@ -376,9 +376,12 @@ repo, which the first deploy makes
 `hotserve init` in step 1; the secrets with `make rekey`, pushed and
 applied before step 4, since until then the box has no env file for
 the app ([A rebuilt box](secrets.md#a-rebuilt-box)). A `deploy_trust
-local` public key is a file the Caddyfile names, not a commit: put it
-back from whoever holds the pair, or make a new pair with `hotserve
-deploy-keygen` and hand the private half to whoever deploys.
+local` public key is a file the Caddyfile names, not a commit, and
+`hotserve init` refuses a Caddyfile whose key file is missing: before
+step 1, put the `.pub` back from where the pair is kept, or make a new
+pair there with `hotserve deploy-keygen` — on the machine that mints
+the tokens, a runner's secret or your own — and copy only the `.pub`
+to the box.
 
 ## The weekly drill, and what it costs
 
