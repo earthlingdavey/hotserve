@@ -5,7 +5,7 @@ $ grep '^4_z' docs/design/backups/rc-runs/RC-lifecycle-day0.out    # the two lis
 $ ... | awk -F_ '{print $9}' | cut -c1-15    # field 9 of the id, split on _, is the upload stamp, ms since the epoch
 u01791114420872
 u01791114420526
-$ ... | sort -k3,4    # the guide's old line: to the second; the tie broken by the whole line, i.e. the id's _f<hex> — here upload first by chance
+$ ... | sort -k3,4    # the RC run's own sort (check 4, by the date and time columns): to the second; the tie broken by the whole line, i.e. the id's _f<hex> — here upload first by chance
 4_z5c0ef9874aa50a64a41a0b1a_f4021912b21da582e_d20261004_m114700_c003_v0312045_t0056_u01791114420526  upload  2026-10-04  11:47:00         37  probe.txt
 4_z5c0ef9874aa50a64a41a0b1a_f4702dd4e2e8d5768_d20261004_m114700_c003_v7007000_t0000_u01791114420872    hide  2026-10-04  11:47:00          0  probe.txt
 $ ... | sort -t_ -k9,9    # by the upload stamp: the upload (…420526) before the hide (…420872), 346 ms apart

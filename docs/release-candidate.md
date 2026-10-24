@@ -25,8 +25,9 @@ every one is still **unverified**.
 0.18 and the [look](backups.md#look-from-your-own-machine) lines' first
 three set, with its own key; where it is a `debian:13` container,
 install `ca-certificates` beside `restic` and `rclone`: apt brings it
-with neither (rclone only suggests it; measured, L9 in the design
-record), and restic without it fails every https storage,
+with neither (rclone only suggests it; measured,
+`rc-results/L11-tar-exclude-umask.out` in the design record), and
+restic without it fails every https storage,
 `x509: certificate signed by unknown authority`.
 
 ## 1. A bucket that does not exist, and a wrong secret
@@ -62,15 +63,16 @@ the storage refused the key, or could not be reached: the key id and secret agai
 hotserve-backup: restic could not make or open the repository (exit 1): …; the password shown above was never used: discard it
 ```
 
-On B2 the look itself is refused at once (`b2_authorize_account: 401`
-for a wrong secret, `b2_list_buckets: 401` for a bucket the key may not
-reach; measured, check 1 of `v0.3.0-rc1`, nothing written). What
-`setup` says of it has changed since (#353): no password is shown
-until the storage takes a key, and three refusals end in restic's
-words with nothing said of a password — **unverified** on B2, where
-rc1's three askings, each running the init the current `setup` does
-not, took 7.5 s for the bucket nobody made and 3.8 s for the wrong
-secret.
+On B2 a wrong key is refused at once (measured, check 1 of
+`v0.3.0-rc1`, nothing written): rc1's look ended at once but worded
+it as a timeout, a password was shown, and the init was refused —
+`b2.NewClient: b2_authorize_account: 401` for a wrong secret,
+`NewBucket: b2_list_buckets: 401` for a bucket the key may not reach —
+three askings in 7.5 s for the bucket nobody made and 3.8 s for the
+wrong secret. What `setup` says of it has changed since (#353): the
+look itself refuses, no password is shown until the storage takes a
+key, and three refusals end in restic's words with nothing said of a
+password — **unverified** on B2.
 
 ## 2. Set up, a first backup, status and the drill, over real TLS
 
@@ -128,8 +130,9 @@ two days on, to be sure — `backblaze-b2 ls --long --versions -r
 b2://<that bucket>` should list neither the file's version nor its hide
 marker: B2's documentation says it removes a hide marker itself once
 nothing is under it. **On B2** it does: a file hidden at 11:47 UTC on
-2026-10-04 was still listed, upload and hide, 30 hours on, and both
-were gone at 48. On S3 the guide's rule asks for it (expired delete
+2026-10-04 was still listed, upload and hide, a day on (17:36 UTC on
+the 5th, the plan's record), and both were gone by 48 hours (11:26
+UTC on the 6th). On S3 the guide's rule asks for it (expired delete
 markers), and Hetzner's cannot; both **unverified**.
 
 ## 4. An attack with the box's key, and the recovery
@@ -262,4 +265,5 @@ this decides whether the lighter drill is ever needed.
 The egress on a bill: **unverified.** On the e2e server, on one
 machine, a 400 MiB app took the drill 7 s, its check included. **On
 B2** (EU Central, an arm64 Hetzner VPS), with 500 MB of new uploads:
-the run that uploaded them 24 s, the drill 14 s, its check included.
+the run that uploaded them 24 s, the drill 14 s — `restore proven`,
+its check 41/52 `clean` included.
