@@ -1156,12 +1156,16 @@ What can be known to fail is refused before anything is asked for
    key that may delete, clears it". A lock from elsewhere — another
    host, another user, another time — is not the opening's, and never
    refuses a right key: that match is what keeps an off-box prune's
-   lock from being taken for ours. Where another restic holds the
-   repository (exit 11: a prune or a check from elsewhere) the opening
-   is read again without the lock, which proves the password and the
-   id; nothing was learned of the key's writing, that is said, and
-   setup goes on. A repository setup itself made was written by its
-   init, and is not opened again; one an earlier attempt of this setup
+   lock from being taken for ours. A lock gone, or unreadable, by the
+   time it is read is nobody's: said, no refusal. Where another restic
+   holds the repository (exit 11: a prune or a check from elsewhere)
+   the opening is read again without the lock, which proves the
+   password and the id; nothing was learned of the key's writing, that
+   is said, and setup goes on. A repository setup itself made was
+   written by its init, which proved the key may write and deleted
+   nothing: it is opened with the lock once, so that a key that may
+   write and not delete is refused by the lock it leaves on a first
+   setup as on a rebuilt box. One an earlier attempt of this setup
    made, opened with the password shown, was made with that attempt's
    key, and the key asked for since is held to writing the same. Where the look could not tell and init finds the repository
    there after all ("already initialized", whatever the password), the
@@ -1197,7 +1201,9 @@ What can be known to fail is refused before anything is asked for
    (below).
 
 Whatever ends setup before the last step — Ctrl-C ("interrupted:
-nothing has been written"), a refusal, a kill — leaves the working file
+nothing has been written" before the opening; "interrupted: nothing of
+setup's has been written; a lock file restic was writing may stay …"
+from it on), a refusal, a kill — leaves the working file
 byte for byte as it was, or absent as it was, and no copy of a
 credential beside it — but for a `restic init` left running, which
 keeps its staged file; a `kill -9` at any point after the storage key

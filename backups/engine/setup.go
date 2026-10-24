@@ -461,7 +461,13 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 		return nil, err
 	}
 	defer end()
-	host, _ := os.Hostname()
+	// The box's hostname is what a lock file the opening leaves is
+	// known by (ownLock): one that cannot be read would make that
+	// check pass everything, so it ends setup instead.
+	host, hostErr := os.Hostname()
+	if hostErr != nil {
+		return nil, fmt.Errorf("the box's hostname could not be read, which a lock file is known by: %w", hostErr)
+	}
 	s := &setup{run: x, term: term, repo: o.Repository, host: host, staged: envfile.Staged(cfg.EnvFile)}
 	if err != nil {
 		return nil, s.err(err)
@@ -639,6 +645,16 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 				return nil, s.err(errors.New("restic made the repository and exited 0 but said nothing of its id; run setup again, which opens it"))
 			}
 			rep.New = true
+			// Init proved the key may write, and deleted nothing: the
+			// repository just made is opened with its lock once, so that
+			// a key that may write and not delete is refused by the lock
+			// it leaves, here as on a rebuilt box — the first setup is
+			// where such a key is most often first used.
+			if _, opened, err := s.openRepository(ctx); err != nil {
+				return nil, s.err(err)
+			} else if !opened {
+				return nil, s.err(errors.New("the repository restic just made does not open with the password it was made with"))
+			}
 			break
 		}
 		if o1.Result == "exit-code" && o1.ExitStatus == 1 && repositoryExists(message) {
@@ -1081,19 +1097,24 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 		}
 		return id, true, s.locksLeft(ctx)
 	case o.Result == "exit-code" && o.ExitStatus == 12:
+		// The key search fails before the lock: nothing was written,
+		// and the password asked for again begins clean.
+		s.writing = false
 		return "", false, nil
 	case o.Result == "exit-code" && o.ExitStatus == 11:
 		return s.reopen(ctx)
 	case o.Result == "exit-code" && o.ExitStatus == 1:
-		// restic's line for the lock file's write, "Save(<lock/…)",
-		// anywhere in what it said [measured: RC check 6, M1, M3; it
-		// ends on a "Fatal: unable to create lock" line after it]: the
-		// password had opened the repository, and the key is refused
-		// at the write — opened, so that the caller knows the password
-		// is the repository's, with no id, since restic prints the
-		// config after the lock.
-		if raw, _ := os.ReadFile(s.errFile("open")); strings.Contains(string(raw), "Save(<lock/") {
-			return "", true, errors.New("this key opened the repository, and restic exited 1 at its lock file's write" + cannotWrite + resticSaid(s.lastSaid("open", false)))
+		// restic's last line for a lock file it could not write:
+		// "Fatal: unable to create lock in backend: …" [measured: the
+		// e2e's 403 case, M3], or the "Save(<lock/…)" line itself where
+		// it ended on that. The password had opened the repository, and
+		// the key is refused at the write — opened, so that the caller
+		// knows the password is the repository's, with no id, since
+		// restic prints the config after the lock. A Save line earlier
+		// in what it said — a write retried once and then made, before
+		// a read failed — is not read as the refusal.
+		if last := s.lastSaid("open", false); strings.Contains(last, "unable to create lock") || strings.Contains(last, "Save(<lock/") {
+			return "", true, errors.New("this key opened the repository, and restic exited 1 at its lock file's write" + cannotWrite + resticSaid(last))
 		}
 		return "", false, errors.New("restic could not open the repository (exit 1): " + record.Text(message))
 	}
@@ -1166,8 +1187,13 @@ func (s *setup) locksLeft(ctx context.Context) error {
 			return err
 		}
 		if !o.OK() {
+			// Gone between the listing and the reading — another
+			// restic's lock, removed or rewritten under a new id (restic
+			// refreshes its lock every few minutes) — or unreadable: not
+			// the opening's own, so no refusal; said, in case it was.
 			detail, _ := resticFailure(o)
-			return errors.New("reading lock " + id[:8] + ": " + detail + resticSaid(message))
+			s.term.Say("lock " + id[:8] + " could not be read, and is not taken for this key's: " + detail + resticSaid(message))
+			continue
 		}
 		raw, _ := os.ReadFile(filepath.Join(s.dir, "lock.out"))
 		var l struct {
@@ -1260,7 +1286,9 @@ func (s *setup) repository(ctx context.Context, role string, within time.Duratio
 			s.term.Say("still waiting for " + s.repo + " (Ctrl-C leaves restic init running, and the next setup waits for it; it may be making the repository with the password shown: keep it)")
 			return
 		}
-		if role == "open" {
+		if s.writing {
+			// The opening, and whatever runs after it, may have left
+			// restic's lock file.
 			s.term.Say("still waiting for " + s.repo + " " + noteWrite)
 			return
 		}
@@ -1383,7 +1411,7 @@ func resticMessage(file string) string {
 	if jsonLine(file, "exit_error", &m) {
 		return record.Clean(m.Message)
 	}
-	raw, _ := os.ReadFile(file)
+	raw, _ := os.ReadFile(file) //nolint:gosec // written by the manager into root's own run dir
 	return record.Clean(string(raw))
 }
 
@@ -1401,7 +1429,7 @@ func initializedID(file string) string {
 
 // configID is the repository's id from `restic cat config` [measured].
 func configID(file string) string {
-	raw, err := os.ReadFile(file)
+	raw, err := os.ReadFile(file) //nolint:gosec // written by the manager into root's own run dir
 	if err != nil {
 		return ""
 	}

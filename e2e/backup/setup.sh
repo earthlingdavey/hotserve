@@ -214,7 +214,7 @@ t0=$(date +%s)
 converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
 rc=$?
 took=$(($(date +%s) - t0))
-[ "$rc" != 0 ] && says "the repository exists; its password is needed" && ! says "checking that this key can write" && says "this key opened the repository, and restic exited 1 at its lock file's write: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: .*Access Denied" && [ "$took" -lt 20 ] && pass "a key the storage refuses every write, plainly, is refused at the opening, at once (${took}s), in restic's words" || fail "a read-only key, refused plainly: exit $rc after ${took}s: $(cat "$OUT")"
+[ "$rc" != 0 ] && says "the repository exists; its password is needed" && says "this key opened the repository, and restic exited 1 at its lock file's write: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: .*Access Denied" && [ "$took" -lt 20 ] && pass "a key the storage refuses every write, plainly, is refused at the opening, at once (${took}s), in restic's words" || fail "a read-only key, refused plainly: exit $rc after ${took}s: $(cat "$OUT")"
 says "repository ready" && fail "setup said the repository was ready" || pass "and not called ready"
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "the working file is byte-identical, no copy of a credential is left, no unit is running" || fail "after a read-only key: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
 fi
@@ -252,7 +252,10 @@ rc=$?
 grep -q "^RESTIC_PASSWORD=$pw\$" "$ENVFILE" && pass "the file holds the repository's own password" || fail "the file holds: $(grep PASSWORD "$ENVFILE" | sed 's/=.*/=…/')"
 says "$pw" && fail "the repository's password was shown as it was typed" || pass "the repository's password was not shown as it was typed"
 says "the repository exists; its password is needed" && ! says "Repository password (new)" && ! says "stored" && pass "a rebuilt box is asked for the password it has, and shown none" || fail "the rebuilt box was shown: $(grep -i password "$OUT")"
-! says "checking that this key can write" && pass "and its key was held to writing by the opening itself, no second unit" || fail "a write check beside the opening: $(cat "$OUT")"
+# The opening itself took the lock: the units this setup ran are the
+# look, the opening and the locks listing — no unit of a write check.
+units=$(journalctl --no-pager -o cat -u 'hotserve_backup_*' --since "-2min" 2>/dev/null | grep -o 'hotserve_backup_[a-z]*_' | sort -u | tr '\n' ' ')
+case " $units " in *" hotserve_backup_write_ "*) fail "a write unit ran beside the opening: $units";; *) pass "the opening took the lock itself: no write unit ($units)";; esac
 rr cat config --no-lock >/dev/null 2>&1 && pass "the repository answers" || fail "the repository does not answer"
 # With no file before, the record cannot be tied to this repository: it
 # is put aside, and the next run drills what it backs up here.

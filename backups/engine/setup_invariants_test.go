@@ -187,10 +187,17 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 			}
 		})
 	}
-	// A repository this setup made was written by its init: not opened
-	// again, not asked.
+	// A repository this setup made was written by its init, which
+	// proved the key may write and deleted nothing: it is opened with
+	// the lock once, for the lock a key that may not delete leaves —
+	// and refused by it the same.
 	b, m := setupBox(t)
-	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err != nil || strings.Contains(b.roles(), "open") {
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err != nil || b.roles() != "plan probe init open locks" {
+		t.Fatalf("err %v, units %s", err, b.roles())
+	}
+	b, m = setupBox(t)
+	b.locksOut, b.lockOut = lockID+"\n", ownLock(time.Now())
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "this key wrote a lock file to the repository and could not remove it (lock 0a11f6bb)") || !strings.Contains(err.Error(), "the password shown above is the repository's: keep it") {
 		t.Fatalf("err %v, units %s", err, b.roles())
 	}
 	// One an earlier attempt's init made, opened with the password

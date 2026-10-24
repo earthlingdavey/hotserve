@@ -215,7 +215,7 @@ func TestAFreshSetupShowsThePasswordBeforeAnythingIsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe init"; got != want {
+	if got, want := b.roles(), "plan probe init open locks"; got != want {
 		t.Fatalf("units: %s, want %s", got, want)
 	}
 	if unitsBeforeStored != "plan probe" {
@@ -939,7 +939,7 @@ func TestWhereTheProbeCannotTellInitAnswers(t *testing.T) {
 	if err != nil || !rep.New {
 		t.Fatalf("%v %+v", err, rep)
 	}
-	if got, want := b.roles(), "plan probe init"; got != want || len(b.stopped) != 1 || !strings.Contains(b.stopped[0], "_probe_") {
+	if got, want := b.roles(), "plan probe init open locks"; got != want || len(b.stopped) != 1 || !strings.Contains(b.stopped[0], "_probe_") {
 		t.Fatalf("units: %s, stopped %v", got, b.stopped)
 	}
 }
@@ -967,7 +967,7 @@ func TestAKeyTheStorageRefusesAtTheLookIsAskedForAgainBeforeAnyPassword(t *testi
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe probe init"; got != want {
+	if got, want := b.roles(), "plan probe probe init open locks"; got != want {
 		t.Fatalf("units: %s, want %s", got, want)
 	}
 	if got, want := m.askedAll(), "Storage key id (B2_ACCOUNT_ID): \nsecret:Storage secret key (B2_ACCOUNT_KEY): \nStorage key id (B2_ACCOUNT_ID): \nsecret:Storage secret key (B2_ACCOUNT_KEY): \nType stored to go on: "; got != want {
@@ -1115,7 +1115,7 @@ func TestAKeyTheStorageRefusesIsAskedForAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe init probe init"; got != want {
+	if got, want := b.roles(), "plan probe init probe init open locks"; got != want {
 		t.Fatalf("units: %s, want %s", got, want)
 	}
 	if got, want := m.askedAll(), "Storage key id (AWS_ACCESS_KEY_ID): \nsecret:Storage secret key (AWS_SECRET_ACCESS_KEY): \nType stored to go on: \nStorage key id (AWS_ACCESS_KEY_ID): \nsecret:Storage secret key (AWS_SECRET_ACCESS_KEY): "; got != want {
@@ -1598,7 +1598,7 @@ func TestARecordIsPutAsideOnlyOnceTheFileIsInPlace(t *testing.T) {
 	// A directory where the file has to go: the rename over it fails.
 	must(t, os.MkdirAll(b.cfg.EnvFile, 0o755))
 	_, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
-	if err == nil || b.roles() != "plan probe init" {
+	if err == nil || b.roles() != "plan probe init open locks" {
 		t.Fatalf("setup with a directory in the file's place: %v after %s", err, b.roles())
 	}
 	st, err := record.Read(filepath.Join(b.cfg.StateDir, "status.json"))
