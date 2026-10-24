@@ -579,7 +579,8 @@ Each is **unverified**, and a check the release candidate runs
   Seen on the e2e server behind a proxy that refuses writes, all three
   ways; on B2, `v0.3.0-rc1`'s `setup`, which only read, took a console
   Read Only key, and every run then failed after 14½ minutes of retries
-  (`b2_get_upload_url: 401:`), as did every drill. The refusals
+  (`b2_get_upload_url: 401:`), as did the drill after it, after 14
+  minutes. The refusals
   themselves are **unverified** on B2.
 - **A bucket that does not exist** on a provider that will not make
   one for the box's key. The e2e S3 server makes a bucket when asked,
