@@ -82,8 +82,7 @@ capabilities — Read and Write, which may delete, Read Only and Write
 Only — so make the two keys once from the command line, with Debian
 13's `backblaze-b2` (3.19; a `debian:13` container will do: apt
 brings the CA certificates with it, which it does not with `restic`
-or `rclone` [measured, `rc-runs/rc-results/L11-tar-exclude-umask.out`
-in the design record]):
+or `rclone` [measured]):
 
 ```sh
 apt-get update && apt-get install -y backblaze-b2
@@ -178,10 +177,8 @@ The package's smoke test (`make install-test`) runs exactly those
 lines, read out of this page, as an administrator under `sudo`, on a
 fresh Debian 13 with the `.deb` just installed. Keep the block in the
 box repo's Caddyfile: a push of a file without it stops that app's
-backups, and a run says so once. On a box without a box repo, keep a
-copy of `/etc/hotserve` off the box ([A rebuilt box](#a-rebuilt-box)).
-The other order works too: `setup` before any block says that a run
-would back nothing up.
+backups, and a run says so once. The other order works too: `setup`
+before any block says that a run would back nothing up.
 
 `setup`, for a bucket nobody has made yet:
 
@@ -341,8 +338,7 @@ another uid, which a restore does not mind:
 1. Install the package ([Your first deploy](first-deploy.md), step 2)
    and give it the box's Caddyfile with `hotserve init` from the box
    repository, as the first deploy did (step 3; with secrets,
-   [A rebuilt box](secrets.md#a-rebuilt-box)); or, on a box without a
-   box repo, put back the copy of `/etc/hotserve` you kept (below).
+   [A rebuilt box](secrets.md#a-rebuilt-box)).
 2. `sudo hotserve-backup setup <the same URL>`, with the box's key. It
    finds the repository and asks for its password instead of making
    one:
@@ -373,60 +369,11 @@ the old box still runs, turn its timers off first
 
 **A backup holds what the apps declare under `shared/`, and nothing of
 `/etc/hotserve`**: not the Caddyfile, whose `backup` blocks a restore
-needs before it can run, and no env file. With a box repo the
-Caddyfile and the secrets come back from it
-([A rebuilt box](secrets.md#a-rebuilt-box)). Without one, keep the
-directory off the box, beside the repository URL, the key and the
-password, again after every change — all but `age/` and `age.pub`,
-the box's own key pair, whose private half never leaves the box and
-which a rebuilt box makes anew. Written under `/root`, readable by
-root alone, then copied off:
-
-```sh
-sudo sh -c 'umask 077; tar --exclude=hotserve/age --exclude=hotserve/age.pub -czf /root/etc-hotserve.tar.gz -C /etc hotserve'
-```
-
-and on the rebuilt box, before step 2:
-
-```sh
-sudo tar -xzf etc-hotserve.tar.gz -C /etc
-hotserve validate --config /etc/hotserve/Caddyfile
-hotserve-backup validate /etc/hotserve/Caddyfile
-sudo systemctl reload hotserve
-```
-
-It holds the env files under `/etc/hotserve`, in plain text, and a
-`deploy_trust local` key pair kept there: store it as you store the
-password. After an attack the old pair is the attacker's, and so is
-every value in the env files: leave the pair in the archive and make
-a new one in its place — `deploy-keygen` refuses to overwrite a key,
-and writes the private key `0600` with its `.pub` beside it — and
-change every value the env files hold:
-
-```sh
-sudo tar -xzf etc-hotserve.tar.gz -C /etc --exclude='hotserve/deploy.key*'
-sudo hotserve deploy-keygen --out /etc/hotserve/deploy.key
-hotserve validate --config /etc/hotserve/Caddyfile
-hotserve-backup validate /etc/hotserve/Caddyfile
-sudo systemctl reload hotserve
-```
-
-The `deploy_trust local` block's `public_key` names the new `.pub` if
-it names that path, and the private half is what `hotserve
-deploy-token --key` mints with: hand it to whoever deploys, in place
-of the old. An `env_file` the Caddyfile names outside that directory
-is not in the archive — keep that file the same way, and put it back
-before step 2. A box rebuilt from a plain tar of the directory (a
-Caddyfile and a deploy key; no `age/`, no `secrets/`), with another
-uid for `hotserve`, found the repository, restored before the first
-deploy, and its next run was `ok` [measured, on the e2e server]. That
-GNU tar 1.35 leaves `age/` and `age.pub` out of the archive (and an
-`agenda.env` in: the two names, not a wildcard) and `deploy.key*` out
-of the extraction, and under that umask writes the archive `600`, was
-measured on Debian 13 (`rc-runs/rc-results/L11-tar-exclude-umask.out`
-in the design record). The lines as printed,
-restoring `secrets/` over the directory the package makes, are
-**unverified**.
+needs before it can run, no env file, and not the deploy key. They
+come back from the box repo, which the first deploy makes
+([examples/box](../examples/box/README.md)): the Caddyfile with
+`hotserve init` in step 1, the secrets with `make rekey`
+([A rebuilt box](secrets.md#a-rebuilt-box)).
 
 ## The weekly drill, and what it costs
 

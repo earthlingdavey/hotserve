@@ -25,8 +25,7 @@ every one is still **unverified**.
 0.18 and the [look](backups.md#look-from-your-own-machine) lines' first
 three set, with its own key; where it is a `debian:13` container,
 install `ca-certificates` beside `restic` and `rclone`: apt brings it
-with neither (rclone only suggests it; measured,
-`rc-runs/rc-results/L11-tar-exclude-umask.out` in the design record), and
+with neither (rclone only suggests it; measured), and
 restic without it fails every https storage,
 `x509: certificate signed by unknown authority`.
 
@@ -248,7 +247,9 @@ before installing the package). Then
 box's uid. **Unverified** on a provider; on the e2e server (uids 996
 and 993) the restore put back the database and the files, owned by
 993, and the first run and drill there were `ok` and proven. **On B2:**
-the same, uids 996 and 993, the restore 10 s.
+the same, uids 996 and 993, the restore 10 s. The guide's way back to
+the Caddyfile is the box repo; the e2e run (L5 in the design record,
+before the box channel) put `/etc/hotserve` back from a copy instead.
 
 ## 8. One drill, timed, and its egress
 
