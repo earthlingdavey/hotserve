@@ -322,7 +322,7 @@ any unit starts, in these words (in its journal,
 `journalctl -u hotserve-backup.service`, after the date and host):
 
 ```
-hotserve-backup[<pid>]: hotserve-backup: the repository is b2:, which is not supported: sudo hotserve-backup setup s3:https://s3.<region>.backblazeb2.com/<bucket>/<path>, B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; restic's own B2 backend retries a failed upload without end
+hotserve-backup[<pid>]: hotserve-backup: the repository is b2:, which is not supported: sudo hotserve-backup setup 's3:https://s3.<region>.backblazeb2.com/<bucket>/<path>', B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; restic's own B2 backend retries a failed upload without end
 ```
 
 and `status` says `the last run ended early: the repository is b2:,
@@ -335,7 +335,7 @@ and path, the same key id and secret, and the repository's password:
 
 ```sh
 sudo cat /var/lib/hotserve-backup/repository-id
-sudo hotserve-backup setup s3:https://s3.<region>.backblazeb2.com/<bucket>/<path>
+sudo hotserve-backup setup 's3:https://s3.<region>.backblazeb2.com/<bucket>/<path>'
 sudo cat /var/lib/hotserve-backup/repository-id
 ```
 

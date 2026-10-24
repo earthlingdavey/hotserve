@@ -197,7 +197,7 @@ func TestARunRefusesWhatSetupRefusesWithSetupsWords(t *testing.T) {
 		// own B2 backend (#177).
 		{"a repository other than b2:", func(b *box) {
 			writeOrPanic(b.cfg.EnvFile, "RESTIC_REPOSITORY=b2:hs-backups:dev\nRESTIC_PASSWORD=the-secret\nB2_ACCOUNT_ID=K001\nB2_ACCOUNT_KEY=k\n")
-		}, "the repository is b2:, which is not supported: sudo hotserve-backup setup s3:https://s3.<region>.backblazeb2.com/hs-backups/dev, B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; restic's own B2 backend retries a failed upload without end"},
+		}, "the repository is b2:, which is not supported: sudo hotserve-backup setup 's3:https://s3.<region>.backblazeb2.com/hs-backups/dev', B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; restic's own B2 backend retries a failed upload without end"},
 		// A file the manager could not read either: said, in place of
 		// every unit failing to start.
 		{"a credential file that can be read", func(b *box) {

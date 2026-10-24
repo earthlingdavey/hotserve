@@ -366,6 +366,10 @@ func TestARepositoryTheBoxCannotUseIsRefusedBeforeAnyPrompt(t *testing.T) {
 		{"s3:http://e2e-s3:9000/box ", "the repository URL has whitespace at an end"},
 		{"s3:AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
 		{"s3://AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
+		// A "://" in the path is not where the authority starts.
+		{"s3:AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
+		{"s3://AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
+		{"s3:https://AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
 		{"rest:user:pass@host:8000/", "rest:, gs: and swift: are not set up by this command"},
 		{"s3:http://e2e-s3:9000/b\x01x", "the repository URL cannot go in the file: it holds a control character"},
 		{"ftp://host/x", "(setup asks for s3:)"},
@@ -435,6 +439,7 @@ func TestTheS3URLNamedForAB2RepositoryIsTheSameRepository(t *testing.T) {
 		"b2:hs-backups:dev", "b2:hs-backups:dev#daily", "b2:hs-backups:dev?x=1",
 		"b2:hs-backups:dev%2Fdaily", "b2:hs-backups:100%", "b2:hs-backups:a b/c;d,e",
 		"b2:hs-backups:/srv//dev/", "b2:hs-backups:a:b/c@d", "b2:hs-backups:a+b&c=d",
+		"b2:it's:x", "b2:hs-backups:dev$DAILY", "b2:hs-backups:it's",
 	} {
 		t.Run(repo, func(t *testing.T) {
 			wantBucket, wantPath, _ := strings.Cut(strings.TrimPrefix(repo, "b2:"), ":")
@@ -457,6 +462,28 @@ func TestTheS3URLNamedForAB2RepositoryIsTheSameRepository(t *testing.T) {
 	}
 }
 
+// The run's remedy is a command to paste: its URL in single quotes, which
+// a POSIX shell passes on literally, so nothing in a bucket or a path —
+// a $, an &, a ;, the placeholder's < and > — is the shell's, and b2AsS3
+// leaves no ' in the URL to end the quotes.
+func TestTheRunsRemedyPastesAsOneLiteralArgument(t *testing.T) {
+	for _, repo := range []string{
+		"b2:hs-backups:dev", "b2:hs-backups:dev$DAILY", "b2:hs-backups:a&b;c", "b2:hs-backups:it's",
+		"b2:it's:x", "b2:", "b2:hs-backups:`x`|y>z", "b2:hs-backups:a\\b",
+	} {
+		t.Run(repo, func(t *testing.T) {
+			u := b2AsS3(repo)
+			if strings.Contains(u, "'") {
+				t.Fatalf("%s holds a quote", u)
+			}
+			msg := b2RunRefused(repo).Error()
+			if want := "sudo hotserve-backup setup '" + u + "', "; !strings.Contains(msg, want) {
+				t.Fatalf("%s\nwant it to hold %s", msg, want)
+			}
+		})
+	}
+}
+
 // B2's region is in the name of its S3-compatible endpoint, and is read
 // from exactly that host, as restic reads the host out of the URL: no
 // port, no trailing dot, no longer name ending in it, no other case,
@@ -470,28 +497,32 @@ func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 		"s3://s3.eu-central-003.backblazeb2.com/bucket":            "eu-central-003",
 		"s3:s3.eu-central-003.backblazeb2.com":                     "eu-central-003",
 
-		"s3:https://s3.eu-central-003.backblazeb2.com:443/bucket":              "eu-central-003",
-		"s3:https://s3.eu-central-003.backblazeb2.com./bucket":                 "eu-central-003",
-		"s3:s3.eu-central-003.backblazeb2.com.:443/bucket":                     "eu-central-003",
-		"s3:https://s3.eu-central-003.backblazeb2.com.evil.example/bucket":     "",
-		"s3:https://evil.example/s3.eu-central-003.backblazeb2.com/bucket":     "",
-		"s3:https://x.s3.eu-central-003.backblazeb2.com/bucket":                "",
-		"s3:https://bucket.s3.eu-central-003.backblazeb2.com/path":             "",
-		"s3:https://S3.EU-CENTRAL-003.BACKBLAZEB2.COM/bucket":                  "eu-central-003",
-		"s3:https://s3.eu-central-003.backblazeb2.com:443x/bucket":             "",
-		"s3:https://s3.eu-central-003.backblazeb2.com..:443/bucket":            "",
-		"s3:https://s3.eu-central-003.backblazeb2.com@evil.example/bucket":     "",
-		"s3:https://u:p@s3.eu-central-003.backblazeb2.com/bucket":              "eu-central-003",
-		"s3:s3.eu-central-003.backblazeb2.com@evil.example/bucket":             "",
-		"s3:https://s3.eu-central-3.backblazeb2.com/bucket":                    "",
-		"s3:https://s3.eu-central-003.backblazeb2.com%2Fevil.example/bucket":   "",
-		"s3:https://s3.amazonaws.com/bucket":                                   "",
-		"s3:http://e2e-s3:9000/box":                                            "",
-		"b2:bucket:path":                                                       "",
-		"rest:https://s3.eu-central-003.backblazeb2.com/":                      "",
-		"s3:https://s3.eu-central-003.backblazeb2.com\\@evil.example/bucket":   "",
-		"s3:https://[s3.eu-central-003.backblazeb2.com]/bucket":                "",
-		"s3:https://s3.eu-central-003.backblazeb2.com\x00.evil.example/bucket": "",
+		"s3:https://s3.eu-central-003.backblazeb2.com:443/bucket":          "eu-central-003",
+		"s3:https://s3.eu-central-003.backblazeb2.com./bucket":             "eu-central-003",
+		"s3:s3.eu-central-003.backblazeb2.com.:443/bucket":                 "eu-central-003",
+		"s3:https://s3.eu-central-003.backblazeb2.com.evil.example/bucket": "",
+		"s3:https://evil.example/s3.eu-central-003.backblazeb2.com/bucket": "",
+		"s3:https://x.s3.eu-central-003.backblazeb2.com/bucket":            "",
+		"s3:https://bucket.s3.eu-central-003.backblazeb2.com/path":         "",
+		"s3:https://S3.EU-CENTRAL-003.BACKBLAZEB2.COM/bucket":              "eu-central-003",
+		"s3:https://s3.eu-central-003.backblazeb2.com:443x/bucket":         "",
+		"s3:https://s3.eu-central-003.backblazeb2.com..:443/bucket":        "",
+		"s3:https://s3.eu-central-003.backblazeb2.com@evil.example/bucket": "",
+		"s3:https://u:p@s3.eu-central-003.backblazeb2.com/bucket":          "", // refused by setup before this
+		// The host as url.Parse ends it, at the ?, which restic reads too
+		// (and then refuses, the bucket being in the query).
+		"s3:https://s3.eu-central-003.backblazeb2.com?x/bucket":                          "eu-central-003",
+		"s3:s3.eu-central-003.backblazeb2.com/bucket/x://s3.us-west-004.backblazeb2.com": "eu-central-003",
+		"s3:s3.eu-central-003.backblazeb2.com@evil.example/bucket":                       "",
+		"s3:https://s3.eu-central-3.backblazeb2.com/bucket":                              "",
+		"s3:https://s3.eu-central-003.backblazeb2.com%2Fevil.example/bucket":             "",
+		"s3:https://s3.amazonaws.com/bucket":                                             "",
+		"s3:http://e2e-s3:9000/box":                                                      "",
+		"b2:bucket:path":                                                                 "",
+		"rest:https://s3.eu-central-003.backblazeb2.com/":                                "",
+		"s3:https://s3.eu-central-003.backblazeb2.com\\@evil.example/bucket":             "",
+		"s3:https://[s3.eu-central-003.backblazeb2.com]/bucket":                          "",
+		"s3:https://s3.eu-central-003.backblazeb2.com\x00.evil.example/bucket":           "",
 	} {
 		if got := b2Region(repo); got != want {
 			t.Errorf("%q: region %q, want %q", repo, got, want)
