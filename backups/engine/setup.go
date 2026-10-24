@@ -463,9 +463,13 @@ func b2AsS3(repo string) string {
 	return record.Clean(u)
 }
 
-// b2BucketName is what a B2 bucket may be named: letters, digits and
-// hyphens [Backblaze's documentation, b2_create_bucket].
-var b2BucketName = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+// b2BucketName is a B2 bucket name its S3-compatible endpoint takes:
+// letters, digits and hyphens [Backblaze's documentation,
+// b2_create_bucket], in lower case, as an S3 bucket is named — one with
+// a capital B2's native API may hold, but the S3 endpoint may not reach
+// it by that name, and whether it matches it in another case is not
+// measured, so it is named no URL.
+var b2BucketName = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // s3Escape is one segment of an S3 URL's path, escaped so that restic's
 // url.Parse decodes it back (url.PathEscape), with its @ escaped too,
@@ -527,7 +531,7 @@ func RegionAdvice(repo, region string) string {
 	case region == "":
 		return "the repository is at B2's S3-compatible endpoint and AWS_DEFAULT_REGION is not set, or set to nothing: add AWS_DEFAULT_REGION=" + r + ", as setup writes it"
 	case region != r:
-		return "the repository is at B2's S3-compatible endpoint in " + r + ", and AWS_DEFAULT_REGION is " + record.Clean(region) + ": set AWS_DEFAULT_REGION=" + r + ", as setup writes it"
+		return "the repository is at B2's S3-compatible endpoint in " + r + ", and AWS_DEFAULT_REGION is " + record.Text(region) + ": set AWS_DEFAULT_REGION=" + r + ", as setup writes it"
 	}
 	return ""
 }

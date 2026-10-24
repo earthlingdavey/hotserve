@@ -432,6 +432,7 @@ func TestAB2RepositoryIsRefusedBeforeAnyPromptNamingItsS3URL(t *testing.T) {
 		// would be read back as the bucket's end.
 		{"b2:a/b:dev", "s3:https://s3.<region>.backblazeb2.com/<bucket>/dev"},
 		{"b2:it's:x", "s3:https://s3.<region>.backblazeb2.com/<bucket>/x"},
+		{"b2:MyBackups:dev", "s3:https://s3.<region>.backblazeb2.com/<bucket>/dev"},
 		// Escaped, so that restic's url.Parse reads back the path B2 holds;
 		// what is not printable is escaped too, so never echoed.
 		{"b2:hs-backups:dev#daily", "s3:https://s3.<region>.backblazeb2.com/hs-backups/dev%23daily"},

@@ -16,9 +16,10 @@ operator guide is [docs/backups.md](../../backups.md) and the reference is
 - Every RC check on B2 ran through B2's native API — restic's own
   `b2:` backend, and rclone's and `backblaze-b2`'s B2 code. Since
   D13 (2026-10-23, #354) B2 is reached through restic's S3 backend at
-  B2's S3-compatible endpoint and `b2:` is refused, so the checks that
-  rest on the backend (1, 3, 4, 6) are run again there; their native
-  results stay in `rc-runs/` as the record they are.
+  B2's S3-compatible endpoint and `b2:` is refused, so every check of
+  `docs/release-candidate.md` that runs restic against B2 is run again
+  there, its new ones (9–12) among them; the native results stay in
+  `rc-runs/` as the record they are.
 - Open work is labelled [`backup`](https://github.com/smallhoursorg/hotserve/issues?q=is%3Aopen+label%3Abackup).
   #172 (the threat model's Backups section) is the gate before `backup`
   merges into `main`.
