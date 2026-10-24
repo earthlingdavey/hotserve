@@ -1,6 +1,6 @@
 ## L11, 2026-10-24: the guide's tar line (docs/backups.md, A rebuilt box) on Debian 13, dev container
- Container hotserve-dev-run-fbd10649a741 Creating 
- Container hotserve-dev-run-fbd10649a741 Created 
+ Container hotserve-dev-run-016a8ffd374f Creating 
+ Container hotserve-dev-run-016a8ffd374f Created 
 Debian GNU/Linux 13 (trixie)
 tar (GNU tar) 1.35
 $ find etc/hotserve | sort
@@ -9,6 +9,7 @@ etc/hotserve/Caddyfile
 etc/hotserve/age
 etc/hotserve/age.pub
 etc/hotserve/age/identity
+etc/hotserve/agenda.env
 etc/hotserve/demo.env
 etc/hotserve/deploy.key
 etc/hotserve/deploy.key.pub
@@ -16,12 +17,13 @@ etc/hotserve/secrets
 etc/hotserve/secrets/demo.env
 $ umask
 0022
-$ sh -c 'umask 077; tar --exclude="hotserve/age*" -czf /root/etc-hotserve.tar.gz -C /etc hotserve'   (paths under $d)
+$ sh -c 'umask 077; tar --exclude=hotserve/age --exclude=hotserve/age.pub -czf /root/etc-hotserve.tar.gz -C /etc hotserve'   (paths under $d)
 $ tar -tzf /root/etc-hotserve.tar.gz
 hotserve/
 hotserve/secrets/
 hotserve/secrets/demo.env
 hotserve/deploy.key
+hotserve/agenda.env
 hotserve/Caddyfile
 hotserve/demo.env
 hotserve/deploy.key.pub
@@ -32,6 +34,7 @@ $ sudo tar -xzf etc-hotserve.tar.gz -C /etc --exclude="hotserve/deploy.key*"   (
 $ find new/hotserve | sort
 new/hotserve
 new/hotserve/Caddyfile
+new/hotserve/agenda.env
 new/hotserve/demo.env
 new/hotserve/secrets
 new/hotserve/secrets/demo.env

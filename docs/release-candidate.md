@@ -26,7 +26,7 @@ every one is still **unverified**.
 three set, with its own key; where it is a `debian:13` container,
 install `ca-certificates` beside `restic` and `rclone`: apt brings it
 with neither (rclone only suggests it; measured,
-`rc-results/L11-tar-exclude-umask.out` in the design record), and
+`rc-runs/rc-results/L11-tar-exclude-umask.out` in the design record), and
 restic without it fails every https storage,
 `x509: certificate signed by unknown authority`.
 

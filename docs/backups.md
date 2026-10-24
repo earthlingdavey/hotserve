@@ -82,8 +82,8 @@ capabilities — Read and Write, which may delete, Read Only and Write
 Only — so make the two keys once from the command line, with Debian
 13's `backblaze-b2` (3.19; a `debian:13` container will do: apt
 brings the CA certificates with it, which it does not with `restic`
-or `rclone` [measured, `rc-results/L11-tar-exclude-umask.out` in the
-design record]):
+or `rclone` [measured, `rc-runs/rc-results/L11-tar-exclude-umask.out`
+in the design record]):
 
 ```sh
 apt-get update && apt-get install -y backblaze-b2
@@ -383,7 +383,7 @@ which a rebuilt box makes anew. Written under `/root`, readable by
 root alone, then copied off:
 
 ```sh
-sudo sh -c 'umask 077; tar --exclude="hotserve/age*" -czf /root/etc-hotserve.tar.gz -C /etc hotserve'
+sudo sh -c 'umask 077; tar --exclude=hotserve/age --exclude=hotserve/age.pub -czf /root/etc-hotserve.tar.gz -C /etc hotserve'
 ```
 
 and on the rebuilt box, before step 2:
@@ -420,11 +420,11 @@ before step 2. A box rebuilt from a plain tar of the directory (a
 Caddyfile and a deploy key; no `age/`, no `secrets/`), with another
 uid for `hotserve`, found the repository, restored before the first
 deploy, and its next run was `ok` [measured, on the e2e server]. That
-GNU tar 1.35 leaves `age/` and `age.pub` out of the archive and
-`deploy.key*` out of the extraction, and under that umask writes the
-archive `600`, was measured on Debian 13
-(`rc-results/L11-tar-exclude-umask.out` in the design record). The
-lines as printed,
+GNU tar 1.35 leaves `age/` and `age.pub` out of the archive (and an
+`agenda.env` in: the two names, not a wildcard) and `deploy.key*` out
+of the extraction, and under that umask writes the archive `600`, was
+measured on Debian 13 (`rc-runs/rc-results/L11-tar-exclude-umask.out`
+in the design record). The lines as printed,
 restoring `secrets/` over the directory the package makes, are
 **unverified**.
 
@@ -657,7 +657,7 @@ start:
 
   On the RC's own listing a hide and its upload in one second came
   out upload first, 346 ms apart [measured,
-  `rc-results/L10-timeline-sort.out` in the design record]. Not
+  `rc-runs/rc-results/L10-timeline-sort.out` in the design record]. Not
   rclone's `lsl --b2-versions`: of a bucket whose every file was
   hidden it listed nothing (the RC's record of 2026-10-05, in the
   plan; no capture).
