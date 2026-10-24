@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -197,7 +198,7 @@ func TestARunRefusesWhatSetupRefusesWithSetupsWords(t *testing.T) {
 		// own B2 backend (#177).
 		{"a repository other than b2:", func(b *box) {
 			writeOrPanic(b.cfg.EnvFile, "RESTIC_REPOSITORY=b2:hs-backups:dev\nRESTIC_PASSWORD=the-secret\nB2_ACCOUNT_ID=K001\nB2_ACCOUNT_KEY=k\n")
-		}, "the repository is b2:, which is not supported: sudo hotserve-backup setup 's3:https://s3.<region>.backblazeb2.com/hs-backups/dev', B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; restic's own B2 backend retries a failed upload without end"},
+		}, "the repository is b2:, which is not supported: sudo hotserve-backup setup 's3:https://s3.<region>.backblazeb2.com/hs-backups/dev' moves it to B2's S3-compatible endpoint, with an application key; restic's own B2 backend retries a failed upload without end"},
 		// A file the manager could not read either: said, in place of
 		// every unit failing to start.
 		{"a credential file that can be read", func(b *box) {
@@ -207,7 +208,17 @@ func TestARunRefusesWhatSetupRefusesWithSetupsWords(t *testing.T) {
 			if err := os.Mkdir(b.cfg.EnvFile, 0o700); err != nil {
 				panic(err)
 			}
-		}, "the credential file " + "%ENVFILE%" + " could not be read: read " + "%ENVFILE%" + ": is a directory"},
+		}, "the credential file " + "%ENVFILE%" + " could not be read: it is not a regular file (d---------)"},
+		// A FIFO in its place, which a read would wait on for ever,
+		// holding the run lock.
+		{"a credential file that is not a FIFO", func(b *box) {
+			if err := os.Remove(b.cfg.EnvFile); err != nil {
+				panic(err)
+			}
+			if err := syscall.Mkfifo(b.cfg.EnvFile, 0o600); err != nil {
+				panic(err)
+			}
+		}, "the credential file " + "%ENVFILE%" + " could not be read: it is not a regular file (p---------)"},
 		{"an account hotserve did not make", func(b *box) { b.comment = "" }, "the hotserve-backup account on this box was not made by hotserve"},
 		// The manager binds what it sees: where it does not see this
 		// command's mounts it would show every unit a bare mount point
@@ -241,20 +252,17 @@ func TestARunRefusesWhatSetupRefusesWithSetupsWords(t *testing.T) {
 					t.Fatalf("units were started: %s", b.roles())
 				}
 				st, rerr := record.Read(filepath.Join(b.cfg.StateDir, "status.json"))
-				// The record keeps what record.Text does, cut at 300 runes:
-				// a want as long as that, a long temporary path in it, is
-				// held to its head.
-				recorded := want
-				if r := []rune(want); len(r) > 120 {
-					recorded = string(r[:120])
-				}
+				// The record holds the error as record.Text cuts it, and
+				// nothing else: exactly, so a cut that took the remedy
+				// would show.
+				recorded := record.Text(err.Error())
 				switch cmd.name {
 				case "a run":
-					if rerr != nil || !strings.Contains(st.Error, recorded) {
-						t.Fatalf("the run's record: %+v, %v", st, rerr)
+					if rerr != nil || st.Error != recorded {
+						t.Fatalf("the run's record: %+v, %v\nwant %q", st, rerr, recorded)
 					}
 				case "a drill":
-					if rerr != nil || st.LastDrill == nil || !strings.Contains(st.LastDrill.Detail, recorded) {
+					if rerr != nil || st.LastDrill == nil || st.LastDrill.Detail != recorded {
 						t.Fatalf("the drill's record: %+v, %v", st, rerr)
 					}
 				default:

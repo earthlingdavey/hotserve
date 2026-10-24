@@ -358,30 +358,33 @@ func TestARepositoryTheBoxCannotUseIsRefusedBeforeAnyPrompt(t *testing.T) {
 		{"azure:container:path", "azure: is not a backend Debian's restic has"},
 		{"gs:bucket:path", "gs: and swift: are not set up by this command"},
 		{"swift:container:/path", "gs: and swift: are not set up by this command"},
-		{"s3:http://user:pass@e2e-s3:9000/box", "credentials in the repository URL"},
+		{"s3:http://user:pass@e2e-s3:9000/box", "the repository URL holds an @, which is refused"},
 		{"rest:https://user:pass@host/", "rest:, gs: and swift: are not set up by this command"},
 		{"ftp://host/x", `"ftp:" is not a repository restic knows`},
 		{"", "no repository was given"},
 		{"s3:", "s3: names no bucket"},
 		{"s3:http://e2e-s3:9000/box ", "the repository URL has whitespace at an end"},
-		{"s3:AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
-		{"s3://AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
+		{"s3:AKID:secret@s3.example.com/bucket", "the repository URL holds an @, which is refused"},
+		{"s3://AKID:secret@s3.example.com/bucket", "the repository URL holds an @, which is refused"},
 		// A "://" in the path is not where the authority starts.
-		{"s3:AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
-		{"s3://AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
-		{"s3:https://AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
+		{"s3:AKID:secret@s3.example.com/bucket/x://y", "the repository URL holds an @, which is refused"},
+		{"s3://AKID:secret@s3.example.com/bucket/x://y", "the repository URL holds an @, which is refused"},
+		{"s3:https://AKID:secret@s3.example.com/bucket/x://y", "the repository URL holds an @, which is refused"},
 		// restic url.Parses whatever begins s3:http, whose scheme is read
 		// in any case.
-		{"s3:httpS://AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
-		{"s3:hTTp://AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
-		{"s3:https+x://AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
+		{"s3:httpS://AKID:secret@s3.example.com/bucket", "the repository URL holds an @, which is refused"},
+		{"s3:hTTp://AKID:secret@s3.example.com/bucket", "the repository URL holds an @, which is refused"},
+		{"s3:https+x://AKID:secret@s3.example.com/bucket", "the repository URL holds an @, which is refused"},
 		// A secret with a character that ends an authority before its @.
-		{"s3:https://AKID:se#cret@s3.example.com/bucket", "credentials in the repository URL"},
-		{"s3:https://AKID:se?cret@s3.example.com/bucket", "credentials in the repository URL"},
-		{"s3:https://AKIAEXAMPLE:wJalrXUtn/K7MDENG@s3.amazonaws.com/bucket", "credentials in the repository URL"},
-		{"s3:AKID:wJal/K7@s3.example.com/bucket", "credentials in the repository URL"},
+		{"s3:https://AKID:se#cret@s3.example.com/bucket", "the repository URL holds an @, which is refused"},
+		{"s3:https://AKID:se?cret@s3.example.com/bucket", "the repository URL holds an @, which is refused"},
+		{"s3:https://AKIAEXAMPLE:wJalrXUtn/K7MDENG@s3.amazonaws.com/bucket", "the repository URL holds an @, which is refused"},
+		{"s3:AKID:wJal/K7@s3.example.com/bucket", "the repository URL holds an @, which is refused"},
 		// No bucket name holds an @; a path that does is refused with them.
-		{"s3:https://s3.example.com/bucket/a@b", "an @ anywhere in it is refused"},
+		{"s3:https://s3.example.com/bucket/a@b", "no bucket name holds an @, so a path with one is not supported"},
+		// B2's S3-compatible endpoint takes HTTPS alone.
+		{"s3:http://s3.eu-central-003.backblazeb2.com/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
+		{"s3:http://S3.EU-CENTRAL-003.BACKBLAZEB2.COM.:443/bucket", "B2's S3-compatible endpoint takes HTTPS alone"},
 		{"rest:user:pass@host:8000/", "rest:, gs: and swift: are not set up by this command"},
 		{"s3:http://e2e-s3:9000/b\x01x", "the repository URL cannot go in the file: it holds a control character"},
 		{"ftp://host/x", "(setup asks for s3:)"},
@@ -493,7 +496,7 @@ func TestTheRunsRemedyPastesAsOneLiteralArgument(t *testing.T) {
 				t.Fatalf("%s holds a quote", u)
 			}
 			msg := b2RunRefused(repo).Error()
-			if want := "sudo hotserve-backup setup '" + u + "', "; !strings.Contains(msg, want) {
+			if want := "sudo hotserve-backup setup '" + u + "' moves it"; !strings.Contains(msg, want) {
 				t.Fatalf("%s\nwant it to hold %s", msg, want)
 			}
 		})
@@ -501,9 +504,10 @@ func TestTheRunsRemedyPastesAsOneLiteralArgument(t *testing.T) {
 }
 
 // B2's region is in the name of its S3-compatible endpoint, and is read
-// from exactly that host, as restic reads the host out of the URL: no
-// port, no trailing dot, no longer name ending in it, no other case,
-// and no host named only in a path or as userinfo.
+// from that host, as restic reads the host out of the URL, in any case,
+// with or without a trailing dot or :443 — but from no other port, no
+// longer name ending in it, and no host named only in a path or behind
+// userinfo.
 func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 	for repo, want := range map[string]string{
 		"s3:https://s3.eu-central-003.backblazeb2.com/bucket/path": "eu-central-003",

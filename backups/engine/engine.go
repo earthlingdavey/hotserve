@@ -7,13 +7,13 @@
 // The engine runs as root and is root-equivalent (it starts system
 // units and makes mounts), so it touches as little as it can: it never
 // reads or removes anything an app wrote — it opens an app's
-// directories only as O_PATH, to name them (pin.go) — reads the
-// credential file only for the repository it names, to refuse a b2:
-// one, or one named in another file, before any unit (repositoryInUse),
-// and otherwise passes its path
-// to the manager — and takes
-// nothing from a unit but an exit status and a small JSON file, of
-// which it keeps only what it recognises, cleaned (record.Text).
+// directories only as O_PATH, to name them (pin.go) — parses the
+// credential file, secrets and all, and uses only how it names the
+// repository, to refuse a b2: one, or one named in another file,
+// before any unit (repositoryInUse), otherwise passing its path to the
+// manager — and takes nothing from a unit but an exit status and a
+// small JSON file, of which it keeps only what it recognises, cleaned
+// (record.Text).
 package engine
 
 import (

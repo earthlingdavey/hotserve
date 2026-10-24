@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -326,9 +328,15 @@ func backendOf(repo, envFile string) ([]credential, error) {
 		// Any @ at all, not only one in the authority: a secret may hold a
 		// /, ? or # that ends the authority before its @ (restic then fails
 		// to parse the URL, printing it whole), and no bucket name holds
-		// an @ — a path that does is refused with them.
+		// an @ — a path that does is refused with them, and said to be.
 		if strings.Contains(repo, "@") {
-			return nil, errors.New("credentials in the repository URL are on the command line and in the shell's history; give the URL without them, and type them when asked (an @ anywhere in it is refused)")
+			return nil, errors.New("the repository URL holds an @, which is refused: a key and secret in it are on the command line and in the shell's history, so give the URL without them and type them when asked; no bucket name holds an @, so a path with one is not supported")
+		}
+		// B2's S3-compatible endpoint takes HTTPS alone [Backblaze's
+		// documentation]: said here, before any prompt, not by the storage
+		// after the key is typed.
+		if scheme, _ := s3Split(repo); b2Region(repo) != "" && scheme == "http" {
+			return nil, errors.New("B2's S3-compatible endpoint takes HTTPS alone: give the URL as s3:https://…")
 		}
 		return []credential{{"Storage key id", "AWS_ACCESS_KEY_ID", false}, {"Storage secret key", "AWS_SECRET_ACCESS_KEY", true}}, nil
 	case "b2":
@@ -347,11 +355,19 @@ func backendOf(repo, envFile string) ([]credential, error) {
 // the path. Not url.Parse's Host, which drops a "user:pass@" that is
 // still on the command line and in the shell's history.
 func s3Authority(repo string) string {
+	_, authority := s3Split(repo)
+	return authority
+}
+
+// s3Split is s3Authority's reading, with the URL's scheme in lower case
+// as url.Parse gives it ("" for the forms with none).
+func s3Split(repo string) (scheme, authority string) {
 	rest := strings.TrimPrefix(repo, "s3:")
 	end := "/"
 	switch {
 	case strings.HasPrefix(rest, "http"):
 		if i := strings.Index(rest, ":"); i >= 0 && isScheme(rest[:i]) && strings.HasPrefix(rest[i:], "://") {
+			scheme = strings.ToLower(rest[:i])
 			rest, end = rest[i+len("://"):], "/?#"
 		}
 	case strings.HasPrefix(rest, "//"):
@@ -360,7 +376,7 @@ func s3Authority(repo string) string {
 	if i := strings.IndexAny(rest, end); i >= 0 {
 		rest = rest[:i]
 	}
-	return rest
+	return scheme, rest
 }
 
 // isScheme is whether s is a URL scheme as url.Parse reads one: a
@@ -396,12 +412,14 @@ func b2Refused(repo string) error {
 
 // b2RunRefused is a run's, a restore's and a drill's word on a file that
 // names a b2: repository: what to run, first, so that the record's cut
-// (record.Text) takes the reason before the remedy. The URL is in single
-// quotes, so that the command pasted as it is reaches setup whole: the
-// placeholder's < and >, and a $, & or ; the path may hold, are the
-// shell's otherwise; b2AsS3 leaves no ' in it to end the quotes.
+// (record.Text, 300 runes) takes the reason before the remedy — short,
+// so that the cut takes neither for a bucket and path of up to 59
+// characters, the slash between them counted. The URL is in single quotes, so that the command pasted as
+// it is reaches setup whole: the placeholder's < and >, and a $, & or ;
+// the path may hold, are the shell's otherwise; b2AsS3 leaves no ' in it
+// to end the quotes.
 func b2RunRefused(repo string) error {
-	return fmt.Errorf("the repository is b2:, which is not supported: sudo hotserve-backup setup '%s', B2's S3-compatible endpoint, with an application key, not the master key, finds the same repository; %s", b2AsS3(repo), b2Why)
+	return fmt.Errorf("the repository is b2:, which is not supported: sudo hotserve-backup setup '%s' moves it to B2's S3-compatible endpoint, with an application key; %s", b2AsS3(repo), b2Why)
 }
 
 // b2AsS3 is a b2: repository's URL at B2's S3-compatible endpoint: the
@@ -473,15 +491,36 @@ func b2Region(repo string) string {
 	return ""
 }
 
+// readRegular reads a file that is a regular one, following a link as
+// the manager does, and opened O_NONBLOCK so that a FIFO is refused, not
+// waited on.
+func readRegular(name string) ([]byte, error) {
+	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // root's own file, a constant of the installation
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("it is not a regular file (%s)", fi.Mode().Type())
+	}
+	return io.ReadAll(f)
+}
+
 // repositoryInUse is what a run, a restore and a drill ask of the
 // repository the credential file names, before any unit: that it is
 // not a b2: one. The value is read as the manager reads it (envfile:
 // the last assignment, quotes and whitespace as systemd takes them),
 // and as restic tells a backend by its URL: the scheme, as written. A
 // file the manager could not read either is said here, in place of
-// every unit failing to start.
+// every unit failing to start. Opened without blocking and read only
+// if it is a regular file: a FIFO in its place would otherwise hold the
+// run, and its lock, for ever.
 func repositoryInUse(envFile string) error {
-	raw, err := os.ReadFile(envFile) //nolint:gosec // root's own file, a constant of the installation
+	raw, err := readRegular(envFile)
 	if err != nil {
 		return fmt.Errorf("the credential file %s could not be read: %w", envFile, err)
 	}
