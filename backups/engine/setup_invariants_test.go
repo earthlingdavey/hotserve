@@ -123,6 +123,9 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		{"the write refused (exit 1) after reads that were retried: the Save line is the one appended", func(b *box) {
 			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, strings.Repeat("Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down\n", 3)+denied+"\n"
 		}, "this key opened the repository, and restic exited 1 at its lock file's write: whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here (restic said: " + denied + ")", ""},
+		{"restic could not list the locks, before it wrote (its lock-taking wrapper round a List): the opening's own words, not the key's", func(b *box) {
+			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, "Fatal: unable to create lock in backend: List(<lock/>) returned error: client.ListObjects: 503 Slow Down\n"
+		}, "restic could not open the repository (exit 1): ", ""},
 		{"restic could not read another restic's lock, before it wrote (its lock-taking wrapper round a load): the opening's own words, not the key's", func(b *box) {
 			b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, "Fatal: unable to create lock in backend: load <lock/ab12cd34ef>: unexpected end of JSON input\n"
 		}, "restic could not open the repository (exit 1): ", ""},
@@ -256,11 +259,26 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "the repository restic just made does not open yet: the storage may not show all of it for a moment; run setup again, which looks first and asks for the password; the password shown above is the repository's: keep it") {
 		t.Fatalf("err %v, units %s", err, b.roles())
 	}
+	// After init, the lock listing before the opening that takes longer
+	// than the note is said with the repository made, not with nothing
+	// written; and a Ctrl-C there the same.
+	b, m = setupBox(t)
+	b.hang = "locks"
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(m.saidAll(), "still waiting for s3:http://e2e-s3:9000/box (Ctrl-C is safe: "+madeNothingMore+")") || strings.Contains(m.saidAll(), "nothing has been written") {
+		t.Fatalf("err %v\nsaid:\n%s", err, m.saidAll())
+	}
+	// At that opening's clock with restic still on the config's read,
+	// the made tail infers nothing: not the key's reading, no cause.
+	b, m = setupBox(t)
+	b.hang, b.openErr = "open", "Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down\n"
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "restic had not finished opening the repository and writing a lock file to it within 200ms: whether this key can write to it is not known — a storage that refuses or does not answer, or a read restic stalled on, ends here; this key wrote the repository a moment ago: run setup again, which looks first and asks for the password (restic said: Load(<config/>, 0, 0) returned error, retrying after 552.330144ms: client.GetObject: 503 Slow Down); the password shown above is the repository's: keep it") {
+		t.Fatalf("err %v, units %s", err, b.roles())
+	}
 	// A refusal at that opening is not the key's reading: init wrote
 	// the repository with it a moment ago, and the line says so.
 	b, m = setupBox(t)
 	b.outcome["open"], b.openErr = unit.Outcome{Result: "exit-code", ExitStatus: 1}, denied+"\nFatal: unable to create lock in backend: client.PutObject: 500 Internal Server Error\n"
-	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "restic exited 1 at its lock file's write: this key wrote the repository a moment ago, so the storage refused or did not answer the write; run setup again, which looks first and asks for the password (restic said: Fatal: unable to create lock in backend: client.PutObject: 500 Internal Server Error); the password shown above is the repository's: keep it") {
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "restic exited 1 at its lock file's write: whether this key can write to it is not known — a storage that refuses or does not answer, or a read restic stalled on, ends here; this key wrote the repository a moment ago: run setup again, which looks first and asks for the password (restic said: Fatal: unable to create lock in backend: client.PutObject: 500 Internal Server Error); the password shown above is the repository's: keep it") {
 		t.Fatalf("err %v, units %s", err, b.roles())
 	}
 	// One an earlier attempt's init made, opened with the password

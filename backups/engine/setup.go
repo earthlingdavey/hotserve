@@ -1142,11 +1142,13 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 		// restic prints the config after the lock. A Save line earlier
 		// in what it said — a write retried once and then made, before
 		// a read failed — is not read as the refusal.
-		// restic's lock-taking wrapper also wraps a failure to read
-		// another restic's lock, which comes before anything is written
-		// ("… unable to create lock in backend: load <lock/…>: …"): not
-		// the key's writing, and left to the opening's own words below.
-		if last := s.lastSaid("open", false); strings.Contains(last, "Save(<lock/") || strings.Contains(last, "unable to create lock") && !strings.Contains(last, "load <lock/") {
+		// restic's lock-taking wrapper also wraps its look for other
+		// locks, which comes before anything is written — a lock it
+		// could not read ("… unable to create lock in backend: load
+		// <lock/…>: …"), a listing it could not make ("… List(…) …")
+		// [restic 0.18, internal/restic/lock.go, checkForOtherLocks]:
+		// not the key's writing, and left to the opening's own words.
+		if last := s.lastSaid("open", false); strings.Contains(last, "Save(<lock/") || strings.Contains(last, "unable to create lock") && !strings.Contains(last, "load <lock/") && !strings.Contains(last, "List(") {
 			return "", true, errors.New("this key opened the repository, and restic exited 1 at its lock file's write" + tail + resticSaid(last))
 		}
 		return "", false, errors.New("restic could not open the repository (exit 1): " + record.Text(message))
@@ -1157,10 +1159,11 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 
 // cannotWrite ends a refusal of the key at the lock file's write; where
 // the key wrote the repository a moment ago (init exited 0) it is not
-// the key, and madeCannotWrite says so.
+// the key's reading, and madeCannotWrite says so — and no more, since
+// at the clock restic may have stalled on the config's read.
 const cannotWrite = ": whether this key can write to it is not known — a key that may only read, or a storage that refuses or does not answer writes, ends here"
 
-const madeCannotWrite = ": this key wrote the repository a moment ago, so the storage refused or did not answer the write; run setup again, which looks first and asks for the password"
+const madeCannotWrite = ": whether this key can write to it is not known — a storage that refuses or does not answer, or a read restic stalled on, ends here; this key wrote the repository a moment ago: run setup again, which looks first and asks for the password"
 
 // resticSaid is restic's words, appended, where it had any.
 func resticSaid(m string) string {
@@ -1416,6 +1419,12 @@ func (s *setup) repository(ctx context.Context, role string, within time.Duratio
 			// The opening, and whatever runs after it, may have left
 			// restic's lock file.
 			s.term.Say("still waiting for " + s.repo + " (Ctrl-C is safe: " + s.lockLeftLine() + ")")
+			return
+		}
+		if s.made {
+			// Init made the repository; the lock listing before the
+			// opening after it is what waits.
+			s.term.Say("still waiting for " + s.repo + " (Ctrl-C is safe: " + madeNothingMore + ")")
 			return
 		}
 		s.term.Say("still waiting for " + s.repo + " (Ctrl-C is safe: nothing has been written)")

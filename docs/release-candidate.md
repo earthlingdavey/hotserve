@@ -227,7 +227,10 @@ hotserve-backup: this box's backup account wrote a lock file to the repository d
 ```
 
 `restic unlock` from your own machine, with the key that may delete,
-then clears it ([look from your own machine](backups.md#look-from-your-own-machine)).
+clears it once it is half an hour old (restic removes only the locks it
+takes for stale, which from another machine are those older than that),
+or `restic unlock --remove-all` sooner, when nothing else holds the
+repository ([look from your own machine](backups.md#look-from-your-own-machine)).
 
 **On B2**, `v0.3.0-rc1`, whose `setup` only read, took a console Read
 Only key (`repository ready … (existing, …)`). The run after it
