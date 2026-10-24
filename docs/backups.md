@@ -369,11 +369,16 @@ the old box still runs, turn its timers off first
 
 **A backup holds what the apps declare under `shared/`, and nothing of
 `/etc/hotserve`**: not the Caddyfile, whose `backup` blocks a restore
-needs before it can run, no env file, and not the deploy key. They
-come back from the box repo, which the first deploy makes
+needs before it can run, no env file, and no `deploy_trust local`
+public key file. The Caddyfile and the secrets come back from the box
+repo, which the first deploy makes
 ([examples/box](../examples/box/README.md)): the Caddyfile with
-`hotserve init` in step 1, the secrets with `make rekey`
-([A rebuilt box](secrets.md#a-rebuilt-box)).
+`hotserve init` in step 1; the secrets with `make rekey`, pushed and
+applied before step 4, since until then the box has no env file for
+the app ([A rebuilt box](secrets.md#a-rebuilt-box)). A `deploy_trust
+local` public key is a file the Caddyfile names, not a commit: put it
+back from whoever holds the pair, or make a new pair with `hotserve
+deploy-keygen` and hand the private half to whoever deploys.
 
 ## The weekly drill, and what it costs
 

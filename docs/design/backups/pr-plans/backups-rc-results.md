@@ -40,7 +40,7 @@ Needs real B2 (the owner's, or a key file by `--env-file`): the key-making recip
 
 - "Set it up" becomes setup first, then the declaration: both orders measured (L3–L4; #168's P3), and the owner read the other as odd.
 - The guide's opening says B2 was measured on `v0.3.0-rc1` and S3 and Hetzner stay **unverified**; each claim names which.
-- `/etc/hotserve` kept off the box as a `tar` of the directory (L5), said to hold the apps' secrets.
+- `/etc/hotserve` kept off the box as a `tar` of the directory (L5), said to hold the apps' secrets. *(Reversed by the owner, 2026-10-24, PR #356: the guide carries no recipe for a box without a box repo — main's first deploy makes the repo and the rebuilt-box recipe presumes it; L5 and L11 stay as records.)*
 - Not this PR: #169–#176; any printed output; `nfpm.yaml` unless the owner says so (D8).
 
 ## 4. The owner's answers (2026-10-05)

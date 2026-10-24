@@ -240,9 +240,10 @@ afterwards.
 
 ## 7. Restore onto a second box, with another uid for `hotserve`
 
-[A rebuilt box](backups.md#a-rebuilt-box) on a second fresh box, with
-`id -u hotserve` there not the first box's (make a system user or two
-before installing the package). Then
+[A rebuilt box](backups.md#a-rebuilt-box) on a second fresh box — its
+Caddyfile from the box repo with `hotserve init`, as step 1 says —
+with `id -u hotserve` there not the first box's (make a system user or
+two before installing the package). Then
 `sudo ls -ln /var/lib/liveswap/<app>/shared`: every file the second
 box's uid. **Unverified** on a provider; on the e2e server (uids 996
 and 993) the restore put back the database and the files, owned by
