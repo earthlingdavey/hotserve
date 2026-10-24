@@ -1332,6 +1332,7 @@ func TestARunReadsTheRepositoryAsTheUnitsAreGivenIt(t *testing.T) {
 		{"the repository named in a file restic reads", "RESTIC_REPOSITORY_FILE=/etc/hotserve-backup/repo\n", true},
 		{"RESTIC_REPOSITORY_FILE beside RESTIC_REPOSITORY", s3 + "RESTIC_REPOSITORY_FILE=/etc/hotserve-backup/repo\n", true},
 		{"RESTIC_REPOSITORY_FILE set empty", "RESTIC_REPOSITORY_FILE=\n" + s3, false},
+		{"a byte that is not UTF-8", s3 + "# caf\xe9\n", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newBox(t)
@@ -1340,6 +1341,9 @@ func TestARunReadsTheRepositoryAsTheUnitsAreGivenIt(t *testing.T) {
 			want := "the repository is b2:, which is not supported: "
 			if strings.Contains(tc.file, "RESTIC_REPOSITORY_FILE=/") {
 				want = "the credential file " + b.cfg.EnvFile + " names the repository in RESTIC_REPOSITORY_FILE, which is not supported: name it in RESTIC_REPOSITORY"
+			}
+			if strings.Contains(tc.file, "\xe9") {
+				want = "the credential file " + b.cfg.EnvFile + ": line 2 holds a byte that is not UTF-8: the manager refuses the whole file"
 			}
 			refused := err != nil && strings.HasPrefix(err.Error(), want)
 			if refused != tc.refused {

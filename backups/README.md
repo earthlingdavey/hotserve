@@ -895,10 +895,12 @@ It needs no privilege.
   home directory, which no unit has), `rclone:` (a config file, the
   same), `azure:` (not in Debian's restic), `b2:` (restic's own B2
   backend: the next item), `rest:`, `gs:` and `swift:`
-  (not set up by this command: write the file by hand, below), a URL
-  with `user:pass@` in it, with or without a scheme
-  before the host (a command line and a shell history are no place for
-  a secret), and a scheme restic does not
+  (not set up by this command: write the file by hand, below), an
+  `s3:` URL with an `@` anywhere in it — `user:pass@` before the host,
+  with or without a scheme, and a secret holding a `/`, `?` or `#`
+  that ends the host before its `@` (a command line and a shell
+  history are no place for a secret); no bucket name holds an `@`, so
+  what this costs is a path with one — and a scheme restic does not
   know; restic, sqlite3 or hotserve not installed (a run, a restore and
   a drill refuse the same, in the same words, before any unit); a
   systemd older than 257; a `hotserve-backup` account that hotserve
@@ -940,10 +942,10 @@ It needs no privilege.
   application key, not the master key; restic's own B2 backend retries
   a failed upload without end" — the bucket and path filled in as
   restic reads them from the `b2:` URL (the path cleaned, its leading
-  slash dropped, and left out when there is none; each segment
-  URL-escaped, so that restic, which `url.Parse`s an `s3:https` URL,
-  reads back the path B2 holds and not a shorter one at a `#` or a
-  `?`), the region left for the operator, since a `b2:` URL does not
+  slash dropped, and left out when there is none; the bucket and each
+  segment URL-escaped, an `@` as `%40`, so that restic, which
+  `url.Parse`s an `s3:https` URL, reads back the path B2 holds and not
+  a shorter one at a `#` or a `?`, and setup takes it), the region left for the operator, since a `b2:` URL does not
   hold it. A run, a
   restore and a drill read the credential file's `RESTIC_REPOSITORY`
   as the manager would (the last assignment) and refuse a `b2:` one
@@ -1058,8 +1060,9 @@ What can be known to fail is refused before anything is asked for
    `AWS_SECRET_ACCESS_KEY` — on B2, an application key's keyID and
    applicationKey. For a host that is `s3.<region>.backblazeb2.com`,
    the region two letters, a word and three digits (`eu-central-003`) —
-   in any case, with or without a trailing dot or a port, all of which
-   reach the same endpoint, but never a longer name ending so — the
+   in any case, with or without a trailing dot or HTTPS's own port,
+   `:443`, all of which reach the same endpoint, but never another port
+   or a longer name ending so — the
    file also gets
    `AWS_DEFAULT_REGION=<region>` (in lower case), not asked, and setup says "B2's
    region, <region>, from the endpoint's name, goes in the file as
@@ -1351,7 +1354,7 @@ severity × occurrence × detection, then the fix's size and risk.
 | On an S3 host other than AWS's and B2's, for which setup writes no region, every restic command's first request is minio-go's bucket-location lookup, which minio-go does not retry on a 5xx that carries no S3 error code: one such 500 puts restic's two retry lines on stderr beside a listing, exit 0, and the listing is not believed [M89: B2's documented JSON 5xx body, "Codes in the 5xx range … include JSON diagnostics" (Backblaze, Introduction to the S3-Compatible API), injected through a proxy]. An S3 XML 500 there is retried by minio-go in silence. | `besides` (`backups/engine/engine.go`); minio-go 7.0.89 `bucket-cache.go`, `executeMethod` in `api.go` | 2 | 3 | 1 | 6 | size 2, risk 3 (a region for every host would have to be asked for, and a wrong one is refused; reading restic's retry lines as harmless would believe a listing beside a line that means a snapshot was left out) | Rule 2 holds: the listing is a warning of the run, said as restic having something to say beside it, and the next run lists again. On AWS minio-go knows the region from a regional host alone (minio-go `pkg/s3utils/utils.go`, `GetRegionFromURL`, gives none for `s3.amazonaws.com`); there the guide's policy grants `s3:GetBucketLocation`, and AWS's errors are XML, which minio-go retries. On B2 setup writes it ("Setup", 4), and with it the same fault is silent (M89). Under rule 3 the product is under 20 (2026-10-23, #354). |
 | `status` as root says nothing of a credential file that sets `RESTIC_REPOSITORY_FILE`, which every run, restore and drill refuses; with no `RESTIC_REPOSITORY` beside it, its lint says that one is not set. | `showStatus` (`backups/cmd/hotserve-backup/main.go`); `repositoryInUse` (`backups/engine/setup.go`) | 2 | 5 | 1 | 10 | size 2, risk 1 (one more lint line in status) | Rule 2 holds: the run refuses before any unit in words that name the key and the remedy, and `status` shows that as the last run's error. Under rule 3 the product is under 20 (2026-10-24, #357 review round 2). |
 | A run, a restore and a drill refuse a `b2:` repository and a `RESTIC_REPOSITORY_FILE`, not every repository setup refuses: a hand-written `sftp:`, `rclone:`, local path or URL with credentials in it starts its units, which fail. | `repositoryInUse` (`backups/engine/setup.go`) | 2 | 5 | 1 | 10 | size 2, risk 2 (calling `RepositoryUsable` here too: a by-hand `rest:`, `gs:` or `swift:` file must still run) | Rule 2 holds: each fails at its first unit in restic's own words, the run red, and `status` as root warns of the file in setup's words. A `b2:` one is refused because it does not fail: it can hang (#177). Under rule 3 the product is under 20 (2026-10-24, #357 review round 2; the plan's "refuse everything setup refuses", declined as wider than #354). |
-| The run's `b2:` refusal is about 285 runes before its URL's bucket and path, and the record keeps 300 (`record.Text`): a bucket and path over about 15 characters lose the reason, and over about 185 the end of the URL to paste, cut with a "…". | `b2RunRefused` (`backups/engine/setup.go`); `record.Text` | 2 | 5 | 1 | 10 | size 2, risk 2 (a shorter wording for the record alone, or no URL in it past the cut) | Rule 2 holds: the cut is marked, and the journal keeps the whole line (`journalctl -u hotserve-backup.service`), since the error goes to stderr whole. The remedy is first by design, so the reason goes before it does. Under rule 3 the product is under 20 (2026-10-24, #357 review round 2). |
+| The run's `b2:` refusal has 114 runes before its URL's bucket and 163 after its path, and the record keeps 300 (`record.Text`): a bucket and path (escaped, with the slash between them) over 23 characters lose the end of the reason, and over 186 the end of the URL to paste, cut with a "…". | `b2RunRefused` (`backups/engine/setup.go`); `record.Text` | 2 | 5 | 1 | 10 | size 2, risk 2 (a shorter wording for the record alone, or no URL in it past the cut) | Rule 2 holds: the cut is marked, and the journal keeps the whole line (`journalctl -u hotserve-backup.service`), since the error goes to stderr whole. The remedy is first by design, so the reason goes before it does. Under rule 3 the product is under 20 (2026-10-24, #357 review round 2). |
 
 ## Development
 

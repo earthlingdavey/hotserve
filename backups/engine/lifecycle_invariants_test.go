@@ -241,13 +241,20 @@ func TestARunRefusesWhatSetupRefusesWithSetupsWords(t *testing.T) {
 					t.Fatalf("units were started: %s", b.roles())
 				}
 				st, rerr := record.Read(filepath.Join(b.cfg.StateDir, "status.json"))
+				// The record keeps what record.Text does, cut at 300 runes:
+				// a want as long as that, a long temporary path in it, is
+				// held to its head.
+				recorded := want
+				if r := []rune(want); len(r) > 120 {
+					recorded = string(r[:120])
+				}
 				switch cmd.name {
 				case "a run":
-					if rerr != nil || !strings.Contains(st.Error, want) {
+					if rerr != nil || !strings.Contains(st.Error, recorded) {
 						t.Fatalf("the run's record: %+v, %v", st, rerr)
 					}
 				case "a drill":
-					if rerr != nil || st.LastDrill == nil || !strings.Contains(st.LastDrill.Detail, want) {
+					if rerr != nil || st.LastDrill == nil || !strings.Contains(st.LastDrill.Detail, recorded) {
 						t.Fatalf("the drill's record: %+v, %v", st, rerr)
 					}
 				default:

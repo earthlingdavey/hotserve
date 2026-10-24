@@ -98,7 +98,7 @@ On B2, `setup` says
 `B2's region, <region>, from the endpoint's name, goes in the file as AWS_DEFAULT_REGION`
 before it asks for the key — for a host that is
 `s3.<region>.backblazeb2.com` in any case, with or without a trailing
-dot or a port — and the credential file
+dot or `:443` — and the credential file
 then holds five keys: `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`,
 `AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 That both keys work without `listAllBucketNames` or `readBuckets`,

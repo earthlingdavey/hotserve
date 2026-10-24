@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/smallhoursorg/hotserve/backups/dump"
 	"github.com/smallhoursorg/hotserve/backups/envfile"
@@ -322,8 +323,12 @@ func backendOf(repo, envFile string) ([]credential, error) {
 		if rest == "" {
 			return nil, fmt.Errorf("%s: names no bucket", scheme)
 		}
-		if strings.Contains(s3Authority(repo), "@") {
-			return nil, errors.New("credentials in the repository URL are on the command line and in the shell's history; give the URL without them, and type them when asked")
+		// Any @ at all, not only one in the authority: a secret may hold a
+		// /, ? or # that ends the authority before its @ (restic then fails
+		// to parse the URL, printing it whole), and no bucket name holds
+		// an @ — a path that does is refused with them.
+		if strings.Contains(repo, "@") {
+			return nil, errors.New("credentials in the repository URL are on the command line and in the shell's history; give the URL without them, and type them when asked (an @ anywhere in it is refused)")
 		}
 		return []credential{{"Storage key id", "AWS_ACCESS_KEY_ID", false}, {"Storage secret key", "AWS_SECRET_ACCESS_KEY", true}}, nil
 	case "b2":
@@ -334,19 +339,21 @@ func backendOf(repo, envFile string) ([]credential, error) {
 
 // s3Authority is an s3: repository URL's authority — the host, with
 // any userinfo and port as written — where restic finds its host
-// (internal/backend/s3/config.go): after s3:http:// or s3:https://, up
-// to where url.Parse ends an authority (a /, ? or #); after s3:// or s3:
-// otherwise, up to the first slash. Never at a "://" further on, in the
-// path. Not url.Parse's Host, which drops a "user:pass@" that is still
-// on the command line and in the shell's history.
+// (internal/backend/s3/config.go): restic hands anything after "s3:"
+// that begins "http" to url.Parse, which reads a scheme in any case
+// (httpS: is https:), so there the authority follows the scheme's
+// "://", up to where url.Parse ends one (a /, ? or #); after s3:// or
+// s3: otherwise, up to the first slash. Never at a "://" further on, in
+// the path. Not url.Parse's Host, which drops a "user:pass@" that is
+// still on the command line and in the shell's history.
 func s3Authority(repo string) string {
 	rest := strings.TrimPrefix(repo, "s3:")
 	end := "/"
 	switch {
-	case strings.HasPrefix(rest, "http://"):
-		rest, end = rest[len("http://"):], "/?#"
-	case strings.HasPrefix(rest, "https://"):
-		rest, end = rest[len("https://"):], "/?#"
+	case strings.HasPrefix(rest, "http"):
+		if i := strings.Index(rest, ":"); i >= 0 && isScheme(rest[:i]) && strings.HasPrefix(rest[i:], "://") {
+			rest, end = rest[i+len("://"):], "/?#"
+		}
 	case strings.HasPrefix(rest, "//"):
 		rest = rest[len("//"):]
 	}
@@ -354,6 +361,20 @@ func s3Authority(repo string) string {
 		rest = rest[:i]
 	}
 	return rest
+}
+
+// isScheme is whether s is a URL scheme as url.Parse reads one: a
+// letter, then letters, digits, +, - or . (RFC 3986, 3.1).
+func isScheme(s string) bool {
+	for i, c := range s {
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+		case i > 0 && ('0' <= c && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return s != ""
 }
 
 // b2Why is why a b2: repository is refused, at setup and at every run:
@@ -396,7 +417,7 @@ func b2AsS3(repo string) string {
 	if bucket == "" {
 		bucket = "<bucket>"
 	} else {
-		bucket = url.PathEscape(bucket)
+		bucket = s3Escape(bucket)
 	}
 	u := "s3:https://s3.<region>.backblazeb2.com/" + bucket
 	if prefix != "" {
@@ -407,7 +428,7 @@ func b2AsS3(repo string) string {
 			// path and a %2F would be a slash — another repository's objects.
 			segments := strings.Split(prefix, "/")
 			for i, s := range segments {
-				segments[i] = url.PathEscape(s)
+				segments[i] = s3Escape(s)
 			}
 			u += "/" + strings.Join(segments, "/")
 		}
@@ -415,13 +436,21 @@ func b2AsS3(repo string) string {
 	return record.Clean(u)
 }
 
+// s3Escape is one segment of an S3 URL's path, escaped so that restic's
+// url.Parse decodes it back (url.PathEscape), with its @ escaped too,
+// which setup refuses anywhere in an s3: URL.
+func s3Escape(s string) string {
+	return strings.ReplaceAll(url.PathEscape(s), "@", "%40")
+}
+
 // b2Host is the host of Backblaze B2's S3-compatible endpoint,
 // s3.<region>.backblazeb2.com, its second label the region [Backblaze's
 // documentation] — that name in any case (DNS reads none), with or
-// without the trailing dot of a fully qualified name or a port, all of
-// which reach the same endpoint; a longer name ending so, or a host
-// named only in a path, is no host this reads a region from.
-var b2Host = regexp.MustCompile(`^(?i)s3\.([a-z]{2}-[a-z]+-[0-9]{3})\.backblazeb2\.com\.?(:[0-9]+)?$`)
+// without the trailing dot of a fully qualified name or HTTPS's own
+// port, 443, all of which reach the same endpoint; another port, a
+// longer name ending so, or a host named only in a path is no host
+// this reads a region from.
+var b2Host = regexp.MustCompile(`^(?i)s3\.([a-z]{2}-[a-z]+-[0-9]{3})\.backblazeb2\.com\.?(:443)?$`)
 
 // b2Region is the region of a repository at B2's S3-compatible
 // endpoint, read from the host as restic reads the host from the URL
@@ -456,7 +485,11 @@ func repositoryInUse(envFile string) error {
 	if err != nil {
 		return fmt.Errorf("the credential file %s could not be read: %w", envFile, err)
 	}
-	v, _ := envfile.Parse(raw)
+	v, findings := envfile.Parse(raw)
+	if !utf8.Valid(raw) {
+		// The manager refuses the whole file, and every unit with it.
+		return fmt.Errorf("the credential file %s: %s", envFile, findings[0])
+	}
 	// restic also takes the repository from a file named by
 	// RESTIC_REPOSITORY_FILE, which this does not read: a repository
 	// named there is one no refusal here could see.

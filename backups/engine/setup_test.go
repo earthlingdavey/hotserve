@@ -370,6 +370,18 @@ func TestARepositoryTheBoxCannotUseIsRefusedBeforeAnyPrompt(t *testing.T) {
 		{"s3:AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
 		{"s3://AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
 		{"s3:https://AKID:secret@s3.example.com/bucket/x://y", "credentials in the repository URL"},
+		// restic url.Parses whatever begins s3:http, whose scheme is read
+		// in any case.
+		{"s3:httpS://AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
+		{"s3:hTTp://AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
+		{"s3:https+x://AKID:secret@s3.example.com/bucket", "credentials in the repository URL"},
+		// A secret with a character that ends an authority before its @.
+		{"s3:https://AKID:se#cret@s3.example.com/bucket", "credentials in the repository URL"},
+		{"s3:https://AKID:se?cret@s3.example.com/bucket", "credentials in the repository URL"},
+		{"s3:https://AKIAEXAMPLE:wJalrXUtn/K7MDENG@s3.amazonaws.com/bucket", "credentials in the repository URL"},
+		{"s3:AKID:wJal/K7@s3.example.com/bucket", "credentials in the repository URL"},
+		// No bucket name holds an @; a path that does is refused with them.
+		{"s3:https://s3.example.com/bucket/a@b", "an @ anywhere in it is refused"},
 		{"rest:user:pass@host:8000/", "rest:, gs: and swift: are not set up by this command"},
 		{"s3:http://e2e-s3:9000/b\x01x", "the repository URL cannot go in the file: it holds a control character"},
 		{"ftp://host/x", "(setup asks for s3:)"},
@@ -451,6 +463,10 @@ func TestTheS3URLNamedForAB2RepositoryIsTheSameRepository(t *testing.T) {
 			if u.RawQuery != "" || u.Fragment != "" {
 				t.Fatalf("%s: query %q, fragment %q", b2AsS3(repo), u.RawQuery, u.Fragment)
 			}
+			// setup takes it: no @, which it refuses anywhere.
+			if _, err := backendOf(b2AsS3(repo), "/env"); err != nil {
+				t.Fatalf("setup refuses %s: %v", b2AsS3(repo), err)
+			}
 			bucket, p, _ := strings.Cut(u.Path[1:], "/")
 			if p != "" {
 				p = path.Clean(p)
@@ -506,9 +522,12 @@ func TestB2sRegionIsReadFromItsEndpointsHostAlone(t *testing.T) {
 		"s3:https://bucket.s3.eu-central-003.backblazeb2.com/path":         "",
 		"s3:https://S3.EU-CENTRAL-003.BACKBLAZEB2.COM/bucket":              "eu-central-003",
 		"s3:https://s3.eu-central-003.backblazeb2.com:443x/bucket":         "",
+		"s3:https://s3.eu-central-003.backblazeb2.com:9000/bucket":         "", // not B2's endpoint
 		"s3:https://s3.eu-central-003.backblazeb2.com..:443/bucket":        "",
 		"s3:https://s3.eu-central-003.backblazeb2.com@evil.example/bucket": "",
 		"s3:https://u:p@s3.eu-central-003.backblazeb2.com/bucket":          "", // refused by setup before this
+		"s3:httpS://s3.eu-central-003.backblazeb2.com/bucket":              "eu-central-003",
+		"s3:HTTPS://s3.eu-central-003.backblazeb2.com/bucket":              "", // not s3:http: restic reads "HTTPS:" as the host
 		// The host as url.Parse ends it, at the ?, which restic reads too
 		// (and then refuses, the bucket being in the query).
 		"s3:https://s3.eu-central-003.backblazeb2.com?x/bucket":                          "eu-central-003",
