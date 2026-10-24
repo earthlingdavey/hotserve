@@ -1344,7 +1344,7 @@ func TestARunReadsTheRepositoryAsTheUnitsAreGivenIt(t *testing.T) {
 				want = "the credential file " + b.cfg.EnvFile + " names the repository in RESTIC_REPOSITORY_FILE, which is not supported: name it in RESTIC_REPOSITORY"
 			}
 			if strings.Contains(tc.file, "=caf\xe9") {
-				want = "the credential file " + b.cfg.EnvFile + ": line 2 holds a byte that is not UTF-8: the manager refuses the whole file"
+				want = "the credential file " + b.cfg.EnvFile + ": line 2: the value of NOTE holds a byte that is not UTF-8: the manager refuses the whole file"
 			}
 			refused := err != nil && strings.HasPrefix(err.Error(), want)
 			if refused != tc.refused {

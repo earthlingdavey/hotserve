@@ -56,7 +56,7 @@ func Parse(raw []byte) (Values, []string) {
 		n := 1 + bytes.Count(raw[:i], []byte("\n"))
 		return v, []string{fmt.Sprintf("line %d holds a NUL byte: %s", n, wholeFile)}
 	}
-	notUTF8 := 0 // the line of the first key or value that is not UTF-8
+	notUTF8 := "" // the first key or value that is not UTF-8, as said
 	const (
 		preKey = iota
 		inKey
@@ -85,8 +85,14 @@ func Parse(raw []byte) (Values, []string) {
 		if strip && valueWS >= 0 {
 			val = val[:valueWS]
 		}
-		if notUTF8 == 0 && (!utf8.ValidString(name) || !utf8.ValidString(val)) {
-			notUTF8 = keyLine
+		// Named by its key, from the line the key is on: the byte may be
+		// lines further on, in a value that runs over several.
+		switch {
+		case notUTF8 != "":
+		case !utf8.ValidString(name):
+			notUTF8 = fmt.Sprintf("line %d: a key holds a byte that is not UTF-8", keyLine)
+		case !utf8.ValidString(val):
+			notUTF8 = fmt.Sprintf("line %d: the value of %s holds a byte that is not UTF-8", keyLine, name)
 		}
 		switch {
 		case !keyRe.MatchString(name):
@@ -231,33 +237,10 @@ func Parse(raw []byte) (Values, []string) {
 	case preValue, inValue, valueEscape:
 		push(state == inValue)
 	}
-	if notUTF8 > 0 {
-		return Values{}, []string{fmt.Sprintf("line %d holds a byte that is not UTF-8: %s", firstInvalidLine(raw, notUTF8), wholeFile)}
+	if notUTF8 != "" {
+		return Values{}, []string{notUTF8 + ": " + wholeFile}
 	}
 	return v, findings
-}
-
-// firstInvalidLine is the line of the first byte that is not UTF-8 at or
-// after the start of line from: the byte itself, in a value that runs
-// over several lines, not the line its key is on. Lines are counted at
-// \n alone, as Parse counts them.
-func firstInvalidLine(raw []byte, from int) int {
-	off := 0
-	for l := 1; l < from; l++ {
-		j := bytes.IndexByte(raw[off:], '\n')
-		if j < 0 {
-			break
-		}
-		off += j + 1
-	}
-	for i := off; i < len(raw); {
-		r, size := utf8.DecodeRune(raw[i:])
-		if r == utf8.RuneError && size == 1 {
-			return 1 + bytes.Count(raw[:i], []byte("\n"))
-		}
-		i += size
-	}
-	return from
 }
 
 // wholeFile is what a finding says of a file the manager refuses whole.

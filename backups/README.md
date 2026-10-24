@@ -969,9 +969,11 @@ It needs no privilege.
   regular file among them, "it is not a regular file (p---------)"
   for a FIFO, which is opened without waiting on it — or that the
   manager refuses whole, "the credential file <path>: line <n> holds a
-  NUL byte: …" or "… a byte that is not UTF-8: …" (in a key or a value;
-  in a comment the manager takes it, and so does the run [M91]); and so
-  is
+  NUL byte: …" or "…: line <n>: the value of <KEY> holds a byte that is
+  not UTF-8: …" (named by its key, from the line the key is on, the
+  byte perhaps lines further on; a key that is not UTF-8 is "a key";
+  in a comment the manager takes such a byte, and so does the run
+  [M91]); and so is
   one that sets `RESTIC_REPOSITORY_FILE`, from which restic would take
   a repository no refusal here reads: "the credential file <path>
   names the repository in RESTIC_REPOSITORY_FILE, which is not
@@ -1379,6 +1381,7 @@ severity × occurrence × detection, then the fix's size and risk.
 | `status` as root reads the credential file with a plain read: a FIFO in its place, which the run refuses, holds `status` until interrupted. | `showStatus` (`backups/cmd/hotserve-backup/main.go`) | 2 | 1 | 5 | 10 | size 1, risk 2 (the run's `readRegular`, exported; no test of status's own read) | Only root makes the file anything but setup's regular one, and `status` is run at a terminal, where the wait is seen and interrupted; the run, which no one watches, refuses it. Under rule 3 the product is under 20 (2026-10-24, #357 review round 5). |
 | The run opens what the credential file's path leads to, a link followed as the manager follows it, before it asks whether it is a regular file: a device node there is opened by root (`O_RDONLY|O_NONBLOCK`) before it is refused. | `readRegular` (`backups/engine/setup.go`) | 2 | 1 | 5 | 10 | size 2, risk 1 (a stat before the open, as `box/envfiles.go` reads its files) | Only root puts anything but setup's regular file there, and the open reads nothing; the run then refuses it, named. Under rule 3 the product is under 20 (2026-10-24, #357 review round 8). |
 | The run reads the credential file whole, with no cap on its size: a link at its path to a large regular file is read into root's memory and parsed on every run, restore and drill before it is refused or used. | `readRegular` (`backups/engine/setup.go`) | 2 | 1 | 3 | 6 | size 2, risk 2 (a cap on `fi.Size()`, a new limit, which is discussed before it is set) | Only root puts anything but setup's few-line file there, and the run still ends, reading it. Under rule 3 the product is under 20 (2026-10-24, #357 review round 9). |
+| `status` as root warns of a hand-written `s3:` repository whose object path holds an `@` — "the repository URL holds an @, which is refused: … a path with one is not supported" — though restic, and the run, use it. | `backendOf` through `RepositoryUsable` (`backups/engine/setup.go`) | 2 | 5 | 1 | 10 | size 2, risk 2 (a reading of the authority again, the shape three rounds of #357's review found ways past) | The warning says what it is about, its exit status unchanged, and setup's refusal of any `@` is what keeps a key and secret off a command line in every spelling. Under rule 3 the product is under 20 (2026-10-24, #357 review round 10). |
 | A box on a `b2:` repository whose bucket or key is from before 4 May 2020, which B2's S3-compatible endpoint does not take [Backblaze's archived help, cited in the guide], has no hotserve-backup path to restore: the run, restore and drill refuse the `b2:` file, and the S3 URL they name cannot reach that bucket with that key. | `repositoryInUse` (`backups/engine/setup.go`), through `begin` | 4 | 5 | 1 | 20 | size 2, risk 2 (let `restore` alone run on a `b2:` file, said, since an operator watches a restore and can stop it where a hang is the run's) | **Owed to the owner's call, not fixed here:** the product clears rule 3, but the fix reverses the owner's choice that a restore refuses `b2:` too (2026-10-23, #354). Until then the remedy is restic by hand ("By hand", above), with the file's own `b2:` URL and keys, or copying the bucket to one made since. Only a box set up on `b2:` before #354 can meet it. |
 
 ## Development

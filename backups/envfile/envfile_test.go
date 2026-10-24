@@ -117,16 +117,19 @@ func TestParseReadsAsTheManagerDoes(t *testing.T) {
 	// byte that is not UTF-8 in a key or a value, quoted or not; not for
 	// one in a comment or a line with no = [M91].
 	for raw, want := range map[string]string{
-		"OK=1\nBAD=caf\xe9\nAFTER=2\n":     "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\nBAD=\"caf\xe9\"\nAFTER=2\n": "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\ncaf\xe9=1\nAFTER=2\n":       "line 2 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
-		// The byte's own line, in a value over three.
-		"OK=1\nNOTE=\"first\nsecond\ncaf\xe9\"\nAFTER=2\n": "line 4 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\nNOTE=a \\\ncaf\xe9\nAFTER=2\n":              "line 3 holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\n# a\x00b\nAFTER=2\n":                        "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\nBAD=a\x00b\nAFTER=2\n":                      "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
-		"OK=1\n# caf\xe9\nAFTER=2\n":                       "",
-		"OK=1\ncaf\xe9\nAFTER=2\n":                         "",
+		"OK=1\nBAD=caf\xe9\nAFTER=2\n":     "line 2: the value of BAD holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\nBAD=\"caf\xe9\"\nAFTER=2\n": "line 2: the value of BAD holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\ncaf\xe9=1\nAFTER=2\n":       "line 2: a key holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		// Named by the key, from its line, in a value over several.
+		"OK=1\nNOTE=\"first\nsecond\ncaf\xe9\"\nAFTER=2\n": "line 2: the value of NOTE holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\nNOTE=a \\\ncaf\xe9\nAFTER=2\n":              "line 2: the value of NOTE holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		// A sequence split by a joined line, valid once joined; the byte
+		// after it is not.
+		"OK=1\nB=\"\xc3\\\n\xa9 \xff\"\nAFTER=2\n": "line 2: the value of B holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\n# a\x00b\nAFTER=2\n":                "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\nBAD=a\x00b\nAFTER=2\n":              "line 2 holds a NUL byte: the manager refuses the whole file, and no unit that needs it starts",
+		"OK=1\n# caf\xe9\nAFTER=2\n":               "",
+		"OK=1\ncaf\xe9\nAFTER=2\n":                 "",
 	} {
 		got, findings = Parse([]byte(raw))
 		if RefusedWhole(findings) != want || want != "" && len(got) != 0 {

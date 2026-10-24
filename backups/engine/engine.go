@@ -11,9 +11,9 @@
 // credential file, secrets and all, to refuse before any unit one the
 // manager could not read or would refuse whole, and one that names a
 // b2: repository or names it in another file (repositoryInUse),
-// otherwise passing its path to the manager — and takes nothing from a unit but an exit status and a
-// small JSON file, of which it keeps only what it recognises, cleaned
-// (record.Text).
+// otherwise passing its path to the manager — and takes nothing from a
+// unit but an exit status and a small JSON file, of which it keeps only
+// what it recognises, cleaned (record.Text).
 package engine
 
 import (
