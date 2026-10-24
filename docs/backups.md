@@ -677,8 +677,8 @@ retention:
   Seen on the e2e server behind a proxy that refuses writes, all three
   ways; on B2, `v0.3.0-rc1`'s `setup`, which only read, took a console
   Read Only key, and every run then failed after 14½ minutes of retries
-  (`b2_get_upload_url: 401:`), as did the drill after it, after 14.
-  The refusals themselves are **unverified** on B2.
+  (`b2_get_upload_url: 401:`), as did the drill after it, after 14
+  minutes. The refusals themselves are **unverified** on B2.
 - **A rebuilt box** with another uid for `hotserve`: restored before
   the first deploy in 10 s, every file the new uid's.
 - **One drill, timed**: with 500 MB of new uploads, the run that

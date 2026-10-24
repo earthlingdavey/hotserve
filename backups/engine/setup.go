@@ -402,11 +402,10 @@ type setup struct {
 	initRan, made bool
 	// writing is the opening under way or over: it takes the
 	// repository's lock, so an interrupt from then on may leave
-	// restic's lock file, and says so. openedAt and host are what a
-	// lock file the opening left is known by.
-	writing  bool
-	openedAt time.Time
-	host     string
+	// restic's lock file, and says so. host is what a lock file the
+	// opening left is known by, with the ids listed before it.
+	writing bool
+	host    string
 	// initLeft is whether init was left running — by its clock or an
 	// interrupt — and so still has the staged file and the run
 	// directory to read: the manager opens both in the unit's own first
@@ -508,7 +507,7 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 		hadOld = true
 	}
 
-	p, err := x.planWith(ctx, filepath.Join(x.dir, "plan.err"))
+	p, err := x.planWith(ctx, s.errFile("plan"))
 	if err != nil {
 		return nil, s.err(err)
 	}
@@ -862,15 +861,16 @@ func (s *setup) leaveInit() { s.initLeft, s.keepDir = true, true }
 func (s *setup) tryShown(ctx context.Context, rep *SetupReport, needsOwn func()) error {
 	id, opened, err := s.openRepository(ctx)
 	if opened {
+		// Made, whatever the opening then refused: the password is the
+		// repository's, and a refusal's fate says so.
 		s.term.Say("the repository exists, and the password shown above opens it: it was made by an earlier attempt of this setup")
 		rep.RepositoryID, rep.New, s.made = id, true, true
+		return err
 	}
 	if err != nil {
 		return err
 	}
-	if !opened {
-		needsOwn()
-	}
+	needsOwn()
 	return nil
 }
 
@@ -911,8 +911,13 @@ func (s *setup) err(err error) error {
 		fate = "; the password shown above was never used: discard it"
 	}
 	if errors.Is(err, context.Canceled) {
-		if s.writing {
+		switch {
+		case s.writing:
 			return interrupted("interrupted: " + s.lockLeftLine() + fate)
+		case s.made:
+			// Init made the repository; the listing before the opening
+			// after it is running: nothing more of setup's is written.
+			return interrupted("interrupted: " + madeNothingMore + fate)
 		}
 		return interrupted("interrupted: nothing has been written" + fate)
 	}
@@ -1086,7 +1091,22 @@ func (s *setup) makeRepository(ctx context.Context) (unit.Outcome, string, error
 // the storage took and never acknowledged may have landed — which the
 // waiting note and the interrupt cover.
 func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err error) {
-	s.writing, s.openedAt = true, time.Now()
+	// The lock ids before the opening: a lock the opening leaves is one
+	// not among them (locksLeft). Listed before anything is written —
+	// and restic's list opens the repository first [restic 0.18,
+	// cmd_list.go: OpenRepository, then the keys], so a wrong password
+	// (exit 12), or a repository init just made that the storage does
+	// not show yet (exit 10), ends here as it would at the opening: not
+	// opened, nothing written, the caller asks again or says what to do.
+	before, err := s.listLocks(ctx, "before the opening")
+	var listing *listingExit
+	if errors.As(err, &listing) && (listing.status == 12 || listing.status == 10 && s.made) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	s.writing = true
 	tail := cannotWrite
 	if s.made {
 		tail = madeCannotWrite
@@ -1101,20 +1121,17 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 		if id = configID(s.outFile("open")); id == "" {
 			return "", false, errors.New("restic exited 0 but said nothing of the repository's id")
 		}
-		return id, true, s.locksLeft(ctx)
-	case o.Result == "exit-code" && o.ExitStatus == 12:
-		// The key search fails before the lock: nothing was written,
-		// and the password asked for again begins clean.
-		s.writing, s.openedAt = false, time.Time{}
+		return id, true, s.locksLeft(ctx, before)
+	case o.Result == "exit-code" && (o.ExitStatus == 12 || o.ExitStatus == 10 && s.made):
+		// Not opened, nothing written: the key search fails before the
+		// lock (12), or no repository where init just made one — a
+		// storage that does not show new objects for a moment (10). The
+		// password asked for again begins clean; the caller says what
+		// to do.
+		s.writing = false
 		return "", false, nil
 	case o.Result == "exit-code" && o.ExitStatus == 11:
-		return s.reopen(ctx)
-	case o.Result == "exit-code" && o.ExitStatus == 10 && s.made:
-		// No repository where init just made one: a storage that does
-		// not show new objects for a moment. Not opened, as a password
-		// that does not open it yet: the caller says what to do.
-		s.writing, s.openedAt = false, time.Time{}
-		return "", false, nil
+		return s.reopen(ctx, before)
 	case o.Result == "exit-code" && o.ExitStatus == 1:
 		// restic's last line for a lock file it could not write:
 		// "Fatal: unable to create lock in backend: …" [measured: the
@@ -1125,7 +1142,11 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 		// restic prints the config after the lock. A Save line earlier
 		// in what it said — a write retried once and then made, before
 		// a read failed — is not read as the refusal.
-		if last := s.lastSaid("open", false); strings.Contains(last, "unable to create lock") || strings.Contains(last, "Save(<lock/") {
+		// restic's lock-taking wrapper also wraps a failure to read
+		// another restic's lock, which comes before anything is written
+		// ("… unable to create lock in backend: load <lock/…>: …"): not
+		// the key's writing, and left to the opening's own words below.
+		if last := s.lastSaid("open", false); strings.Contains(last, "Save(<lock/") || strings.Contains(last, "unable to create lock") && !strings.Contains(last, "load <lock/") {
 			return "", true, errors.New("this key opened the repository, and restic exited 1 at its lock file's write" + tail + resticSaid(last))
 		}
 		return "", false, errors.New("restic could not open the repository (exit 1): " + record.Text(message))
@@ -1152,7 +1173,7 @@ func resticSaid(m string) string {
 // reopen is the opening read again without the lock, where another
 // restic holds the repository (exit 11): the password and the id are
 // proven, the key's writing is not, and that is said.
-func (s *setup) reopen(ctx context.Context) (id string, opened bool, err error) {
+func (s *setup) reopen(ctx context.Context, before []string) (id string, opened bool, err error) {
 	o, message, err := s.repository(ctx, "reopen", setupClock, s.cfg.Restic, "cat", "config", "--no-lock")
 	switch {
 	case err != nil:
@@ -1170,9 +1191,10 @@ func (s *setup) reopen(ctx context.Context) (id string, opened bool, err error) 
 		// and removes it on a conflict [restic 0.18, internal/restic/
 		// lock.go]: a key that cannot delete leaves it there, exit 11
 		// notwithstanding, so the locks are listed here too.
-		return id, true, s.locksLeft(ctx)
+		return id, true, s.locksLeft(ctx, before)
 	case o.Result == "exit-code" && o.ExitStatus == 12:
-		s.writing, s.openedAt = false, time.Time{}
+		// The lock-taking opening has run (exit 11), and may have left
+		// its lock: `writing` stands.
 		return "", false, nil
 	case o.Result == "exit-code" && o.ExitStatus == 1:
 		return "", false, errors.New("restic could not open the repository (exit 1): " + record.Text(message))
@@ -1183,25 +1205,32 @@ func (s *setup) reopen(ctx context.Context) (id string, opened bool, err error) 
 
 // locksLeft is whether the opening left its lock file behind. A key
 // that may write and not delete writes the lock file and cannot remove
-// it; restic logs the failed removal and exits 0 [restic 0.18,
-// internal/repository/lock.go, the deferred unlock], and every run
+// it; restic drops the failure silently — its debug log alone, nothing
+// on stderr — and exits 0 [restic 0.18, internal/repository/lock.go,
+// the deferred unlock], which is why the listing is read and not what
+// restic said, and every run
 // after would leave one more, which restic never passes by itself
 // [M75]: the first prune, or a check from elsewhere, would exit 11 for
 // good. So after an opening that exited 0 the repository's locks are
-// listed and each read: one written by this box's backup account
-// within this opening is the opening's own, and the key is refused,
-// naming it. One from elsewhere — another host, another user, another
-// time — is not, and never refuses a right key: that match is what
-// keeps an off-box prune's lock from being taken for ours.
-func (s *setup) locksLeft(ctx context.Context) error {
-	listed, err := s.listLocks(ctx)
+// listed again, and each id not among those listed before the opening
+// is read: one written by this box's backup account is the opening's
+// own, and the key is refused, naming it. One from elsewhere — another
+// host, another user — is not, and never refuses a right key; one that
+// was there before the opening is never read at all: that is what
+// keeps an off-box prune's lock, or a repository full of old locks,
+// from being taken for ours, and it leans on no clock.
+func (s *setup) locksLeft(ctx context.Context, before []string) error {
+	listed, err := s.listLocks(ctx, "after the opening")
 	if err != nil {
-		return err
+		return fmt.Errorf("%w; %s", err, s.lockLeftLine())
 	}
 	for _, id := range listed {
+		if slices.Contains(before, id) {
+			continue
+		}
 		o, message, err := s.repository(ctx, "lock", setupClock, s.cfg.Restic, "cat", "lock", id, "--no-lock")
 		if err != nil {
-			return fmt.Errorf("reading lock %s, after the opening: %w", record.Short(id), err)
+			return fmt.Errorf("reading lock %s, after the opening: %w; %s", record.Short(id), err, s.lockLeftLine())
 		}
 		if !o.OK() {
 			// Gone between the listing and the reading — another
@@ -1213,9 +1242,9 @@ func (s *setup) locksLeft(ctx context.Context) error {
 			// it is the opening's own is not known, and setup ends,
 			// saying so, rather than take a key that may not delete.
 			detail, _ := resticFailure(o)
-			again, lerr := s.listLocks(ctx)
+			again, lerr := s.listLocks(ctx, "after the opening")
 			if lerr != nil {
-				return lerr
+				return fmt.Errorf("%w; %s", lerr, s.lockLeftLine())
 			}
 			if !slices.Contains(again, id) {
 				s.term.Say("lock " + record.Short(id) + " was gone before it could be read: another restic's, not this key's")
@@ -1228,30 +1257,43 @@ func (s *setup) locksLeft(ctx context.Context) error {
 			return fmt.Errorf("reading lock %s: restic exited 0, and its answer could not be read back: %w", record.Short(id), err)
 		}
 		var l struct {
-			Hostname string    `json:"hostname"`
-			Username string    `json:"username"`
-			Time     time.Time `json:"time"`
+			Hostname string `json:"hostname"`
+			Username string `json:"username"`
 		}
 		if err := json.Unmarshal(raw, &l); err != nil {
 			return errors.New("reading lock " + record.Short(id) + ": restic's answer is not a lock file: " + record.Text(string(raw)))
 		}
-		if s.ownLock(l.Hostname, l.Username, l.Time) {
-			return errors.New("this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock " + record.Short(id) + "): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository")
+		if s.ownLock(l.Hostname, l.Username) {
+			return errors.New("this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock " + record.Short(id) + "): unless some other restic of that account was running beside setup, or on another machine with this hostname, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository")
 		}
 	}
 	return nil
 }
 
+// listingExit is a lock listing restic ended with an exit status: the
+// opening reads 12 and 10 as it reads its own.
+type listingExit struct {
+	status int
+	detail string
+}
+
+func (e *listingExit) Error() string { return "listing the repository's locks: " + e.detail }
+
 // listLocks is the repository's lock ids, as `restic list locks` prints
-// them, one a line, read without a lock.
-func (s *setup) listLocks(ctx context.Context) ([]string, error) {
+// them, one a line, read without a lock; when says which listing an
+// error was.
+func (s *setup) listLocks(ctx context.Context, when string) ([]string, error) {
 	o, message, err := s.repository(ctx, "locks", setupClock, s.cfg.Restic, "list", "locks", "--no-lock")
 	if err != nil {
-		return nil, fmt.Errorf("listing the repository's locks, after the opening: %w", err)
+		return nil, fmt.Errorf("listing the repository's locks, %s: %w", when, err)
 	}
 	if !o.OK() {
 		detail, _ := resticFailure(o)
-		return nil, errors.New("listing the repository's locks: " + detail + resticSaid(message))
+		e := &listingExit{detail: detail + resticSaid(message)}
+		if o.Result == "exit-code" {
+			e.status = o.ExitStatus
+		}
+		return nil, e
 	}
 	listed, err := os.ReadFile(s.outFile("locks"))
 	if err != nil {
@@ -1266,18 +1308,18 @@ func (s *setup) listLocks(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// ownLock is whether a lock file is the opening's own: written by this
-// box's backup account — restic writes the unit's hostname and user
-// [measured: the e2e's write-not-delete case] — since the opening
-// began, and up to a minute after now. A restic of the same
-// account run by hand beside setup (a run's own units cannot be: setup
-// holds the run lock) refreshes its lock in that window and matches
-// too: the refusal says so, and is a refusal once — setup again when
-// it has ended passes.
-func (s *setup) ownLock(hostname, username string, at time.Time) bool {
-	// Both times are this box's clock: nothing before the opening began
-	// is the opening's; every lock read was written before now.
-	return hostname == s.host && username == backupUser && !at.Before(s.openedAt)
+// ownLock is whether a lock file not listed before the opening is the
+// opening's own: written by this box's backup account — restic writes
+// the unit's hostname and user [measured: the e2e's write-not-delete
+// case]. No clock is read: the ids listed before the opening are what
+// tells the opening's lock from an older one. A restic of the same
+// account refreshing its lock in the window — one run by hand beside
+// setup (a run's own units cannot be: setup holds the run lock), or a
+// box of the same hostname still running its backups — writes a new
+// id and matches too: the refusal says so, and is a refusal once —
+// setup again when it has ended passes.
+func (s *setup) ownLock(hostname, username string) bool {
+	return hostname == s.host && username == backupUser
 }
 
 // errFile and outFile are where a unit's stderr and stdout go, by its
@@ -1335,7 +1377,9 @@ func (s *setup) lockLeftLine() string {
 
 // lockLeft is the opening's word on what a stop leaves; lockLeftMade
 // the same after init made the repository.
-const lockLeftMade = "the repository was made with the password shown, and nothing more of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it"
+const madeNothingMore = "the repository was made with the password shown, and nothing more of setup's has been written"
+
+const lockLeftMade = madeNothingMore + "; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it"
 
 const lockLeft = "nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it"
 

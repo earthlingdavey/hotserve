@@ -231,13 +231,13 @@ t0=$(date +%s)
 converse "hotserve-backup setup $RO" "$P_KEY" "$KEYID" "$P_SECRET" "$SECRET" "$P_PW" "$pw"
 rc=$?
 took=$(($(date +%s) - t0))
-[ "$rc" != 0 ] && says "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock [0-9a-f]\{8\}): unless some other restic of that account was running beside setup, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository" && [ "$took" -lt 20 ] && pass "a key that may write and not delete is refused by the lock it left, named (${took}s)" || fail "a key that may not delete: exit $rc after ${took}s: $(cat "$OUT"); locks: $(rr list locks --no-lock 2>&1 | while read -r id; do rr cat lock "$id" --no-lock 2>&1; done)"
+[ "$rc" != 0 ] && says "this box's backup account wrote a lock file to the repository during this setup, and it is still there (lock [0-9a-f]\{8\}): unless some other restic of that account was running beside setup, or on another machine with this hostname, this key wrote it and could not remove it — a key that may not delete cannot prune, and every run would leave one more lock; restic unlock with a key that may delete clears it once it is half an hour old (restic removes only the locks it takes for stale, which from another machine are those older than that), or restic unlock --remove-all sooner, when nothing else holds the repository" && [ "$took" -lt 20 ] && pass "a key that may write and not delete is refused by the lock it left, named (${took}s)" || fail "a key that may not delete: exit $rc after ${took}s: $(cat "$OUT"); locks: $(rr list locks --no-lock 2>&1 | while read -r id; do rr cat lock "$id" --no-lock 2>&1; done)"
 says "repository ready" && fail "setup said the repository was ready" || pass "and not called ready"
 [ "$(sum)" = "$before" ] && [ "$(temps)" = 0 ] && [ "$(units_left)" = 0 ] && pass "the working file is byte-identical, no copy of a credential is left, no unit is running" || fail "after a key that may not delete: same=$([ "$(sum)" = "$before" ] && echo yes || echo NO), temps=$(temps), units=$(units_left)"
 # The lock that key left is cleared as the refusal says: restic unlock,
 # with a key that may delete — the suite's own, at the storage itself.
 [ "$(rr list locks --no-lock 2>/dev/null | wc -l)" = 1 ] && pass "the one lock it left is listed" || fail "locks after the refusal: $(rr list locks --no-lock 2>&1)"
-rr unlock >/dev/null 2>&1 && pass "and restic unlock with a key that may delete clears it" || fail "restic unlock: $(rr unlock 2>&1)"
+rr unlock >/dev/null 2>&1 && [ "$(rr list locks --no-lock 2>/dev/null | wc -l)" = 0 ] && pass "and restic unlock with a key that may delete clears it" || fail "restic unlock: $(rr unlock 2>&1)"
 fi
 systemctl stop readonly-storage.service 2>/dev/null
 # The listing must answer, not merely print nothing: a listing that
