@@ -773,15 +773,18 @@ func TestAfterAFailedInitTheShownPasswordIsTriedBeforeItIsCalledUnused(t *testin
 	b.hang = "probe"
 	b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 	b.initOut, b.initErr = "", keyWriteFailed
-	opens := 0
+	// The lock listing before the opening is what the shown password
+	// meets (restic's list opens the repository first): it exits 12,
+	// and the own password's listing, the second, opens.
+	listings := 0
 	b.before = func(s unit.Spec) {
 		if strings.Contains(s.Name, "_init_") {
 			b.hang = ""
 			b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 			b.outcome["open"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 		}
-		if strings.Contains(s.Name, "_open_") {
-			if opens++; opens == 2 {
+		if strings.Contains(s.Name, "_locks_") {
+			if listings++; listings == 2 {
 				delete(b.outcome, "open")
 			}
 		}
@@ -791,7 +794,7 @@ func TestAfterAFailedInitTheShownPasswordIsTriedBeforeItIsCalledUnused(t *testin
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe init probe locks open locks open locks"; got != want || rep.New || !strings.Contains(m.saidAll(), "the password shown above was never used: discard it") {
+	if got, want := b.roles(), "plan probe init probe locks locks open locks"; got != want || rep.New || !strings.Contains(m.saidAll(), "the password shown above was never used: discard it") {
 		t.Fatalf("units %s, report %+v\nsaid:\n%s", got, rep, m.saidAll())
 	}
 	// Where the second attempt's look cannot tell either, and its init
@@ -1300,12 +1303,13 @@ func TestAPasswordShownAndNotUsedIsSaidDeadOnSuccessToo(t *testing.T) {
 	b.before = func(s unit.Spec) {
 		if strings.Contains(s.Name, "_init_") {
 			// The second attempt's look finds a repository the shown
-			// password does not open: not ours.
+			// password does not open: not ours. The listing before the
+			// opening is what refuses it; the own password's opens.
 			b.hang = ""
 			b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 			b.outcome["open"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 		}
-		if strings.Contains(s.Name, "_open_") {
+		if strings.Contains(s.Name, "_locks_") {
 			if opens++; opens == 2 {
 				delete(b.outcome, "open")
 			}
@@ -1313,7 +1317,7 @@ func TestAPasswordShownAndNotUsedIsSaidDeadOnSuccessToo(t *testing.T) {
 	}
 	m.answers = []string{"AKIDX", "wrong", "stored", "AKIDX", "the-secret", "its-own-password"}
 	rep, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
-	if err != nil || rep.New || b.roles() != "plan probe init probe locks open locks open locks" {
+	if err != nil || rep.New || b.roles() != "plan probe init probe locks locks open locks" {
 		t.Fatalf("%v %+v %s", err, rep, b.roles())
 	}
 	for _, want := range []string{"the repository exists; its password is needed (the one shown above is not it)", "the password shown above was never used: discard it"} {
@@ -1329,10 +1333,13 @@ func TestAWrongRepositoryPasswordIsAskedForAgain(t *testing.T) {
 	b, m := setupBox(t)
 	b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 	b.outcome["open"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
-	opens := 0
+	// A wrong password is refused by the lock listing before the
+	// opening (restic's list opens the repository first); the right one
+	// opens, with the listings either side.
+	listings := 0
 	b.before = func(s unit.Spec) {
-		if strings.Contains(s.Name, "_open_") {
-			if opens++; opens == 2 {
+		if strings.Contains(s.Name, "_locks_") {
+			if listings++; listings == 2 {
 				delete(b.outcome, "open")
 			}
 		}
@@ -1341,7 +1348,7 @@ func TestAWrongRepositoryPasswordIsAskedForAgain(t *testing.T) {
 	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe locks open locks open locks"; got != want || !strings.Contains(m.saidAll(), "this password cannot open the repository (exit 12): again") {
+	if got, want := b.roles(), "plan probe locks locks open locks"; got != want || !strings.Contains(m.saidAll(), "this password cannot open the repository (exit 12): again") {
 		t.Fatalf("units: %s\nsaid:\n%s", got, m.saidAll())
 	}
 	if v := envOf(t, b.cfg.EnvFile); v["RESTIC_PASSWORD"] != "its-own-password" {
@@ -1351,7 +1358,7 @@ func TestAWrongRepositoryPasswordIsAskedForAgain(t *testing.T) {
 	b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 	b.outcome["open"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 	m.answers = []string{"AKIDX", "the-secret", "a", "b", "c"}
-	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "this password cannot open the repository (exit 12)") || b.roles() != "plan probe locks open locks open locks open" {
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "this password cannot open the repository (exit 12)") || b.roles() != "plan probe locks locks locks" {
 		t.Fatalf("err = %v, units %s", err, b.roles())
 	}
 }

@@ -430,6 +430,14 @@ func (b *box) Run(ctx context.Context, s unit.Spec) (unit.Outcome, error) {
 	if o, ok := b.outcome[role]; ok {
 		return o, nil
 	}
+	// restic's `list locks` opens the repository first: where the test
+	// has the opening exit 12 (a wrong password) or 10 (no repository),
+	// a listing not given its own outcome exits the same.
+	if role == "locks" {
+		if o, ok := b.outcome["open"]; ok && o.Result == "exit-code" && (o.ExitStatus == 12 || o.ExitStatus == 10) {
+			return o, nil
+		}
+	}
 	return unit.Outcome{Result: "success"}, nil
 }
 

@@ -1119,8 +1119,11 @@ What can be known to fail is refused before anything is asked for
    repository's lock** — the one unit proves the password, the id and
    that the key may write, since a lock file is written and removed on
    the way (0.7 s where the key may write [measured]); the look alone
-   reads without one. A wrong password is refused (exit 12) and asked
-   for again, up to three times; a storage that refuses the opening is
+   reads without one. The lock ids are listed before the opening
+   (`list locks --no-lock`, for the lock the opening may leave, below)
+   — and restic's list opens the repository first, so a wrong password
+   is refused there (exit 12) and asked for again, up to three times,
+   before anything is written; a storage that refuses the opening is
    said in restic's words. A key that may read and not write is refused
    before anything of setup's is written: at once where the storage
    says so plainly (S3's 403: restic exits 1, ending on "Fatal: unable
@@ -1162,7 +1165,7 @@ What can be known to fail is refused before anything is asked for
    locks it takes for stale, which from another machine are those
    older than that), or restic unlock --remove-all sooner, when
    nothing else holds the repository". A lock from elsewhere — another host,
-   another user, another time — is not the opening's, and never
+   another user — is not the opening's, and never
    refuses a right key, and one listed before the opening is never
    read: that is what keeps an off-box prune's lock, or a repository
    full of old locks, from being taken for ours, and it leans on no

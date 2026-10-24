@@ -910,8 +910,13 @@ func (s *setup) err(err error) error {
 		fate = "; the password shown above was never used: discard it"
 	}
 	if errors.Is(err, context.Canceled) {
-		if s.writing {
+		switch {
+		case s.writing:
 			return interrupted("interrupted: " + s.lockLeftLine() + fate)
+		case s.made:
+			// Init made the repository; the listing before the opening
+			// after it is running: nothing more of setup's is written.
+			return interrupted("interrupted: " + madeNothingMore + fate)
 		}
 		return interrupted("interrupted: nothing has been written" + fate)
 	}
@@ -1086,8 +1091,17 @@ func (s *setup) makeRepository(ctx context.Context) (unit.Outcome, string, error
 // waiting note and the interrupt cover.
 func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err error) {
 	// The lock ids before the opening: a lock the opening leaves is one
-	// not among them (locksLeft). Listed before anything is written.
+	// not among them (locksLeft). Listed before anything is written —
+	// and restic's list opens the repository first [restic 0.18,
+	// cmd_list.go: OpenRepository, then the keys], so a wrong password
+	// (exit 12), or a repository init just made that the storage does
+	// not show yet (exit 10), ends here as it would at the opening: not
+	// opened, nothing written, the caller asks again or says what to do.
 	before, err := s.listLocks(ctx, "before the opening")
+	var listing *listingExit
+	if errors.As(err, &listing) && (listing.status == 12 || listing.status == 10 && s.made) {
+		return "", false, nil
+	}
 	if err != nil {
 		return "", false, err
 	}
@@ -1107,19 +1121,16 @@ func (s *setup) openRepository(ctx context.Context) (id string, opened bool, err
 			return "", false, errors.New("restic exited 0 but said nothing of the repository's id")
 		}
 		return id, true, s.locksLeft(ctx, before)
-	case o.Result == "exit-code" && o.ExitStatus == 12:
-		// The key search fails before the lock: nothing was written,
-		// and the password asked for again begins clean.
+	case o.Result == "exit-code" && (o.ExitStatus == 12 || o.ExitStatus == 10 && s.made):
+		// Not opened, nothing written: the key search fails before the
+		// lock (12), or no repository where init just made one — a
+		// storage that does not show new objects for a moment (10). The
+		// password asked for again begins clean; the caller says what
+		// to do.
 		s.writing = false
 		return "", false, nil
 	case o.Result == "exit-code" && o.ExitStatus == 11:
 		return s.reopen(ctx, before)
-	case o.Result == "exit-code" && o.ExitStatus == 10 && s.made:
-		// No repository where init just made one: a storage that does
-		// not show new objects for a moment. Not opened, as a password
-		// that does not open it yet: the caller says what to do.
-		s.writing = false
-		return "", false, nil
 	case o.Result == "exit-code" && o.ExitStatus == 1:
 		// restic's last line for a lock file it could not write:
 		// "Fatal: unable to create lock in backend: …" [measured: the
@@ -1177,7 +1188,8 @@ func (s *setup) reopen(ctx context.Context, before []string) (id string, opened 
 		// notwithstanding, so the locks are listed here too.
 		return id, true, s.locksLeft(ctx, before)
 	case o.Result == "exit-code" && o.ExitStatus == 12:
-		s.writing = false
+		// The lock-taking opening has run (exit 11), and may have left
+		// its lock: `writing` stands.
 		return "", false, nil
 	case o.Result == "exit-code" && o.ExitStatus == 1:
 		return "", false, errors.New("restic could not open the repository (exit 1): " + record.Text(message))
@@ -1203,7 +1215,7 @@ func (s *setup) reopen(ctx context.Context, before []string) (id string, opened 
 func (s *setup) locksLeft(ctx context.Context, before []string) error {
 	listed, err := s.listLocks(ctx, "after the opening")
 	if err != nil {
-		return err
+		return fmt.Errorf("%w; %s", err, s.lockLeftLine())
 	}
 	for _, id := range listed {
 		if slices.Contains(before, id) {
@@ -1211,7 +1223,7 @@ func (s *setup) locksLeft(ctx context.Context, before []string) error {
 		}
 		o, message, err := s.repository(ctx, "lock", setupClock, s.cfg.Restic, "cat", "lock", id, "--no-lock")
 		if err != nil {
-			return fmt.Errorf("reading lock %s, after the opening: %w", record.Short(id), err)
+			return fmt.Errorf("reading lock %s, after the opening: %w; %s", record.Short(id), err, s.lockLeftLine())
 		}
 		if !o.OK() {
 			// Gone between the listing and the reading — another
@@ -1225,7 +1237,7 @@ func (s *setup) locksLeft(ctx context.Context, before []string) error {
 			detail, _ := resticFailure(o)
 			again, lerr := s.listLocks(ctx, "after the opening")
 			if lerr != nil {
-				return lerr
+				return fmt.Errorf("%w; %s", lerr, s.lockLeftLine())
 			}
 			if !slices.Contains(again, id) {
 				s.term.Say("lock " + record.Short(id) + " was gone before it could be read: another restic's, not this key's")
@@ -1251,6 +1263,15 @@ func (s *setup) locksLeft(ctx context.Context, before []string) error {
 	return nil
 }
 
+// listingExit is a lock listing restic ended with an exit status: the
+// opening reads 12 and 10 as it reads its own.
+type listingExit struct {
+	status int
+	detail string
+}
+
+func (e *listingExit) Error() string { return "listing the repository's locks: " + e.detail }
+
 // listLocks is the repository's lock ids, as `restic list locks` prints
 // them, one a line, read without a lock; when says which listing an
 // error was.
@@ -1261,7 +1282,11 @@ func (s *setup) listLocks(ctx context.Context, when string) ([]string, error) {
 	}
 	if !o.OK() {
 		detail, _ := resticFailure(o)
-		return nil, errors.New("listing the repository's locks: " + detail + resticSaid(message))
+		e := &listingExit{detail: detail + resticSaid(message)}
+		if o.Result == "exit-code" {
+			e.status = o.ExitStatus
+		}
+		return nil, e
 	}
 	listed, err := os.ReadFile(s.outFile("locks"))
 	if err != nil {
@@ -1345,7 +1370,9 @@ func (s *setup) lockLeftLine() string {
 
 // lockLeft is the opening's word on what a stop leaves; lockLeftMade
 // the same after init made the repository.
-const lockLeftMade = "the repository was made with the password shown, and nothing more of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it"
+const madeNothingMore = "the repository was made with the password shown, and nothing more of setup's has been written"
+
+const lockLeftMade = madeNothingMore + "; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it"
 
 const lockLeft = "nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it"
 
