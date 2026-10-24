@@ -91,8 +91,10 @@ func Parse(raw []byte) (Values, []string) {
 		case notUTF8 != "":
 		case !utf8.ValidString(name):
 			notUTF8 = fmt.Sprintf("line %d: a key holds a byte that is not UTF-8", keyLine)
-		case !utf8.ValidString(val):
+		case !utf8.ValidString(val) && keyRe.MatchString(name):
 			notUTF8 = fmt.Sprintf("line %d: the value of %s holds a byte that is not UTF-8", keyLine, name)
+		case !utf8.ValidString(val):
+			notUTF8 = fmt.Sprintf("line %d: the value of %q holds a byte that is not UTF-8", keyLine, name)
 		}
 		switch {
 		case !keyRe.MatchString(name):

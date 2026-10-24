@@ -945,7 +945,8 @@ It needs no privilege.
   application key, not the master key; restic's own B2 backend retries
   a failed upload without end" — the bucket and path filled in as
   restic reads them from the `b2:` URL (the path cleaned, its leading
-  slash dropped, and left out when there is none; the bucket and each
+  slash dropped, and left out when there is none; a bucket B2 could not
+  name, letters, digits and hyphens, left as `<bucket>`; each path
   segment URL-escaped, an `@` as `%40`, so that restic, which
   `url.Parse`s an `s3:https` URL, reads back the path B2 holds and not
   a shorter one at a `#` or a `?`, and setup takes it; a path that

@@ -428,6 +428,10 @@ func TestAB2RepositoryIsRefusedBeforeAnyPromptNamingItsS3URL(t *testing.T) {
 		{"b2:hs-backups:..", "s3:https://s3.<region>.backblazeb2.com/hs-backups/<path>"},
 		{"b2:hs-backups:a/../../x", "s3:https://s3.<region>.backblazeb2.com/hs-backups/<path>"},
 		{"b2:hs-backups:a/../x", "s3:https://s3.<region>.backblazeb2.com/hs-backups/x"},
+		// A bucket B2 could not name is named no URL: escaped, a / in it
+		// would be read back as the bucket's end.
+		{"b2:a/b:dev", "s3:https://s3.<region>.backblazeb2.com/<bucket>/dev"},
+		{"b2:it's:x", "s3:https://s3.<region>.backblazeb2.com/<bucket>/x"},
 		// Escaped, so that restic's url.Parse reads back the path B2 holds;
 		// what is not printable is escaped too, so never echoed.
 		{"b2:hs-backups:dev#daily", "s3:https://s3.<region>.backblazeb2.com/hs-backups/dev%23daily"},
@@ -462,7 +466,7 @@ func TestTheS3URLNamedForAB2RepositoryIsTheSameRepository(t *testing.T) {
 		"b2:hs-backups:dev", "b2:hs-backups:dev#daily", "b2:hs-backups:dev?x=1",
 		"b2:hs-backups:dev%2Fdaily", "b2:hs-backups:100%", "b2:hs-backups:a b/c;d,e",
 		"b2:hs-backups:/srv//dev/", "b2:hs-backups:a:b/c@d", "b2:hs-backups:a+b&c=d",
-		"b2:it's:x", "b2:hs-backups:dev$DAILY", "b2:hs-backups:it's",
+		"b2:hs-backups:dev$DAILY", "b2:hs-backups:it's",
 	} {
 		t.Run(repo, func(t *testing.T) {
 			wantBucket, wantPath, _ := strings.Cut(strings.TrimPrefix(repo, "b2:"), ":")
@@ -611,6 +615,15 @@ func TestSetupWritesB2sRegionForEveryUnitToRead(t *testing.T) {
 			said := strings.Contains(m.saidAll(), "B2's region, eu-central-003, from the endpoint's name, goes in the file as AWS_DEFAULT_REGION")
 			if said != (tc.region != "") || m.askedAll() != "Storage key id (AWS_ACCESS_KEY_ID): \nsecret:Storage secret key (AWS_SECRET_ACCESS_KEY): \nType stored to go on: " {
 				t.Fatalf("asked:\n%s\nsaid:\n%s", m.askedAll(), m.saidAll())
+			}
+			// What to keep off the box names the region on B2, and is
+			// as it was elsewhere.
+			keep := "Store it off the box now, with the repository URL, " + tc.repo + ", and the storage key: with those three, "
+			if tc.region != "" {
+				keep = "Store it off the box now, with the repository URL, " + tc.repo + ", the storage key, and B2's region, " + tc.region + ", set as AWS_DEFAULT_REGION wherever restic runs: with those four, "
+			}
+			if !strings.Contains(m.saidAll(), keep) {
+				t.Fatalf("said:\n%s\nwant it to hold %s", m.saidAll(), keep)
 			}
 		})
 	}

@@ -123,6 +123,9 @@ func TestParseReadsAsTheManagerDoes(t *testing.T) {
 		// Named by the key, from its line, in a value over several.
 		"OK=1\nNOTE=\"first\nsecond\ncaf\xe9\"\nAFTER=2\n": "line 2: the value of NOTE holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
 		"OK=1\nNOTE=a \\\ncaf\xe9\nAFTER=2\n":              "line 2: the value of NOTE holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
+		// A name the manager does not take is quoted, its control bytes
+		// escaped, never sent to a terminal as they are.
+		"OK=1\n\x1b]0;x\x07X=caf\xe9\nAFTER=2\n": "line 2: the value of \"\\x1b]0;x\\aX\" holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
 		// A sequence split by a joined line, valid once joined; the byte
 		// after it is not.
 		"OK=1\nB=\"\xc3\\\n\xa9 \xff\"\nAFTER=2\n": "line 2: the value of B holds a byte that is not UTF-8: the manager refuses the whole file, and no unit that needs it starts",
