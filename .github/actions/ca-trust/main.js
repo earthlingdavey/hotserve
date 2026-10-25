@@ -100,7 +100,12 @@ async function main() {
       encoding: 'utf8',
       timeout: 30000,
     });
-    if (r.status !== 0) throw new Error(`child exited ${r.status}: ${(r.stderr || '').trim()}`);
+    if (r.status !== 0) {
+      // The child reports its own failures on stdout (the catch at the
+      // bottom), and the timeout kills it with no status: say which.
+      const how = r.error ? r.error.message : r.signal ? `killed by ${r.signal}` : `exited ${r.status}`;
+      throw new Error(`child ${how}: ${(r.stderr || '').trim() || (r.stdout || '').trim()}`);
+    }
     const { local, remote } = JSON.parse(r.stdout);
     check(local.authorized, `node trusts a CA that is only in the store${local.authorized ? '' : `: ${local.error}`}`);
     check(!remote.authorized, `node refuses ${REMOTE} when its root is not in the store (${remote.error || 'it verified: the bundled roots are in use'})`);
