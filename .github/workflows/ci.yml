@@ -20,6 +20,15 @@ env:
   # Adds the CI override that bind-mounts Go caches under ./.cache so
   # actions/cache can persist them.
   COMPOSE: docker compose -f docker-compose.yml -f docker-compose.ci.yml
+  # The JavaScript actions (cache, artifacts, dependency-review,
+  # fetch-metadata) verify TLS against the root list their Node
+  # bundles, which the floor step cannot reach: this puts them on the
+  # system store that step keeps current. Replaces the bundled list,
+  # where --use-system-ca only adds to it. SSL_CERT_FILE because where
+  # a Node build's OpenSSL looks by default is that build's choice.
+  # The ca-trust job proves both hold on the runner.
+  NODE_OPTIONS: --use-openssl-ca
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
 
 jobs:
   # One cell per module: the golangci runs share no state, so
@@ -33,6 +42,31 @@ jobs:
     runs-on: ubuntu-latest
     name: lint (${{ matrix.module }})
     steps:
+      # Before checkout: git, gh and dockerd's pulls on the runner read
+      # the system store, and the runner images can trail the distro's
+      # fix for a distrusted CA by weeks. floor is the oldest
+      # ca-certificates the jobs accept; when a CA is distrusted, raise
+      # it in every copy (each job in every workflow), say why here, and
+      # add the root to DISTRUSTED in .github/actions/ca-trust/main.js.
+      # At or above it the step touches no apt and cannot fail; below
+      # it, it upgrades, restarts dockerd (which reads the store once),
+      # and fails the job if the mirror has nothing new enough.
+      # 20260816 (USN-8944-1): drops "emSign ECC Root CA - G3", which
+      # cross-signed the eMudhra intermediates whose keys leaked
+      # (CVE-2026-111943, actions/runner-images#15018). The containers
+      # need nothing: Debian's 20250419+deb13u1 dropped the same root.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/runner-sample
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -59,6 +93,19 @@ jobs:
     runs-on: ${{ matrix.runner }}
     name: test (${{ matrix.runner }})
     steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/runner-sample
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -77,6 +124,19 @@ jobs:
   govulncheck:
     runs-on: ubuntu-latest
     steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/runner-sample
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -101,6 +161,19 @@ jobs:
     runs-on: ${{ matrix.runner }}
     name: e2e (${{ matrix.runner }})
     steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/runner-sample
       # Debian 13 does not restrict unprivileged user namespaces, but
@@ -123,6 +196,19 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history + tags for version-stamp parity with release.
@@ -158,6 +244,19 @@ jobs:
     runs-on: ${{ matrix.runner }}
     name: install-test (${{ matrix.distro }}, ${{ matrix.runner }})
     steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/runner-sample
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -187,6 +286,19 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -204,6 +316,19 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/runner-sample
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
@@ -226,13 +351,54 @@ jobs:
   usage-check:
     runs-on: ubuntu-latest
     steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/runner-sample
       - run: make usage-check COMPOSE="$COMPOSE"
 
+  # Proves the two fixes above on each arch's runner image: the system
+  # store holds no distrusted root, and the JavaScript actions read
+  # that store and not their bundled list (.github/actions/ca-trust).
+  ca-trust:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    name: ca-trust (${{ matrix.runner }})
+    steps:
+      # Before checkout; floor and why: ci.yml's lint job.
+      - name: CA certificates at least the pinned floor
+        run: |
+          floor=20260816
+          v=$(dpkg-query -W -f='${Version}' ca-certificates)
+          if ! dpkg --compare-versions "$v" ge "$floor"; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --only-upgrade ca-certificates
+            sudo systemctl try-restart docker
+            v=$(dpkg-query -W -f='${Version}' ca-certificates)
+            dpkg --compare-versions "$v" ge "$floor" || { echo "ca-certificates $v is below $floor" >&2; exit 1; }
+          fi
+          echo "ca-certificates $v"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/runner-sample
+      - uses: ./.github/actions/ca-trust
+
   ci-ok:
     if: always()
-    needs: [lint, test, govulncheck, e2e, package, install-test, gitleaks, usage-check]
+    needs: [lint, test, govulncheck, e2e, package, install-test, gitleaks, usage-check, ca-trust]
     runs-on: ubuntu-latest
     steps:
       - name: assert every needed job succeeded
