@@ -79,7 +79,7 @@ func TestWhateverLeavesInitRunningLeavesItWhatItNeeds(t *testing.T) {
 // so that the opening proves, before the box is pointed at it, that the
 // key may write and delete a lock file: it once only read, and a key that may
 // read and not write was taken, every run after failing a quarter of an
-// hour in [RC check 6, on B2]. What restic said is read, verbatim from
+// hour in [RC check 6, on B2's native API]. What restic said is read, verbatim from
 // M4 (rc-results/M4-unlock.out) and M3: its own "error while unlocking:"
 // line at exit 0 is a refusal; an exit 1 is one neutral line with what
 // restic said, without its retry lines, cut at 300 runes, and the clock
