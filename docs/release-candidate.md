@@ -142,22 +142,66 @@ with the off-box machine's key; then on the box
 
 ## 6. A read-only key
 
-A key that may read and not write, on a box that is not your real one.
-`setup` only reads an existing repository, so it should take the key;
-whether it does is part of the check:
+A key that may read and not write, on a box that is not your real one,
+and a repository made beforehand with a key that may write:
 
 ```sh
-sudo hotserve-backup setup <url>
-time sudo systemctl start hotserve-backup.service
-hotserve-backup status
+time sudo hotserve-backup setup <url>
 ```
 
-What `status` says, and after how long: **unverified**, and not run on
-the e2e server, which has no read-only key. Read from the code, the
-upload fails and the app is
-`demo: failed: restic failed (exit 1): the storage could not be reached, or refused the key, or something else went wrong; …`,
-after however long restic retries. `setup` again with the box's own
-key afterwards.
+`setup` opens a repository that is there already taking its lock —
+`restic cat config`, which writes a lock file and removes it — and
+should refuse this key: at once where the storage says so plainly, at
+its two-minute clock where restic retries. **Unverified** on a
+provider; on the e2e server behind a proxy that refuses writes, both —
+the lines as the e2e asserts them, with the clock a release's binary
+has (the e2e's is 30 s); a run's lock ids and timings are its own:
+
+```
+hotserve-backup: restic could not open the repository with its lock (exit 1): Save(<lock/…>) failed: client.PutObject: Access Denied. unable to create lock in backend: client.PutObject: Access Denied.
+```
+
+at once, and at the clock:
+
+```
+still waiting for s3:http://…/box1 (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it)
+hotserve-backup: restic had not finished opening the repository with its lock within 2m0s (restic said: Save(<lock/…>) returned error, retrying after …: …); nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it, with a key that may delete: from this box at once, once setup has ended, given that key's credentials, if no other machine with this hostname runs restic against the repository; otherwise from another machine that holds it once the lock is half an hour old; or with restic unlock --remove-all sooner, when nothing else holds the repository
+```
+
+each exit 1, with nothing of setup's written: `status` after either is
+what it was before — `backups are not set up` on a box that was not,
+the earlier setup on one that was (the credential file is left byte
+for byte as it was).
+
+**A key that may write and not delete** — narrower than the guide's
+policies — writes the lock file and cannot remove it; restic says so,
+`error while unlocking:`, and exits 0 ([M4](design/backups/rc-runs/rc-results/M4-unlock.out),
+case A), and setup refuses the key, quoting restic's line, which names
+the lock (on the e2e server, behind a proxy that refuses DELETE
+alone):
+
+```
+hotserve-backup: restic opened the repository and could not remove the lock file it wrote (restic said: Remove(<lock/…>) failed: client.RemoveObject: Access Denied.): a key that may not delete, or a storage that refuses or does not answer deletes, ends here; the lock stays until restic unlock removes it, with a key that may delete — not this one: from this box at once, once setup has ended, given that key's credentials, if no other machine with this hostname runs restic against the repository; otherwise from another machine that holds it once the lock is half an hour old; or with restic unlock --remove-all sooner, when nothing else holds the repository
+```
+
+`restic unlock` with the key that may delete clears it: from the box
+at once, once setup has ended, if no other machine with this hostname
+runs restic against the repository (restic takes a same-host lock whose
+pid is gone for stale: M4 cases C and D, and a live lock of a second
+machine with the same hostname too: case E); otherwise from your own
+machine once it is half an hour old (from another machine restic takes
+only those for stale), or with
+`restic unlock --remove-all` sooner, when nothing else holds the
+repository ([look from your own machine](backups.md#look-from-your-own-machine)).
+
+**On B2**, `v0.3.0-rc1`, whose `setup` only read, took a console Read
+Only key (`repository ready … (existing, …)`). The run after it
+retried the lock about once a minute (`b2_get_upload_url: 401:`) and
+failed after 868 s:
+`demo: failed: restic failed (exit 1): the storage could not be reached, or refused the key, or something else went wrong; …`;
+the drill failed after 832 s in #170's words; `status` exited 1. Where
+a `setup` does take such a key, `setup` again with the box's own
+afterwards.
 
 ## 7. Restore onto a second box, with another uid for `hotserve`
 

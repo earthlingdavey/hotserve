@@ -215,7 +215,7 @@ func TestAFreshSetupShowsThePasswordBeforeAnythingIsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe init"; got != want {
+	if got, want := b.roles(), "plan probe init open"; got != want {
 		t.Fatalf("units: %s, want %s", got, want)
 	}
 	if unitsBeforeStored != "plan probe" {
@@ -527,12 +527,18 @@ func TestAnExistingRepositoryIsOpenedWithItsOwnPassword(t *testing.T) {
 	if v["RESTIC_PASSWORD"] != "its-own-password" {
 		t.Fatalf("the file holds password %q", v["RESTIC_PASSWORD"])
 	}
+	// The opening takes the repository's lock — cat config without
+	// --no-lock — which proves the key may write a lock file to it, and
+	// remove it; the look alone reads without one.
 	s := b.spec("open")
-	if got, want := strings.Join(s.Argv, " "), "/usr/bin/restic cat config --no-lock"; got != want {
+	if got, want := strings.Join(s.Argv, " "), "/usr/bin/restic cat config"; got != want {
 		t.Fatalf("the open unit's argv: %q", got)
 	}
 	if s.User != backupUser || !s.Network || len(s.Capabilities) != 0 || !strings.HasPrefix(s.EnvironmentFile, b.cfg.EnvFile+".") {
 		t.Fatalf("the open unit: %+v", s)
+	}
+	if got, want := strings.Join(b.spec("probe").Argv, " "), "/usr/bin/restic cat config --no-lock"; got != want {
+		t.Fatalf("the look's argv: %q", got)
 	}
 	if rep.New || rep.RepositoryID != repoID || !strings.Contains(m.saidAll(), "repository ready: s3:http://e2e-s3:9000/box (existing, id bbd0e899)") {
 		t.Fatalf("report %+v\nsaid:\n%s", rep, m.saidAll())
@@ -928,7 +934,7 @@ func TestWhereTheProbeCannotTellInitAnswers(t *testing.T) {
 	if err != nil || !rep.New {
 		t.Fatalf("%v %+v", err, rep)
 	}
-	if got, want := b.roles(), "plan probe init"; got != want || len(b.stopped) != 1 || !strings.Contains(b.stopped[0], "_probe_") {
+	if got, want := b.roles(), "plan probe init open"; got != want || len(b.stopped) != 1 || !strings.Contains(b.stopped[0], "_probe_") {
 		t.Fatalf("units: %s, stopped %v", got, b.stopped)
 	}
 }
@@ -956,7 +962,7 @@ func TestAKeyTheStorageRefusesAtTheLookIsAskedForAgainBeforeAnyPassword(t *testi
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe probe init"; got != want {
+	if got, want := b.roles(), "plan probe probe init open"; got != want {
 		t.Fatalf("units: %s, want %s", got, want)
 	}
 	if got, want := m.askedAll(), "Storage key id (B2_ACCOUNT_ID): \nsecret:Storage secret key (B2_ACCOUNT_KEY): \nStorage key id (B2_ACCOUNT_ID): \nsecret:Storage secret key (B2_ACCOUNT_KEY): \nType stored to go on: "; got != want {
@@ -1104,7 +1110,7 @@ func TestAKeyTheStorageRefusesIsAskedForAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\nsaid:\n%s", err, m.saidAll())
 	}
-	if got, want := b.roles(), "plan probe init probe init"; got != want {
+	if got, want := b.roles(), "plan probe init probe init open"; got != want {
 		t.Fatalf("units: %s, want %s", got, want)
 	}
 	if got, want := m.askedAll(), "Storage key id (AWS_ACCESS_KEY_ID): \nsecret:Storage secret key (AWS_SECRET_ACCESS_KEY): \nType stored to go on: \nStorage key id (AWS_ACCESS_KEY_ID): \nsecret:Storage secret key (AWS_SECRET_ACCESS_KEY): "; got != want {
@@ -1387,7 +1393,7 @@ func TestAMistakeLeavesAWorkingSetupAsItWas(t *testing.T) {
 			b.outcome["open"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 			b.probeOut, b.openErr = "", "Fatal: unable to open repository: AccessDenied: keys/ is not yours to read\n"
 			m.answers = []string{"AKIDX", "the-secret", "pw"}
-		}, "restic could not open the repository (exit 1): Fatal: unable to open repository: AccessDenied: keys/ is not yours to read"},
+		}, "restic could not open the repository with its lock (exit 1): Fatal: unable to open repository: AccessDenied: keys/ is not yours to read"},
 		{"init exits 0 and names no repository", func(b *box, m *term) { b.initOut = "" }, "restic made the repository and exited 0 but said nothing of its id; run setup again, which opens it; the password shown above is the repository's: keep it"},
 		{"init ended by a signal", func(b *box, m *term) {
 			b.outcome["init"] = unit.Outcome{Result: "signal"}
@@ -1453,7 +1459,7 @@ func TestARepositoryThatDoesNotAnswerIsGivenUpOnAndInitLeftRunning(t *testing.T)
 	b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 12}
 	b.hang = "open"
 	m.answers = []string{"AKIDX", "the-secret", "its-own-password"}
-	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(m.saidAll(), "still waiting for s3:http://e2e-s3:9000/box (Ctrl-C is safe: nothing has been written)") {
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(m.saidAll(), "still waiting for s3:http://e2e-s3:9000/box (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was writing may stay") {
 		t.Fatalf("err %v\nsaid:\n%s", err, m.saidAll())
 	}
 	// A unit the runner could not see gone is not said to have been
@@ -1587,7 +1593,7 @@ func TestARecordIsPutAsideOnlyOnceTheFileIsInPlace(t *testing.T) {
 	// A directory where the file has to go: the rename over it fails.
 	must(t, os.MkdirAll(b.cfg.EnvFile, 0o755))
 	_, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
-	if err == nil || b.roles() != "plan probe init" {
+	if err == nil || b.roles() != "plan probe init open" {
 		t.Fatalf("setup with a directory in the file's place: %v after %s", err, b.roles())
 	}
 	st, err := record.Read(filepath.Join(b.cfg.StateDir, "status.json"))
