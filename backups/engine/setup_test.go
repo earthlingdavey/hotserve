@@ -509,10 +509,31 @@ func TestTheRunsRemedyPastesAsOneLiteralArgument(t *testing.T) {
 				t.Fatalf("%s holds a quote", u)
 			}
 			msg := b2RunRefused(repo).Error()
-			if want := "sudo hotserve-backup setup '" + u + "' moves it"; !strings.Contains(msg, want) {
+			if want := "as root, hotserve-backup setup '" + u + "' moves it"; !strings.Contains(msg, want) {
 				t.Fatalf("%s\nwant it to hold %s", msg, want)
 			}
 		})
+	}
+}
+
+// The record keeps the run's b2: refusal whole for a bucket and path of
+// up to 55 characters, the slash between them counted, and the command
+// to paste whole, its closing quote included, up to 181 (the README's
+// accepted residual); one more cuts each.
+func TestTheRunsB2RefusalFitsTheRecord(t *testing.T) {
+	for _, c := range []struct {
+		n              int
+		whole, command bool
+	}{{55, true, true}, {56, false, true}, {181, false, true}, {182, false, false}} {
+		repo := "b2:" + strings.Repeat("b", 20) + ":" + strings.Repeat("p", c.n-21)
+		msg := b2RunRefused(repo).Error()
+		kept := record.Text(msg)
+		if got := kept == msg; got != c.whole {
+			t.Errorf("%d characters: kept whole = %v, want %v (%d runes)", c.n, got, c.whole, len([]rune(msg)))
+		}
+		if got := strings.Contains(kept, "setup '"+b2AsS3(repo)+"'"); got != c.command {
+			t.Errorf("%d characters: command kept = %v, want %v", c.n, got, c.command)
+		}
 	}
 }
 
@@ -1148,7 +1169,7 @@ func TestTheOldFileStillThereIsSaid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.OldEnvFile != b.cfg.OldEnvFile || !strings.Contains(m.saidAll(), b.cfg.OldEnvFile+" is still there, from before this version, and is not read; it holds a copy of the credential: remove it (sudo rm "+b.cfg.OldEnvFile+")") {
+	if rep.OldEnvFile != b.cfg.OldEnvFile || !strings.Contains(m.saidAll(), b.cfg.OldEnvFile+" is still there, from before this version, and is not read; it holds a copy of the credential: remove it (rm "+b.cfg.OldEnvFile+")") {
 		t.Fatalf("report %+v\nsaid:\n%s", rep, m.saidAll())
 	}
 	if _, err := os.Lstat(b.cfg.OldEnvFile); err != nil {
