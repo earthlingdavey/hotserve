@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
@@ -209,6 +210,19 @@ type sandboxSpec struct {
 // a sandbox. The check is for root's links: an operator's symlink,
 // made to move a directory or by mistake, is what it refuses (above).
 func (s *sandboxSpec) resolveBindSources() error {
+	if err := s.resolveBindSourcesNamed(); err != nil {
+		return err
+	}
+	// A link on the root can reach a path the root's own check never saw.
+	for _, b := range s.writable {
+		if err := validateBindPath(b.source); err != nil {
+			return fmt.Errorf("refusing to launch sandboxed: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *sandboxSpec) resolveBindSourcesNamed() error {
 	// Compare canonical against canonical: a resolved bind source is
 	// canonical, so a lexical root would miss a sibling reached through
 	// a link when the root itself is one (/srv/liveswap ->
@@ -356,6 +370,21 @@ func supervisorPaths() []string {
 		add(d)
 	}
 	return out
+}
+
+// validateBindPath refuses a path a unit's file cannot carry. The manager
+// writes a transient unit's BindPaths= as they stand, and a reload reads
+// them back, split at the space or the colon, or as a bad setting; a start
+// job that runs after one then binds the wrong thing or fails. Measured on
+// systemd 257: whitespace, `:`, both quotes and `\`, and control
+// characters by the same parser. The rest survives, `%` and `;` included.
+func validateBindPath(p string) error {
+	if i := strings.IndexFunc(p, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune(`:'"\`, r)
+	}); i >= 0 {
+		return fmt.Errorf("path %q holds %q, which systemd cannot read back from a unit's file: a daemon-reload would bind the wrong thing or fail the app's next start. Use a path without whitespace, colons, quotes or backslashes", p, []rune(p[i:])[0])
+	}
+	return nil
 }
 
 // overlaps reports whether two paths are the same or either contains

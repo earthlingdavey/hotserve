@@ -53,6 +53,7 @@ type fakeSystemdConn struct {
 	stopDelay    time.Duration // StopUnit sleeps this long (concurrency tests)
 	// events is every Reload ("reload") and StopUnit ("stop") in order.
 	events      []string
+	reloadBegan int64
 	reloadErr   error         // Reload returns this
 	reloadDelay time.Duration // Reload sleeps this long first
 	// setProps records every SetUnitProperties call by unit, in order.
@@ -157,6 +158,7 @@ func (f *fakeSystemdConn) StopUnit(ctx context.Context, name string) (string, er
 }
 
 func (f *fakeSystemdConn) Reload(context.Context) error {
+	began := time.Now().UnixNano()
 	f.mu.Lock()
 	delay := f.reloadDelay
 	f.mu.Unlock()
@@ -166,7 +168,16 @@ func (f *fakeSystemdConn) Reload(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, "reload")
+	if f.reloadErr == nil {
+		f.reloadBegan = began
+	}
 	return f.reloadErr
+}
+
+func (f *fakeSystemdConn) ReloadBegan() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reloadBegan
 }
 
 func (f *fakeSystemdConn) managerEvents() []string {
@@ -175,7 +186,11 @@ func (f *fakeSystemdConn) managerEvents() []string {
 	return append([]string(nil), f.events...)
 }
 
-func (f *fakeSystemdConn) UnitStatus(_ context.Context, name string) (unitStatus, error) {
+func (f *fakeSystemdConn) UnitStatus(ctx context.Context, name string) (unitStatus, error) {
+	// godbus sends nothing on a context already ended.
+	if err := ctx.Err(); err != nil {
+		return unitStatus{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.statusErr != nil {
@@ -702,23 +717,6 @@ func TestSystemdRunnerStopPaysAReloadStillOwed(t *testing.T) {
 	}
 }
 
-// One reload settles every unit, so a debt older than a reload that began
-// late enough costs nothing more: N apps at a restart are not N reloads.
-func TestSystemdRunnerAReloadPaysEveryDebtOlderThanIt(t *testing.T) {
-	r, conn := newTestSystemdRunner(t)
-	r.poll = time.Millisecond
-	h := &systemdHandle{unit: "hotserve-demo.v1.1111111111111111.service"}
-	h.reloadOwedSince.Store(time.Now().Add(-time.Hour).UnixNano())
-	r.reloaded.Store(time.Now().UnixNano())
-	r.payReloadOwed(h)
-	if got := conn.managerEvents(); len(got) != 0 {
-		t.Fatalf("got %v", got)
-	}
-	if h.reloadOwedSince.Load() != 0 {
-		t.Fatal("the debt stands")
-	}
-}
-
 // A pre_start's start job lasts as long as it runs, so the reload goes
 // while it does.
 func TestSystemdRunnerRunOnceReloadsWhileItRuns(t *testing.T) {
@@ -753,6 +751,203 @@ func TestSystemdRunnerStopUnobservedReloadsBeforeTheJob(t *testing.T) {
 	}
 }
 
+// One manager, so one reload settles the debts of every runner on it:
+// each app has a runner of its own, and N apps at a restart are not N
+// reloads.
+func TestSystemdRunnerAReloadPaysEveryRunnersDebt(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	other := newSystemdRunner(conn, zap.NewNop())
+	t.Cleanup(other.close)
+	if err := r.reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := &systemdHandle{unit: "hotserve-demo.v1.1111111111111111.service"}
+	h.reloadOwedSince.Store(time.Now().Add(-time.Hour).UnixNano())
+	other.payReloadOwed(h)
+	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload"}) {
+		t.Fatalf("got %v", got)
+	}
+	if h.reloadOwedSince.Load() != 0 {
+		t.Fatal("the debt stands")
+	}
+}
+
+// A pre_start's reload is paid as a unit's is: tried again if it fails,
+// and again for a pid that appears after it, since one that lands before
+// the fork settles nothing.
+func TestSystemdRunnerRunOnceRetriesAndFollowsThePID(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	r.reloadRetry = 2 * time.Millisecond
+	conn.mu.Lock()
+	conn.blockStart = true
+	conn.reloadErr = errors.New("connection reset")
+	conn.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.RunOnce(ctx, testApp(t)) }()
+	defer func() {
+		cancel()
+		if err := <-done; err == nil {
+			t.Error("a cancelled pre_start must not report success")
+		}
+	}()
+	waitManagerEvents(t, conn, 3)
+	conn.mu.Lock()
+	conn.reloadErr = nil
+	name := conn.started[0].Name
+	conn.mu.Unlock()
+	waitManagerEvents(t, conn, len(conn.managerEvents())+1) // the one that succeeds
+	time.Sleep(10 * time.Millisecond)                       // and nothing is owed now
+	settled := len(conn.managerEvents())
+	conn.setStatus(name, unitStatus{LoadState: "loaded", ActiveState: "activating", MainPID: 5252})
+	waitManagerEvents(t, conn, settled+1)
+}
+
+// A reload that fails because hotserve is going away is nothing to warn
+// of: it names a unit about nothing, at every probe's end.
+func TestSystemdRunnerSaysNothingOfAReloadAtClose(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	core, logs := observer.New(zap.WarnLevel)
+	r.setLogger(zap.New(core))
+	conn.mu.Lock()
+	conn.reloadErr = context.Canceled
+	conn.mu.Unlock()
+	h := &systemdHandle{unit: "hotserve-demo.v1.1111111111111111.service"}
+	h.reloadOwedSince.Store(time.Now().Add(-time.Hour).UnixNano())
+	r.close()
+	r.payReloadOwed(h)
+	if logs.Len() != 0 {
+		t.Fatalf("got %v", logs.All())
+	}
+}
+
+// still() is documented as consulted immediately before each stop, so it
+// comes after the reload, which can take seconds: a config reload adopting
+// the app meanwhile keeps its unit.
+func TestSystemdRunnerSweepAsksStillAfterTheReload(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	conn.setStatus("hotserve-demo.v1.1111111111111111.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	still := func() bool { return len(conn.managerEvents()) == 0 } // adopted during the reload
+	if err := r.sweep(context.Background(), "demo", nil, still, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := conn.stops(); len(got) != 0 {
+		t.Fatalf("the app was adopted during the reload, and its unit was stopped: %v", got)
+	}
+}
+
+// One reload settles every stray, so a sweep pays once.
+func TestSystemdRunnerSweepReloadsOnceForItsStrays(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	running := unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true}
+	conn.setStatus("hotserve-demo.v1.1111111111111111.service", running)
+	conn.setStatus("hotserve-demo.v2.2222222222222222.service", running)
+	conn.setStatus("hotserve-demo.v3.3333333333333333.service", running)
+	if err := r.sweep(context.Background(), "demo", nil, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	reloads := 0
+	for _, e := range conn.managerEvents() {
+		if e == "reload" {
+			reloads++
+		}
+	}
+	if reloads != 1 || len(conn.stops()) != 3 {
+		t.Fatalf("%d reloads, stops %v", reloads, conn.stops())
+	}
+}
+
+// A pre_start a sweep spares has no handle to owe a reload and no RunOnce
+// left to pay one if hotserve restarted, so the sweep does: past its
+// deadline it is the manager that stops it.
+func TestSystemdRunnerSweepReloadsForASparedPreStart(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	conn.setStatus("hotserve-demo.v1.1111111111111111.prestart.service", unitStatus{LoadState: "loaded", ActiveState: "activating", Sandboxed: true})
+	if err := r.sweep(context.Background(), "demo", nil, nil, true); err == nil {
+		t.Fatal("a running pre_start is reported")
+	}
+	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// With the caller's context ended the job goes on one of its own, and the
+// reads that confirm it must too: a unit that is gone is not unconfirmed.
+func TestSystemdRunnerStopUnobservedConfirmsOnALiveContext(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	unit := "hotserve-demo.v1.1111111111111111.service"
+	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cause := errors.New("stray")
+	if err := r.stopUnobserved(ctx, unit, cause); !errors.Is(err, cause) || unitUnconfirmed(err) {
+		t.Fatalf("the unit is gone, got %v", err)
+	}
+}
+
+// A debt Stop pays is paid: nothing can come of another reload mid-stop.
+func TestSystemdRunnerStopSettlesTheDebtItPays(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	r.reloadRetry = time.Hour
+	conn.mu.Lock()
+	conn.reloadErr = errors.New("connection reset")
+	conn.mu.Unlock()
+	h, err := r.Start(testApp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitManagerEvents(t, conn, 1)
+	conn.mu.Lock()
+	conn.reloadErr = nil
+	conn.mu.Unlock()
+	if err := r.Stop(h, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.(*systemdHandle).reloadOwedSince.Load(); got != 0 {
+		t.Fatalf("still owes since %d", got)
+	}
+}
+
+// A property read that fails must not hold up a reload that succeeded: a
+// Stop is waiting on it, with deployMu held.
+func TestRefreshLimitsDoesNotWaitOnAFailedRead(t *testing.T) {
+	c := &userManagerClient{}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	started := time.Now()
+	c.refreshLimits(ctx, func(string) (string, error) { return "", errors.New("connection reset") })
+	if took := time.Since(started); took > time.Second {
+		t.Fatalf("waited %s", took)
+	}
+}
+
+// A root a unit's file cannot carry is refused at config load: the manager
+// writes a bind path as it stands and a reload reads it back split, or as
+// a bad setting, so a start job after a reload binds the wrong thing or
+// fails. Measured: space, tab, colon, both quotes and backslash; the rest
+// of what a path holds survives.
+func TestValidateRefusesARootAReloadWouldMangle(t *testing.T) {
+	app := &App{
+		Root:              "/srv/my apps",
+		ArtifactAllowlist: []string{"github.com/smallhoursorg/"},
+		DeployTrust:       githubTrust(),
+		Apps:              map[string]*AppConfig{"demo": defaultedApp(t)},
+	}
+	if err := app.Validate(); err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Errorf("a root with a space must be refused at config load, naming why: %v", err)
+	}
+	for _, root := range []string{"/srv/my apps", "/srv/my\tapps", "/srv/my:apps", "/srv/my'apps", `/srv/my"apps`, `/srv/my\apps`} {
+		if err := validateBindPath(root); err == nil {
+			t.Errorf("%q must be refused", root)
+		}
+	}
+	for _, root := range []string{"/var/lib/liveswap", "/srv/a.b_c-d+e,f=g~h@i", "/srv/a#b%c;d$e", "/srv/é"} {
+		if err := validateBindPath(root); err != nil {
+			t.Errorf("%q: %v", root, err)
+		}
+	}
+}
+
 // A reload slow enough to outlast the caller's context must not cost the
 // stop: before there was a reload the job went at once, and the manager
 // holds the deadline from there.
@@ -766,8 +961,8 @@ func TestSystemdRunnerStopJobStillGoesAfterASlowReload(t *testing.T) {
 	conn.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := r.stopUnobserved(ctx, unit, errors.New("stray")); !unitUnconfirmed(err) {
-		t.Fatalf("a context that ended before the unit was seen gone is unconfirmed, got %v", err)
+	if err := r.sweep(ctx, "demo", nil, nil, false); !unitUnconfirmed(err) {
+		t.Fatalf("a sweep whose unit was not seen gone is unconfirmed, got %v", err)
 	}
 	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload", "stop"}) {
 		t.Fatalf("the stop job must reach the manager, got %v", got)
@@ -785,6 +980,28 @@ func TestSystemdRunnerReattachOwesAReload(t *testing.T) {
 		t.Fatalf("Reattach: %v, %v, %v", h, ok, err)
 	}
 	waitManagerEvents(t, conn, 1)
+}
+
+// A link on the root reaches a path the root's own check never saw: the
+// launch refuses what a unit's file could not carry.
+func TestResolveBindSourcesRefusesWhatAReloadWouldMangle(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(tmp, "my apps")
+	if err := os.MkdirAll(filepath.Join(real, "demo", "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(tmp, "root")
+	if err := os.Symlink(real, root); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(root, "demo", "shared")
+	s := &sandboxSpec{root: root, appDir: filepath.Join(root, "demo"), appName: "demo", writable: []bindPath{{dest: dest, source: dest}}}
+	if err := s.resolveBindSources(); err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("got %v", err)
+	}
 }
 
 func TestSystemdRunnerStartJobFailureResetsUnit(t *testing.T) {

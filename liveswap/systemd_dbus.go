@@ -38,7 +38,8 @@ type userManagerClient struct {
 	// which no cached measurement can match.
 	generation atomic.Uint64
 	// nofile is the manager's DefaultLimitNOFILE (its hard ceiling for
-	// units), read once per connection; 0 = unknown, leave units alone.
+	// units), read with the connection and after each reload; 0 = unknown,
+	// leave units alone.
 	nofile atomic.Uint64
 
 	// The sandbox capability is a property of the manager, not of a
@@ -63,9 +64,12 @@ type userManagerClient struct {
 	// would stall the runner.
 	sandboxMu  sync.Mutex
 	sandboxGen uint64 // generation the host was measured capable for; 0 = never
-	// defaultTasksMax is the manager's DefaultTasksMax= as read with the
-	// connection (get), like nofile; infinity kept, 0 = unreadable.
+	// defaultTasksMax is the manager's DefaultTasksMax=, read when nofile
+	// is; infinity kept, 0 = unreadable.
 	defaultTasksMax atomic.Uint64
+	// reloadBegan is ReloadBegan's: there is one manager, whichever app's
+	// runner reloads it.
+	reloadBegan atomic.Int64
 }
 
 // userManager is the process-wide client every systemdRunner shares.
@@ -530,7 +534,7 @@ func sandboxProperties(s *sandboxSpec) []sddbus.Property {
 		// Then a /dev/shm of the unit's own over the host's, which
 		// PrivateDevices= binds into its private /dev: POSIX shared
 		// memory and named semaphores live there, every app has the
-		// one uid, and the IPC namespace does not reach it. size=50%
+		// one uid, and the IPC namespace does not reach it. Half of RAM
 		// is the kernel's own default for the host's /dev/shm, so each
 		// app keeps the room the shared one gave it (shmOptions); left unsaid,
 		// systemd makes every TemporaryFileSystem= 10% of RAM
@@ -664,27 +668,45 @@ func (c *userManagerClient) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	began := time.Now().UnixNano()
 	if err := conn.ReloadContext(ctx); err != nil {
 		c.dropIfDisconnected(conn, err)
 		return err
 	}
-	// A reload applies the manager's config, and a unit with no TasksMax=
-	// then reports the new default. A property get takes no context, so
-	// the wait is bounded here; what fails keeps the number held.
-	read := make(chan uint64, 1)
+	c.reloadBegan.Store(began)
+	c.refreshLimits(ctx, conn.GetManagerProperty)
+	return nil
+}
+
+func (c *userManagerClient) ReloadBegan() int64 { return c.reloadBegan.Load() }
+
+// refreshLimits reads again what a reload may have changed: it applies
+// the manager's config, so the ceiling a unit is stamped with moves, and
+// a unit with no TasksMax= reports the new default. A property get takes
+// no context, so the wait is bounded here; what fails keeps the number
+// held.
+func (c *userManagerClient) refreshLimits(ctx context.Context, get func(string) (string, error)) {
+	var nofile, tasksMax uint64
+	read := make(chan struct{})
 	go func() {
-		if v, err := conn.GetManagerProperty("DefaultTasksMax"); err == nil {
-			read <- parseManagerLimit(v)
+		defer close(read)
+		if v, err := get("DefaultLimitNOFILE"); err == nil {
+			nofile = parseManagerUint(v)
+		}
+		if v, err := get("DefaultTasksMax"); err == nil {
+			tasksMax = parseManagerLimit(v)
 		}
 	}()
 	select {
-	case v := <-read:
-		if v != 0 {
-			c.defaultTasksMax.Store(v)
+	case <-read:
+		if nofile != 0 {
+			c.nofile.Store(nofile)
+		}
+		if tasksMax != 0 {
+			c.defaultTasksMax.Store(tasksMax)
 		}
 	case <-ctx.Done():
 	}
-	return nil
 }
 
 // SetUnitProperties sets runtime (not persisted — transient units

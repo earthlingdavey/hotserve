@@ -1402,6 +1402,16 @@ func TestIntegrationSystemdReloadLeavesAUnitAsItStarted(t *testing.T) {
 	r := integrationRunner(t)
 	r.poll = time.Hour // no reload from the watcher before the first look
 	spec := scriptApp(t, "exec sleep 300\n")
+	// Every character validateBindPath lets through that a path might hold.
+	dir := filepath.Join(spec.dir, "a.b_c-d+e,f=g~h@i#j%k;l$m&n*o[p]é")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(spec.dir, "server"), filepath.Join(dir, "server")); err != nil {
+		t.Fatal(err)
+	}
+	spec.dir = dir
+	spec.sandbox = itestSandbox(dir)
 	spec.command = []string{"./server", "$HOME", "$$", "100%", "two words", `quo"te`}
 	spec.env = append(spec.env, "SPACED=a b", "PERCENT=100%", "DOLLAR=$HOME", `QUOTED=a"b`, `BACKSLASH=a\b`)
 	spec.caps = resourceCaps{memoryMax: 64 << 20, tasksMax: 40, cpuQuota: 50}
@@ -1459,7 +1469,7 @@ func TestIntegrationSystemdReloadLeavesAUnitAsItStarted(t *testing.T) {
 // same, and the filter still refuses every other type.
 func TestIntegrationSystemdNoNamespaceIsAvailable(t *testing.T) {
 	r := integrationRunner(t)
-	spec := scriptApp(t, `for f in -U -m -n -p -i -u -C -T "-U -m"; do unshare $f true 2>/dev/null && echo "$f made" >> verdict || echo "$f refused" >> verdict; done
+	spec := scriptApp(t, `for f in -U -m -n -p -i -u -C -T "-U -m"; do if unshare $f true 2>err; then echo "$f made" >> verdict; else echo "$f $(cat err)" >> verdict; fi; done
 : > ready
 exec sleep 300
 `)
@@ -1481,8 +1491,8 @@ exec sleep 300
 		t.Fatal(err)
 	}
 	t.Logf("from inside the unit:\n%s", b)
-	if strings.Contains(string(b), "made") || strings.Count(string(b), "refused") != 9 {
-		t.Fatalf("an app made a namespace, or did not try every one:\n%s", b)
+	if strings.Contains(string(b), "made") || strings.Count(string(b), "Operation not permitted") != 9 {
+		t.Fatalf("an app made a namespace, or was not refused every one by the filter:\n%s", b)
 	}
 }
 
@@ -1512,7 +1522,7 @@ func TestIntegrationSystemdStartsUnderReloadKeepTheirSandbox(t *testing.T) {
 	errs := make([]error, n)
 	var starts sync.WaitGroup
 	for i := range specs {
-		specs[i] = scriptApp(t, "trap 'exit 0' TERM\nunshare -U true 2>/dev/null && echo unshared > verdict || echo refused > verdict\nsleep 300 &\nwait\n")
+		specs[i] = scriptApp(t, "trap 'exit 0' TERM\nif unshare -U true 2>err; then echo unshared > verdict; elif grep -q 'not permitted' err; then echo refused > verdict; else cat err > verdict; fi\nsleep 300 &\nwait\n")
 		specs[i].version += strconv.Itoa(i)
 		specs[i].nonce = "d1b2c3d4a1b2c3" + strconv.FormatInt(int64(16+i), 16)
 		starts.Add(1)
@@ -1614,6 +1624,39 @@ func TestIntegrationSystemdReloadRefreshesDefaultTasksMax(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got != want {
+		t.Fatalf("after a reload that made it %d, hotserve holds %d", want, got)
+	}
+}
+
+// TestIntegrationSystemdReloadRefreshesDefaultLimitNOFILE: the ceiling
+// every unit is stamped with moves with a reload as the tasks default does.
+func TestIntegrationSystemdReloadRefreshesDefaultLimitNOFILE(t *testing.T) {
+	integrationRunner(t)
+	ctx := context.Background()
+	if _, err := userManager.DefaultTasksMax(ctx); err != nil { // dials
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".config/systemd/user.conf.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(dir, "zz-itest-nofile.conf")
+	const want = 65001
+	if err := os.WriteFile(conf, []byte("[Manager]\nDefaultLimitNOFILE=1024:65001\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(conf)
+		_ = userManager.Reload(ctx)
+	})
+	if err := userManager.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := userManager.nofile.Load(); got != want {
 		t.Fatalf("after a reload that made it %d, hotserve holds %d", want, got)
 	}
 }

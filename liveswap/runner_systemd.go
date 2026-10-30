@@ -73,9 +73,7 @@ type systemdRunner struct {
 	logger atomic.Pointer[zap.Logger]
 	poll   time.Duration // watcher interval between unit-state reads
 	settle time.Duration // settleMainPID's window (mainPIDSettle; tests shrink it)
-	// reloaded is when the last reload that succeeded began (UnixNano);
-	// reloadRetry is how long a unit waits after one that failed.
-	reloaded    atomic.Int64
+	// reloadRetry is how long a unit waits after a reload that failed.
 	reloadRetry time.Duration
 
 	// ctx bounds every D-Bus call and every watcher; cancel (close) is
@@ -98,6 +96,8 @@ type systemdConn interface {
 	// Reload is the manager's daemon-reload. Running units and their
 	// processes are untouched.
 	Reload(ctx context.Context) error
+	// ReloadBegan is when the last Reload that succeeded began (UnixNano).
+	ReloadBegan() int64
 	// UnitStatus reads the unit's load/active state and, for a loaded
 	// service, its main PID and exit facts. A unit the manager no
 	// longer knows is reported with LoadState "not-found", not an error.
@@ -815,18 +815,24 @@ func (r *systemdRunner) adopt(ctx context.Context, unit string, startedAt time.T
 // has been reparented to the manager. So a unit starts owing a reload
 // (reloadOwedSince), and its watcher pays it at its first poll, when the
 // intermediate is long gone (payReloadOwed). One reload settles every
-// unit, so one that began late enough settles this one's debt too. A stop
-// of a unit still owing pays first, and so does a stop of a unit no
-// handle knows, since nothing is known of it (stopUnobserved).
+// unit, whichever app's runner paid for it, so one that began late enough
+// settles this one's debt too. A stop of a unit still owing pays first; a
+// pre_start has no handle and pays from RunOnce; a sweep pays once, before
+// it decides anything; and so does any other stop of a unit no handle
+// knows.
 func (r *systemdRunner) reload(ctx context.Context) error {
-	began := time.Now().UnixNano()
 	ctx, cancel := context.WithTimeout(ctx, pollTimeout)
 	defer cancel()
-	if err := r.conn.Reload(ctx); err != nil {
-		return err
+	return r.conn.Reload(ctx)
+}
+
+// reloadOrWarn is reload for a stop or a sweep about to act on unit: it
+// goes on either way, because a stop job is still the stop. On the
+// runner's context, so the caller's deadline cannot cost the job.
+func (r *systemdRunner) reloadOrWarn(unit string) {
+	if err := r.reload(r.ctx); err != nil && r.ctx.Err() == nil {
+		r.warnNoReload(unit, err)
 	}
-	r.reloaded.Store(began)
-	return nil
 }
 
 func (r *systemdRunner) warnNoReload(unit string, err error) {
@@ -842,7 +848,7 @@ func (r *systemdRunner) payReloadOwed(h *systemdHandle) {
 		return
 	}
 	ripe := since + int64(r.poll)
-	if r.reloaded.Load() > ripe {
+	if r.conn.ReloadBegan() > ripe {
 		h.reloadOwedSince.CompareAndSwap(since, 0)
 		return
 	}
@@ -850,6 +856,9 @@ func (r *systemdRunner) payReloadOwed(h *systemdHandle) {
 		return
 	}
 	if err := r.reload(r.ctx); err != nil {
+		if r.ctx.Err() != nil {
+			return // going away: there is nothing to say of it
+		}
 		if h.reloadWarned.CompareAndSwap(false, true) {
 			r.warnNoReload(h.unit, err)
 		}
@@ -859,16 +868,31 @@ func (r *systemdRunner) payReloadOwed(h *systemdHandle) {
 	h.reloadOwedSince.CompareAndSwap(since, 0)
 }
 
-// stopJob asks the manager to stop unit. A ctx that has ended gets a
-// context of its own: godbus sends nothing on an ended one, and the job
-// is what holds the deadline from then on.
-func (r *systemdRunner) stopJob(ctx context.Context, unit string) (string, error) {
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), pollTimeout)
-		defer cancel()
+// payPreStartReload is the watcher's half for a pre_start, which has no
+// handle: its start job lasts as long as it runs, and past its deadline
+// the manager stops it with nothing of hotserve's in the path. Until done.
+func (r *systemdRunner) payPreStartReload(unit string, done <-chan struct{}) {
+	h := &systemdHandle{unit: unit}
+	h.reloadOwedSince.Store(time.Now().UnixNano())
+	t := time.NewTicker(r.poll)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-r.ctx.Done():
+			return
+		case <-t.C:
+		}
+		pollCtx, cancel := context.WithTimeout(r.ctx, pollTimeout)
+		st, err := r.conn.UnitStatus(pollCtx, unit)
+		cancel()
+		if err == nil && st.running() && st.MainPID != 0 && int64(st.MainPID) != h.pid.Load() {
+			h.pid.Store(int64(st.MainPID))
+			h.reloadOwedSince.Store(time.Now().UnixNano()) // this pid has had no verdict yet
+		}
+		r.payReloadOwed(h)
 	}
-	return r.conn.StopUnit(ctx, unit)
 }
 
 // settleMainPID waits, briefly, for the MainPID of a unit in its own
@@ -966,6 +990,7 @@ func (r *systemdRunner) reconcileStart(u unitSpec, cause error) (handle, error) 
 	// given the stop budget the unit was created with.
 	ctx, cancel := context.WithTimeout(r.ctx, u.StopTimeout+stopSlack)
 	defer cancel()
+	r.reloadOrWarn(unit)
 	return nil, r.stopUnobserved(ctx, unit, cause)
 }
 
@@ -977,15 +1002,9 @@ func (r *systemdRunner) RunOnce(ctx context.Context, spec startSpec) error {
 	if err != nil {
 		return err
 	}
-	// The start job lasts as long as the pre_start runs, and past its
-	// deadline the manager stops it with nothing of hotserve's in the
-	// path, so the reload goes while it runs.
-	settled := time.AfterFunc(r.settle, func() {
-		if err := r.reload(r.ctx); err != nil {
-			r.warnNoReload(u.Name, err)
-		}
-	})
-	defer settled.Stop()
+	done := make(chan struct{})
+	defer close(done)
+	go r.payPreStartReload(u.Name, done)
 	res, err := r.conn.StartTransientUnit(ctx, u)
 	if err != nil {
 		cause := fmt.Errorf("starting unit %s: %w", u.Name, err)
@@ -998,6 +1017,7 @@ func (r *systemdRunner) RunOnce(ctx context.Context, spec startSpec) error {
 		// on the runner's own context — the caller's is already done.
 		stopCtx, cancel := context.WithTimeout(r.ctx, u.StopTimeout+stopSlack)
 		defer cancel()
+		r.reloadOrWarn(u.Name)
 		return r.stopUnobserved(stopCtx, u.Name, cause)
 	}
 	if res == "done" {
@@ -1042,11 +1062,17 @@ func (s unitStatus) exitAfterEnd() string {
 
 // stopUnobserved stops a unit and returns cause if the unit is
 // confirmed gone, or an unconfirmed error if not.
+//
+// A ctx that has ended gets a context of its own for all of it: godbus
+// sends nothing on an ended one, and the job is what holds the deadline
+// from then on.
 func (r *systemdRunner) stopUnobserved(ctx context.Context, unit string, cause error) error {
-	if err := r.reload(r.ctx); err != nil {
-		r.warnNoReload(unit, err)
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), pollTimeout)
+		defer cancel()
 	}
-	res, err := r.stopJob(ctx, unit)
+	res, err := r.conn.StopUnit(ctx, unit)
 	if err != nil {
 		return &unitUnconfirmedError{unit: unit, err: cause}
 	}
@@ -1118,6 +1144,8 @@ func (r *systemdRunner) Stop(h handle, grace time.Duration) error {
 	if sh.reloadOwedSince.Load() != 0 {
 		if err := r.reload(ctx); err != nil {
 			r.warnNoReload(sh.unit, err)
+		} else {
+			sh.reloadOwedSince.Store(0)
 		}
 	}
 	res, err := r.conn.StopUnit(ctx, sh.unit)
@@ -1131,7 +1159,7 @@ func (r *systemdRunner) Stop(h handle, grace time.Duration) error {
 	case <-sh.done:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("unit %s: stop job done but the unit was not observed gone within %s", sh.unit, budget+stopSlack)
+		return fmt.Errorf("unit %s: not observed gone within %s", sh.unit, budget+stopSlack)
 	}
 }
 
@@ -1182,6 +1210,7 @@ func (r *systemdRunner) Reattach(st handleState) (handle, bool, error) {
 			stopCtx, stopCancel := context.WithTimeout(r.ctx, grace+stopSlack)
 			defer stopCancel()
 			bare := fmt.Errorf("recorded unit %s was running without the sandbox", st.Unit)
+			r.reloadOrWarn(st.Unit)
 			if err := r.stopUnobserved(stopCtx, st.Unit, bare); !errors.Is(err, bare) || errors.As(err, new(*unitUnconfirmedError)) {
 				return nil, false, fmt.Errorf("stopping it: %w", err)
 			}
@@ -1240,9 +1269,10 @@ func (r *systemdRunner) sweep(parent context.Context, app string, keep handle, s
 		return fmt.Errorf("listing units of %s: %w", app, err)
 	}
 	var (
-		mu   sync.Mutex
-		errs []error
-		wg   sync.WaitGroup
+		mu     sync.Mutex
+		errs   []error
+		wg     sync.WaitGroup
+		reload sync.Once
 	)
 	record := func(err error) {
 		mu.Lock()
@@ -1268,6 +1298,10 @@ func (r *systemdRunner) sweep(parent context.Context, app string, keep handle, s
 			}
 			continue
 		}
+		// One reload settles every stray, and any pre_start spared below.
+		// It comes before still, which is consulted immediately before
+		// each stop, and it can take seconds.
+		reload.Do(func() { r.reloadOrWarn(u.Name) })
 		wg.Add(1)
 		go func(u unitStatus) {
 			defer wg.Done()

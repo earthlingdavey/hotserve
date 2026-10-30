@@ -124,8 +124,8 @@ below as a contract the sandbox path must keep.
     exist inside the unit;
   - a private `/tmp` and `/var/tmp` (`PrivateTmp=`), a minimal `/dev`
     (`PrivateDevices=`) with a `/dev/shm` of the unit's own
-    (`TemporaryFileSystem=/dev/shm:mode=1777,size=50%` — the kernel's
-    default for the host's `/dev/shm`, where systemd's own for a
+    (`TemporaryFileSystem=/dev/shm:mode=1777,size=<half of RAM>` — the
+    kernel's default for the host's `/dev/shm`, in bytes (`shmOptions`), where systemd's own for a
     `TemporaryFileSystem=` is 10% of RAM; `memory_max` is the
     practical cap — over the host's, which `PrivateDevices=` binds in;
     #311) and the API VFS. `MountAPIVFS=` is NOT set: `/proc`, `/sys`
@@ -806,4 +806,7 @@ Dated one-liners; the full text of each is in git.
   `time` (`restrictNamespacesAllowed`), which needs a capability no unit
   has; the filter still refuses `setns` outright, `time` being outside
   `NAMESPACE_FLAGS_ALL`. A reload by hand had the same window before any
-  of this.
+  of this. A path has the same trouble: whitespace, `:`, quotes and `\`
+  in a `BindPaths=` come back split or as a bad setting, so a root holding
+  one is refused at config load, and a source that resolves to one at
+  launch (`validateBindPath`).

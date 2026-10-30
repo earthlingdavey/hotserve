@@ -972,7 +972,7 @@ beside its `ExecStartEx`: the manager spawns one process per unit
   one type left needs a capability no unit has, so an app cannot create
   further namespaces). `/dev/shm`, which
   `PrivateDevices=` binds from the host and no IPC namespace covers,
-  is a tmpfs of the unit's own (`TemporaryFileSystem=`, `size=50%` as
+  is a tmpfs of the unit's own (`TemporaryFileSystem=`, half of RAM as
   the kernel gives the host's; `memory_max` is the practical cap;
   #311).
 - View: `TemporaryFileSystem=/:ro` replaces the whole filesystem with
