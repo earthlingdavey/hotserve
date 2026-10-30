@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	sddbus "github.com/coreos/go-systemd/v22/dbus"
 	godbus "github.com/godbus/dbus/v5"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -50,10 +51,43 @@ type fakeSystemdConn struct {
 	// read: listed, then gone by the time the reader looks.
 	vanishOnRead map[string]bool
 	stopDelay    time.Duration // StopUnit sleeps this long (concurrency tests)
+	// setProps records every SetUnitProperties call by unit, in order.
+	setProps    map[string][][]sddbus.Property
+	setPropsErr error // SetUnitProperties returns this
+	// defaultTasksMax is what DefaultTasksMax reports; 0 reads as the
+	// manager's default being unreadable (defaultTasksMaxErr, or a
+	// generic error when that is nil).
+	defaultTasksMax    uint64
+	defaultTasksMaxErr error
+}
+
+func (f *fakeSystemdConn) DefaultTasksMax(_ context.Context) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.defaultTasksMaxErr != nil {
+		return 0, f.defaultTasksMaxErr
+	}
+	if f.defaultTasksMax == 0 {
+		return 0, errors.New("fake: no DefaultTasksMax set")
+	}
+	return f.defaultTasksMax, nil
 }
 
 func newFakeSystemdConn() *fakeSystemdConn {
 	return &fakeSystemdConn{status: map[string]unitStatus{}}
+}
+
+func (f *fakeSystemdConn) SetUnitProperties(_ context.Context, name string, props []sddbus.Property) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.setPropsErr != nil {
+		return f.setPropsErr
+	}
+	if f.setProps == nil {
+		f.setProps = map[string][][]sddbus.Property{}
+	}
+	f.setProps[name] = append(f.setProps[name], props)
+	return nil
 }
 
 func (f *fakeSystemdConn) StartTransientUnit(ctx context.Context, u unitSpec) (string, error) {
@@ -351,9 +385,24 @@ func TestUnitPropertiesApplyHardening(t *testing.T) {
 	if _, ok := got["ExecStartEx"]; !ok {
 		t.Error("ExecStartEx missing")
 	}
+	if _, ok := got["TimeoutStartUSec"]; ok {
+		t.Error("a unit with no start timeout must carry no TimeoutStartUSec: the manager's default stands")
+	}
 	for _, p := range unitProperties(unitSpec{ExecStart: []string{"/bin/true"}, StopTimeout: 500 * time.Nanosecond, Sandbox: probeSandboxSpec()}) {
 		if p.Name == "TimeoutStopUSec" && p.Value.Value() != uint64(1) {
 			t.Errorf("a sub-microsecond grace must clamp to 1µs, not 0 (= never SIGKILL); got %v", p.Value.Value())
+		}
+	}
+	starts := map[time.Duration]uint64{7 * time.Second: 7_000_000, 500 * time.Nanosecond: 1}
+	for timeout, want := range starts {
+		var have any
+		for _, p := range unitProperties(unitSpec{ExecStart: []string{"/bin/true"}, Oneshot: true, StartTimeout: timeout, Sandbox: probeSandboxSpec()}) {
+			if p.Name == "TimeoutStartUSec" {
+				have = p.Value.Value()
+			}
+		}
+		if have != want {
+			t.Errorf("start timeout %s: TimeoutStartUSec = %v, want %d (0 would mean no bound at all)", timeout, have, want)
 		}
 	}
 	_ = godbus.MakeVariant // keep the import honest: properties are godbus variants
@@ -1019,6 +1068,63 @@ func TestSystemdRunnerSweep(t *testing.T) {
 	}
 }
 
+func TestSystemdRunnerSweepLeavesARunningPreStartToFinish(t *testing.T) {
+	// A hotserve that stopped during a deploy leaves that deploy's
+	// pre_start running under the manager. Stopping it would half-apply
+	// a migration (#317): the sweep leaves it, names it, and reports
+	// itself unconfirmed so no caller starts or deletes anything beside
+	// it. A pre_start that has already ended is a leftover like any.
+	r, conn := newTestSystemdRunner(t)
+	spec := testApp(t)
+	keep, err := r.Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const migration = "hotserve-demo.v2.5555555555555555.prestart.service"
+	const ended = "hotserve-demo.v1.6666666666666666.prestart.service"
+	conn.setStatus(migration, unitStatus{LoadState: "loaded", ActiveState: "activating", SubState: "start", Sandboxed: true})
+	conn.setStatus(ended, failedStatus)
+
+	err = r.Sweep("demo", keep)
+	var mr *migrationRunningError
+	if !errors.As(err, &mr) || mr.unit != migration || mr.version != "v2" {
+		t.Fatalf("a running pre_start must make the sweep unconfirmed, naming it; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "pre_start of v2") || !strings.Contains(err.Error(), "from an earlier deploy") {
+		t.Fatalf("the message must name the migration's version and say it is an earlier deploy's, got %q", err)
+	}
+	if stops := conn.stops(); len(stops) != 0 {
+		t.Fatalf("a running pre_start must not be stopped, got %v", stops)
+	}
+	if rs := conn.resets(); len(rs) != 1 || rs[0] != ended {
+		t.Fatalf("an ended pre_start is a leftover and is reset, got %v", rs)
+	}
+
+	// Removing the app spares nothing: there is no deploy left to wait for.
+	if err := r.StopAll("demo"); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	stops := conn.stops()
+	if !slices.Contains(stops, migration) || !slices.Contains(stops, keep.state().Unit) {
+		t.Fatalf("StopAll must stop the migration and the instance, got %v", stops)
+	}
+}
+
+func TestSystemdRunnerRunOnceCarriesItsOwnDeadline(t *testing.T) {
+	// A pre_start outlives a hotserve that stops during it, and with it
+	// the context that bounded it: the unit's own TimeoutStartSec= is
+	// what still ends it on time.
+	r, conn := newTestSystemdRunner(t)
+	spec := testApp(t)
+	spec.startTimeout = 90 * time.Second
+	if err := r.RunOnce(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if got := conn.unit(0).StartTimeout; got != 90*time.Second {
+		t.Fatalf("the pre_start unit's start timeout = %s, want its deadline", got)
+	}
+}
+
 func TestSystemdRunnerWatcherBackfillsPIDAndCommand(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
 	// Start succeeds but the immediate MainPID read fails: the unit is
@@ -1120,7 +1226,7 @@ func TestSystemdRunnerSweepStopsStraysConcurrentlyAndHonoursTheGuard(t *testing.
 	conn.setStatus("hotserve-demo.v1.1111111111111111.service", running)
 	conn.setStatus("hotserve-demo.v2.2222222222222222.service", running)
 	// A guard that turns false after the listing: nothing may be stopped.
-	if err := r.sweep(context.Background(), "demo", nil, func() bool { return false }); err != nil {
+	if err := r.sweep(context.Background(), "demo", nil, func() bool { return false }, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(conn.stops()) != 0 {
@@ -1132,7 +1238,7 @@ func TestSystemdRunnerSweepStopsStraysConcurrentlyAndHonoursTheGuard(t *testing.
 	conn.stopDelay = 150 * time.Millisecond
 	conn.mu.Unlock()
 	started := time.Now()
-	if err := r.sweep(context.Background(), "demo", nil, nil); err != nil {
+	if err := r.sweep(context.Background(), "demo", nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if took := time.Since(started); took > 280*time.Millisecond {
@@ -1213,6 +1319,14 @@ func TestUnitStatusRunning(t *testing.T) {
 		{unitStatus{ExecMainCode: 1, ExecMainStatus: 3}, "exit status 3"},
 		{unitStatus{ExecMainCode: 1, ExecMainStatus: 0}, "exit status 0"},
 		{unitStatus{ExecMainCode: 2, ExecMainStatus: 9}, "killed by signal 9 (killed)"},
+		// The manager's Result names the OOM kill the main process's
+		// own end does not: the kernel takes the process that asked
+		// (a child, under `sh -c`), and the manager stops the unit, so
+		// the main process reads as a signal, an exit code or the
+		// stop's SIGTERM — and the suffix lands on all of them.
+		{unitStatus{ExecMainCode: 2, ExecMainStatus: 9, Result: "oom-kill"}, "killed by signal 9 (killed); the kernel's OOM killer took a process of the unit (its memory_max, or the box's memory), and the unit was stopped for it"},
+		{unitStatus{ExecMainCode: 1, ExecMainStatus: 137, Result: "oom-kill"}, "exit status 137; the kernel's OOM killer took a process of the unit (its memory_max, or the box's memory), and the unit was stopped for it"},
+		{unitStatus{ExecMainCode: 2, ExecMainStatus: 15, Result: "oom-kill"}, "killed by signal 15 (terminated); the kernel's OOM killer took a process of the unit (its memory_max, or the box's memory), and the unit was stopped for it"},
 		{unitStatus{ExecMainCode: 0, ExecMainStatus: 0}, "no process exit recorded"},
 		{unitStatus{ExecMainCode: 0, ExecMainStatus: 0, Result: "exec-condition"}, "no process exit recorded (result exec-condition)"},
 	} {

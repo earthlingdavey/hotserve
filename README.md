@@ -16,7 +16,7 @@ Built in:
 
 | Module | What it does |
 |---|---|
-| **[liveswap](liveswap/)** | Zero-downtime app deploys: webhook from CI, artifact download, migrations, health-gated start, atomic traffic cutover, graceful stop, versioned releases with rollback. Your apps run as systemd units under the hotserve user's own service manager — Node.js, Go, anything that can listen on a unix socket — surviving hotserve restarts and upgrades, with a continuous watchdog that restarts them on crash or sustained health failure (a restart budget and backoff bound the rate; it throttles rather than giving up). |
+| **[liveswap](liveswap/)** | Zero-downtime app deploys: webhook from CI, artifact download, migrations, health-gated start, atomic traffic cutover, graceful stop, versioned releases with rollback. Your apps run as systemd units under the hotserve user's own service manager — Node.js, Go, anything that can listen on a unix socket — surviving hotserve restarts and upgrades, with a continuous watchdog that restarts them on crash or sustained health failure (a restart budget and backoff bound the rate; it throttles rather than giving up on anything a retry can fix). |
 | **[penaltybox](penaltybox/)** | Rate limiting driven by your app's `X-Rate-Limit-Level` hint headers — weighted sliding-window budgets, tiers, and a penalty box for clients that cross them. |
 | **[box](examples/box/)** | Config from git: the box's Caddyfile lives in a repository of its own, and each signed push to `main` reaches the box, which checks the commit's signature, validates the file, installs it as root, and rolls back a reload that fails. The apps' secrets ride along, encrypted to the box's own key. CI holds no SSH key. |
 | **cache** | HTTP page caching via [Souin](https://github.com/darkweak/souin) with in-memory [Otter](https://github.com/darkweak/storages) storage. |
@@ -74,9 +74,14 @@ pushed from a box repository, the root applier's units
 (`hotserve-box-apply.path` and `.service`), its directories
 (`hotserve-box.tmpfiles`) and the box's key (`hotserve box key`, as
 root). The sandbox applies here too, so the host
-needs systemd 257 or newer and has to deliver both namespaces — many
-container and LXC hosts cannot,
-and hotserve refuses to start rather than run your apps unprotected.
+needs systemd 257 or newer and has to deliver both namespaces (many
+container and LXC hosts cannot) and seccomp. hotserve checks both from
+inside a test unit at start and refuses to start rather than run your
+apps without them. One case passes that check: a container host whose
+existing seccomp rules leave the kernel no room for the app units'
+system-call filter
+([liveswap/DESIGN-sandbox.md](liveswap/DESIGN-sandbox.md), "What this
+does NOT stop").
 
 **systemd is not optional.** liveswap runs your apps as transient
 units on your user's systemd manager and there is no fallback runner,
@@ -111,8 +116,9 @@ on each signed push.
 changing the config, secrets (whose reference is
 [Secrets](docs/secrets.md)) and the way back, and
 [Hardening the box](docs/hardening.md) covers SSH by key only, the SSH
-port shut, and, optionally, an administrator who is not root and
-Debian's updates installed on their own.
+port shut, and, optionally, an administrator who is not root,
+Debian's updates installed on their own, and seven kernel network
+modules no app needs refused.
 The first two use the three directories below, which the e2e suite
 builds and deploys on every change, so what they say works:
 
@@ -199,9 +205,6 @@ above for what an app can reach,
 settings, and [DESIGN-threat-model.md](DESIGN-threat-model.md) for why
 each one is there. What is still ahead:
 
-- **Resource caps.** `MemoryMax=`, `TasksMax=` and `CPUQuota=` hold
-  inside the unit already, and are left unset by design until an app
-  needs bounding (#71).
 - **Per-app UIDs.** Apps share the unprivileged `hotserve` user; giving
   each its own would need a small privileged helper, so it stays a
   later milestone.
@@ -210,8 +213,15 @@ each one is there. What is still ahead:
 Not committed to, but worth naming: a metrics/alerts module alongside
 liveswap and penaltybox. The first thing it would earn its keep on is
 alerting when the watchdog is stuck in a restart loop — the watchdog
-retries forever by design, so the loop itself is the signal that a
-release is broken.
+retries a crash or a health failure forever by design (only a release
+that cannot run at all is refused once), so the loop itself is the
+signal that a release is broken.
+
+## Questions, bugs and ideas
+
+They go in [Discussions](https://github.com/smallhoursorg/hotserve/discussions);
+issues and pull requests are the maintainer's. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Development
 

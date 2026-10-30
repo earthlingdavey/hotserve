@@ -95,9 +95,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.
 	// unknown app the token is verified against the global trust
 	// sources, so the status never leaks valid app names to
 	// unauthenticated callers (with no global trust configured, an
-	// unknown app is simply unauthenticable → 401). The time to the
-	// 401 still can, within the bound DESIGN-threat-model.md states
-	// ("Webhook endpoint", the residual; owed: #306).
+	// unknown app is simply unauthenticable → 401). No refusal waits on
+	// an issuer; the time to the 401 can still differ by the local work
+	// a name's sources do, the residual DESIGN-threat-model.md accepts
+	// ("Webhook endpoint").
 	verifiers := h.app.globalVerifiers
 	if ma != nil {
 		verifiers = ma.currentVerifiers()
@@ -216,12 +217,22 @@ func (h *Handler) deployPush(w http.ResponseWriter, r *http.Request, ma *managed
 	if !ma.deployMu.TryLock() {
 		return h.mapDeployResult(w, ma, errDeployInProgress)
 	}
-	defer ma.deployMu.Unlock()
+	defer ma.endDeploy()
 
 	// One snapshot for both staging and the pipeline, so a reload during
 	// the upload can't stage under one spec and extract under another.
 	c := ma.snapshot()
 	spec := c.spec
+	// The upload is the push's first write, so the pipeline's refusal
+	// of an app dir that is not the directory it names comes first
+	// here: a linked tmp/ would stage the upload wherever it points.
+	if err := spec.dirs.writeRefusal(); err != nil {
+		// Who asked, as the authorized line further on would say: the
+		// refusal comes before it.
+		c.logger.Error("deploy failed", zap.String("version", version), zap.String("via", by),
+			zap.String("source", "push"), zap.String("remote", r.RemoteAddr), zap.Error(err))
+		return h.mapDeployResult(w, ma, err)
+	}
 	archive, digest, err := stageUpload(r.Body, spec.dirs.tmp, spec.maxArtifactSize)
 	var stgErr *stagingError
 	switch {

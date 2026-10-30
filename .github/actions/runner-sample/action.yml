@@ -1,0 +1,29 @@
+# Two samples per job, for usage/factors.json: what the runner is
+# (cores, memory, chip), where it is (Azure region and VM size from the
+# instance metadata service, the egress IP), and how busy the job kept
+# it (the /proc/stat delta between the samples, which the machine being
+# the job's alone makes exact: every container's work shows there).
+# `make usage` costs runner minutes at an assumed utilisation and grid;
+# the figures these steps leave in every job log are what those factors
+# are recalibrated from, by hand, with the run URLs as the source.
+# Nothing reads them automatically: they live in the logs for as long as
+# GitHub keeps the run.
+#
+# One `uses:` right after checkout (a local action needs the tree, so
+# checkout's own seconds are not in the delta). The end sample is the
+# action's post step, which runs after every other step's post, among
+# them actions/cache's save (the tar of the Go caches, tens of seconds
+# in the lint and test jobs), and runs whatever the job's result: the
+# window is the job as the Actions API times it, less set-up and
+# checkout. A composite action has no post step, hence node. Both
+# probes are bounded (3 s and 5 s) and answer "no answer" instead of
+# failing; a post step that threw would fail the job, so neither phase
+# can. The two jobs without a checkout, ci-ok and the Dependabot
+# auto-merge, carry no sample; each runs a few seconds of shell.
+name: runner sample
+description: Logs the runner's specs, region and CPU time, for recalibrating usage/factors.json by hand.
+
+runs:
+  using: node24
+  main: main.js
+  post: post.js

@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/dustin/go-humanize"
 	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
 	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
 	"go.uber.org/zap"
@@ -235,10 +236,9 @@ type AppConfig struct {
 	DeployLogLines *int `json:"deploy_log_lines,omitempty"`
 
 	// Keep is how many release directories to retain on disk,
-	// including the current one. Default 5. The running version is
-	// always retained even if it is older than the newest `keep` (e.g.
-	// after rolling back to an old release), so on-disk releases can
-	// briefly be `keep+1`.
+	// including the current one: the most recently deployed, a
+	// rollback counting as a deploy of its version (state.go,
+	// "Release order"). Default 5.
 	Keep int `json:"keep,omitempty"`
 
 	// MaxArtifactSize caps the artifact download, in bytes (the
@@ -259,6 +259,24 @@ type AppConfig struct {
 	// declaration only: hotserve validates it and does nothing else
 	// with it. Its paths take no placeholders. Optional.
 	Backup *backupdecl.Config `json:"backup,omitempty"`
+	// MemoryMax bounds the RAM every unit of the app may use (the
+	// instance and the pre_start alike), in bytes; the Caddyfile
+	// accepts 512MB. At it the kernel kills the process that asked, the
+	// unit fails and the watchdog restarts the app; it gets no swap
+	// under it. A running instance gets a reload's new value at once.
+	// Default none.
+	MemoryMax uint64 `json:"memory_max,omitempty"`
+
+	// TasksMax bounds the threads and processes of every unit of the
+	// app; past it a fork or thread fails with EAGAIN, which a `sh -c`
+	// wrapped command dies on. Default none: the user manager's own,
+	// 15% of the kernel's threads-max.
+	TasksMax int `json:"tasks_max,omitempty"`
+
+	// CPUQuota bounds the CPU time of every unit of the app, in percent
+	// of one CPU (200 is two CPUs' worth); past it the app waits, it is
+	// never killed. Default none.
+	CPUQuota int `json:"cpu_quota,omitempty"`
 }
 
 // CaddyModule returns the Caddy module information.
@@ -304,10 +322,10 @@ func (a *App) Provision(ctx caddy.Context) error {
 	// Global trust sources back the unknown-app path: a request for an
 	// app that does not exist is still authenticated (against the
 	// global sources) before its 404, so the status never leaks app
-	// names to unauthenticated callers; the time to the 401 still can,
-	// within the bound DESIGN-threat-model.md states ("Webhook
-	// endpoint", the residual; owed: #306). The same wiring serves the
-	// box webhook (New).
+	// names to unauthenticated callers, and no refusal waits on an
+	// issuer; its time can still differ by the local work a name's
+	// sources do, the residual DESIGN-threat-model.md accepts
+	// ("Webhook endpoint"). The same wiring serves the box webhook (New).
 	if a.globalVerifiers, err = deploytrust.Resolve(repl, a.DeployTrust, clients.jwks); err != nil {
 		return err
 	}
@@ -355,13 +373,11 @@ func (a *App) Provision(ctx caddy.Context) error {
 		a.managed[name] = val.(*managedApp)
 		a.pooled = append(a.pooled, poolKey(name))
 	}
-	// Warm OIDC discovery in the background so the first verification of a
-	// known app does not pay the discovery round trip an unknown one
-	// would not. Warm leaves each key set empty, so the first token after
-	// a reload still waits on a key fetch (DESIGN-threat-model.md's
-	// timing residual; owed: #306). The objects warmed here are the ones Start
-	// installs (appVerifiers): resolving again at Start would hand the
-	// handler a cold set.
+	// Begin each OIDC issuer's discovery and key fetch again in the
+	// background, so this config picks up what the issuers now publish;
+	// the keys the process already holds stay in use until the fetch
+	// ends (deploytrust.Warm). The sets built here are the ones Start
+	// installs (appVerifiers).
 	a.appVerifiers = make(map[string][]deploytrust.Verifier, len(specs))
 	sets := [][]deploytrust.Verifier{a.globalVerifiers}
 	for name, spec := range specs {
@@ -528,6 +544,7 @@ func (a *App) buildSpec(name string, cfg *AppConfig) (*appSpec, error) {
 		deployLogLines:     *cfg.DeployLogLines,
 		maxArtifactSize:    cfg.MaxArtifactSize,
 		maxArtifactEntries: cfg.MaxArtifactEntries,
+		caps:               resourceCaps{memoryMax: cfg.MemoryMax, tasksMax: cfg.TasksMax, cpuQuota: cfg.CPUQuota},
 		allowInsecure:      a.AllowInsecureHTTP,
 		allowlist:          allowlist,
 		dirs:               newAppDirs(a.Root, name),
@@ -648,6 +665,23 @@ func (a *App) Validate() error {
 			if err := cfg.Backup.Validate(); err != nil {
 				return fmt.Errorf("app %s: backup %w", name, err)
 			}
+		}
+		// The Caddyfile refuses these at parse; a JSON config reaches
+		// here directly. 0 is unset for all three; the bounds are the
+		// parser's (minMemoryMax, maxCPUQuota).
+		if cfg.TasksMax < 0 || cfg.CPUQuota < 0 {
+			return fmt.Errorf("app %s: tasks_max and cpu_quota must not be negative, got %d and %d", name, cfg.TasksMax, cfg.CPUQuota)
+		}
+		if cfg.MemoryMax > 0 && cfg.MemoryMax < minMemoryMax {
+			return fmt.Errorf("app %s: memory_max must be at least %s, got %d bytes", name, humanize.Bytes(minMemoryMax), cfg.MemoryMax)
+		}
+		if cfg.MemoryMax == infinityUSec {
+			// systemd's "infinity" on the bus: a cap of nothing that the
+			// handle would report as a cap, and a reattach as none.
+			return fmt.Errorf("app %s: memory_max %d is systemd's infinity, not a cap; leave it out for no cap", name, cfg.MemoryMax)
+		}
+		if cfg.CPUQuota > maxCPUQuota {
+			return fmt.Errorf("app %s: cpu_quota must be at most %d%%, got %d%%", name, maxCPUQuota, cfg.CPUQuota)
 		}
 	}
 	// Cross-app, so it needs every app's config and comes after the
@@ -859,11 +893,6 @@ func (a *App) Cleanup() error {
 				}
 			}
 		}
-	}
-	if a.clients != nil && a.clients.jwks != nil {
-		// This config is being discarded. Only idle connections close,
-		// so anything still holding the client keeps a working one.
-		a.clients.jwks.CloseIdleConnections()
 	}
 	var firstErr error
 	for _, key := range a.pooled {

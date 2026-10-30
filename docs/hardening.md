@@ -3,9 +3,10 @@
 [Your first deploy](first-deploy.md) leaves a working box with the
 doors a fresh server has. This page closes them: SSH by key only, the
 SSH port shut to everyone but you, and, if you want them, an
-administrator who is not root and Debian's updates for its release —
-security fixes and point releases — installed on their own. It is
-recommended, and none of it is needed to deploy.
+administrator who is not root, Debian's updates for its release —
+security fixes and point releases — installed on their own, and seven
+network protocols the kernel would otherwise load for any program
+refused. It is recommended, and none of it is needed to deploy.
 
 Nothing here changes how the box deploys or takes its config: app
 deploys authenticate with the workflow's token, and config with a
@@ -156,3 +157,88 @@ unattended-upgrade --dry-run -v    # what the next run would install; "No packag
 
 Every run, this dry run included, writes what it did to
 `/var/log/unattended-upgrades/unattended-upgrades.log`.
+
+## 5. Kernel modules no app needs, if you want them
+
+Every app runs with its network families cut to the four it needs
+(the sandbox table in [liveswap/README.md](../liveswap/README.md#sandbox)),
+but the kernel loads a protocol's module on the first socket that
+names it, for any program, and under those four families three such
+protocols are modules on Debian 13: SCTP, L2TP over IP and SMC. A
+compromised app could open one and reach kernel code nothing on a web
+server uses. This step tells the kernel's module loader to refuse
+them, and with them DCCP, TIPC and RDS, which the CIS Debian benchmark
+refuses on every server; those three load only by root's hand on
+Debian, and a loaded TIPC takes configuration from any program. Like
+steps 3 and 4 it is optional, and nothing in it stops or restarts an
+app. It is the box's setting, not hotserve's: it holds for every
+program on the box, which is why hotserve's package does not write it.
+Skip it on a box that also runs an L2TP VPN server or an SCTP
+workload, which a hotserve box does not.
+
+As root on the box:
+
+```sh
+printf 'install %s /bin/false\n' sctp l2tp_ip l2tp_ip6 smc dccp tipc rds > /etc/modprobe.d/hotserve-protocols.conf
+```
+
+Check that the loader reads it, and that none of the seven is loaded
+already — a loaded module stays until reboot:
+
+```sh
+modprobe -n -v sctp    # prints: install /bin/false
+lsmod | grep -Ew 'sctp|l2tp_ip|l2tp_ip6|smc|dccp|tipc|rds'    # prints nothing
+```
+
+What it does: `install <module> /bin/false` replaces loading the module
+with a command that fails, so the kernel's autoload, a hand
+`modprobe`, and a module that depends on one of the seven all stop,
+with `Error running install command '/bin/false' for module <name>`
+on the hand run. The way back is
+`rm /etc/modprobe.d/hotserve-protocols.conf`; nothing else holds the
+setting.
+
+## 6. A ceiling for all the apps together, if you want one
+
+Each app can be bounded on its own (`memory_max`, `tasks_max` and
+`cpu_quota` in its block — [liveswap/README.md](../liveswap/README.md#resource-caps)),
+and that is what keeps one app's burst from stalling another. What
+that does not set is a ceiling for the apps *as a whole* against
+hotserve itself, which shares the box with them: hotserve runs in
+`system.slice` and every app under the `hotserve` user's slice, and
+the two halves already split the CPU evenly under load, but nothing
+bounds the apps' memory as a set. If you want that, set it on the
+user's slice. Like the steps before it this is the box's setting, so
+hotserve's package does not write it, and nothing in it stops or
+restarts an app.
+
+As root on the box, with the sizes that fit it (here a 4 GB box
+keeping 1 GB back):
+
+```sh
+systemctl set-property user-$(id -u hotserve).slice MemoryMax=3G CPUQuota=300%
+```
+
+It applies at once to everything under the slice and persists across
+reboots (systemd writes it under `/etc/systemd/system.control/`).
+Check it:
+
+```sh
+systemctl show user-$(id -u hotserve).slice -p MemoryMax,CPUQuotaPerSecUSec
+cat /sys/fs/cgroup/user.slice/user-$(id -u hotserve).slice/memory.max    # prints the bytes
+```
+
+Use `set-property`, not a drop-in file: on Debian 13's systemd 257 a
+drop-in under `/etc/systemd/system/user-<uid>.slice.d/` followed by
+`daemon-reload` shows the new value in `systemctl show` but does not
+re-apply it to the running slice (measured; systemd 255 and 259 do),
+so the ceiling would hold only from the next boot. The way back is
+`systemctl set-property user-$(id -u hotserve).slice MemoryMax=infinity CPUQuota=`,
+which lifts both at once; `systemctl revert user-$(id -u hotserve).slice`
+then removes the files `set-property` left under `system.control`. Not
+`revert` on its own: it removes the files but leaves the live ceiling
+in the kernel until the next boot (measured, systemd 257).
+
+What hitting the ceiling looks like: the kernel's OOM killer takes the
+largest process under the slice — one app's, which its watchdog
+restarts — and `journalctl -k` names it; the CPU quota only slows.

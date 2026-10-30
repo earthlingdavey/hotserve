@@ -13,7 +13,8 @@
 # the exact packaging interaction (ProtectSystem=full, User=hotserve,
 # lingering, the user@<uid> drop-in) no other test layer exercises.
 # Stage 3 then proves the app survives the upgrade restart, and stage
-# 3c that an upgrade restart the new binary refuses is reported. Stage
+# 3c that an upgrade restart the new binary refuses is reported, and
+# that an upgrade over the failed unit starts nothing and says so. Stage
 # 1b runs the box applier's units as shipped, with a stub for the
 # applier and then with the real one, and stages 3 to 5 follow its path
 # unit through upgrade, removal and an install after removal. Stage 5b
@@ -100,8 +101,11 @@ apt-get install -y "$deb" >/tmp/install.out 2>&1 \
 	|| { cat /tmp/install.out; die "apt-get install of the package failed"; }
 cat /tmp/install.out
 # Not enabled yet, so postinstall owes the operator the start command.
-grep -q 'systemctl enable --now hotserve' /tmp/install.out \
-	|| die "a fresh install did not print the 'systemctl enable --now hotserve' hint"
+# Root runs the package, so the commands it prints name no sudo, which a
+# box may not have (#323). apt runs the scripts on a pty, which ends
+# each line CR LF [measured].
+tr -d '\r' </tmp/install.out | grep -A1 -x 'hotserve installed. Start it with:' | grep -qx '  systemctl enable --now hotserve' \
+	|| die "a fresh install did not print the 'systemctl enable --now hotserve' hint, with no sudo"
 
 id hotserve >/dev/null || die "postinstall did not create the hotserve user"
 # Every packaged file's mode is pinned in nfpm.yaml rather than
@@ -125,6 +129,9 @@ echo "user/group and data dir ownership OK"
 # postinstall installs it from /usr/share and records its digest where
 # only root can write (stage 5 follows it through upgrades).
 STARTER=/usr/share/hotserve/Caddyfile
+# The starter's reload line names no sudo either (#323).
+grep -qx '#   systemctl reload hotserve' "$STARTER" \
+	|| die "the starter does not give its reload line, with no sudo"
 CONFIG=/etc/hotserve/Caddyfile
 RECORD=/var/lib/hotserve-package/starter.sha256
 sha() { sha256sum <"$1" | cut -d' ' -f1; }
@@ -282,6 +289,16 @@ expect_show $svc DevicePolicy closed
 expect_show $svc PrivateTmp yes
 expect_show $svc NoNewPrivileges yes
 expect_show $svc RestrictAddressFamilies AF_UNIX
+expect_show $svc SystemCallArchitectures native
+# An allow list (no leading ~) that still holds io_uring_enter, the
+# rest of @aio, and not io_uring_setup: as for app units below.
+filter=" $(show $svc SystemCallFilter) "
+case "$filter" in
+" ~"*) die "$svc SystemCallFilter is a deny list: $filter" ;;
+*" io_uring_setup "*) die "$svc SystemCallFilter still allows io_uring_setup" ;;
+*" io_uring_enter "*) ;;
+*) die "$svc SystemCallFilter holds no io_uring_enter, so @aio is missing and io_uring_setup's absence proves nothing: $filter" ;;
+esac
 expect_show $svc TimeoutStartUSec infinity
 expect_show $svc StartLimitIntervalUSec 0
 expect_show hotserve-box-apply.path StartLimitIntervalUSec 0
@@ -753,6 +770,12 @@ app_nprocs=$(probe_val nprocs)
 expect_probe pid 1
 [ -n "$app_nprocs" ] && [ "$app_nprocs" -le 8 ] || die "/proc shows $app_nprocs pids inside the unit"
 [ "$app_uidmap" != "4294967295" ] && [ -n "$app_uidmap" ] || die "no user namespace inside the unit (uid_map range $app_uidmap)"
+# Sibling IPC (#311), under the real package and the hotserve user: the
+# unit mounted its own mqueuefs (its own IPC namespace), can write its
+# own /dev/shm, and nothing written there reaches the host's.
+[ "$(probe_val mqueue_owner)" = self ] || die "the unit's /dev/mqueue is not its own (owner $(probe_val mqueue_owner)): no IPC namespace of its own"
+[ "$(probe_val shm_write)" = ok ] || die "the unit cannot write its own /dev/shm"
+[ ! -e /dev/shm/sandbox-view-canary ] || die "/dev/shm/sandbox-view-canary written inside the unit is on the host: /dev/shm is shared"
 expect_probe hotserve_lib closed
 # These are the acceptance paths from DESIGN-sandbox.md. They are
 # closed by the user namespace alone — the PID namespace on top is what
@@ -830,7 +853,32 @@ varliblist=$(probe_val varlib_listing)
 	|| die "/var/lib inside the unit is '$varliblist', want only 'liveswap': anything else is a path nothing named"
 echo "in-unit base view: /bin/sh, /usr/bin/env, /usr/bin/hotserve, /etc/ssl/certs, /etc/resolv.conf; /etc=$etclist /var/lib=$varliblist"
 [ "$(user_systemctl show -p PrivateUsers --value "$unit")" = "yes" ] || die "unit lacks PrivateUsers=yes"
-[ "$(user_systemctl show -p TemporaryFileSystem --value "$unit")" = "/:ro" ] || die "unit lacks TemporaryFileSystem=/:ro — the view is not deny-by-default"
+[ "$(user_systemctl show -p SystemCallArchitectures --value "$unit")" = "native" ] \
+	|| die "unit lacks SystemCallArchitectures=native: on amd64 the x86-32 ABI's socketcall() opens any address family"
+# The syscall filter the manager built: an allow list (no leading ~)
+# that still holds io_uring_enter, the rest of @aio, and not
+# io_uring_setup, whose ring would open sockets RestrictAddressFamilies=
+# never sees.
+filter=" $(user_systemctl show -p SystemCallFilter --value "$unit") " \
+	|| die "could not read the unit's SystemCallFilter"
+case "$filter" in
+" ~"*) die "SystemCallFilter is a deny list: $filter" ;;
+*" io_uring_setup "*) die "SystemCallFilter still allows io_uring_setup" ;;
+*" io_uring_enter "*) ;;
+*) die "SystemCallFilter holds no io_uring_enter, so @aio is missing and io_uring_setup's absence proves nothing: $filter" ;;
+esac
+# And the filter is in force inside the unit, not only set on it: on a
+# kernel without seccomp the manager skips it and the read-back above
+# still passes. Inside, the filter mode and io_uring_setup refused;
+# from outside, as the same user, the call must reach the kernel, or
+# the refusal inside proves nothing about the unit's own filter.
+expect_probe seccomp 2
+expect_probe io_uring_setup refused
+outside=$(as_hotserve "perl -e 'syscall(425, 1, 0); print \$!{EPERM} ? q(refused) : q(reached)'") || outside="unmeasured (su or perl failed)"
+[ "$outside" = "reached" ] \
+	|| die "io_uring_setup outside the unit is '$outside', want reached: io_uring_setup=refused inside proves nothing (kernel.io_uring_disabled=$(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo absent); anything but 0 can refuse it outside too)"
+tmpfs=$(user_systemctl show -p TemporaryFileSystem --value "$unit")
+[ "$tmpfs" = "/:ro /dev/shm:mode=1777,size=50%" ] || die "unit's TemporaryFileSystem= is '$tmpfs', want '/:ro /dev/shm:mode=1777,size=50%': the empty root the view starts from, and a /dev/shm of the unit's own (#311)"
 # The retired half of the old model, read back off the live unit. Both
 # properties still exist on every service, so test the value rather
 # than its presence: what must be gone is the setting, not the row.
@@ -838,7 +886,7 @@ echo "in-unit base view: /bin/sh, /usr/bin/env, /usr/bin/hotserve, /etc/ssl/cert
 case "$(user_systemctl show -p InaccessiblePaths --value "$unit")" in
 */*) die "unit still masks a list with InaccessiblePaths=" ;;
 esac
-echo "sandbox (systemd $sd_version): uid_map range $app_uidmap, pid $(probe_val pid), $app_nprocs pids visible, /var/lib/hotserve $(probe_val hotserve_lib)"
+echo "sandbox (systemd $sd_version): uid_map range $app_uidmap, pid $(probe_val pid), $app_nprocs pids visible, native syscall ABI only, seccomp in force (io_uring_setup refused inside, reached outside), /var/lib/hotserve $(probe_val hotserve_lib)"
 
 # `hotserve validate` provisions and cleans up without starting: run
 # as root (no user manager for uid 0) and as the hotserve user (the
@@ -1325,7 +1373,7 @@ kill -0 "$pid_after" 2>/dev/null || die "deployed app (pid $pid_after) did not s
 curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "app not served after prerm deconfigure"
 echo "prerm deconfigure left the service, the user manager and the app (pid $pid_after) running"
 
-stage "stage 3c: an upgrade restart the new version refuses is reported"
+stage "stage 3c: an upgrade restart the new version refuses is reported; an upgrade over the failed unit"
 # An upgrade whose config the new binary refuses stops the old one and
 # fails to start the new: the site is down. postinstall must say so on
 # stderr — and still exit 0, or the package is left half-configured.
@@ -1346,6 +1394,8 @@ grep -q 'journalctl -u hotserve -e' /tmp/refused.err \
 	|| die "a failed upgrade restart printed no journalctl hint on stderr (postinstall swallowed it)"
 grep -q 'systemctl status hotserve' /tmp/refused.err \
 	|| die "a failed upgrade restart printed no systemctl status hint on stderr"
+grep -qx '  then fix it and run: systemctl restart hotserve' /tmp/refused.err \
+	|| die "a failed upgrade restart did not give the restart line, with no sudo"
 grep -q 'enable --now' /tmp/refused.out /tmp/refused.err \
 	&& die "a failed upgrade restart printed the 'enable --now' start hint, as if all were well"
 grep -q 'restarted\.' /tmp/refused.out \
@@ -1355,11 +1405,25 @@ kill -0 "$pid_after" 2>/dev/null || die "deployed app (pid $pid_after) did not s
 # by the upgrade whatever became of hotserve.
 [ "$(systemctl is-enabled hotserve-box-apply.path)" = enabled ] && systemctl is-active --quiet hotserve-box-apply.path \
 	|| die "the box applier's path unit is not enabled and active after an upgrade: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
-# Recover the way the hint says, so stage 4 starts from a serving box.
-# reset-failed first: stages 3 to 3c started the unit often enough in
-# a few seconds to reach systemd's start limit (5 in 10 s), which an
-# operator fixing the config by hand would have long outlived.
+# Fix the config, as the operator would. An upgrade now, over the unit
+# the refused restart left failed, starts nothing (try-restart), though
+# the config would load, and says how to start it.
 cp /tmp/Caddyfile.good /etc/hotserve/Caddyfile
+st=$(systemctl show -P ActiveState hotserve)
+[ "$st" = failed ] || die "hotserve is '$st' after the refused restart, not failed: the upgrade below would prove nothing"
+dpkg -i "$deb" </dev/null >/tmp/stopped.out 2>&1 || { cat /tmp/stopped.out; die "dpkg -i over a failed hotserve exited non-zero"; }
+cat /tmp/stopped.out
+st=$(systemctl show -P ActiveState hotserve)
+[ "$st" = failed ] || die "an upgrade over a failed hotserve left it '$st', not failed: it started it, or cleared the failure"
+grep -A1 -x 'hotserve is enabled but not running. Start it with:' /tmp/stopped.out | grep -qx '  systemctl start hotserve' \
+	|| die "an upgrade over a failed hotserve did not give the start line, with no sudo"
+grep -q -e '^hotserve restarted\.$' -e 'restarting onto the new version FAILED' /tmp/stopped.out \
+	&& die "an upgrade over a failed hotserve also said it restarted, or that the restart failed"
+# Recover the way the failed restart's hint says, so stage 4 starts
+# from a serving box. reset-failed first: stages 3 to 3c started the
+# unit often enough in a few seconds to reach systemd's start limit
+# (5 in 10 s), which an operator fixing the config by hand would have
+# long outlived.
 systemctl reset-failed hotserve
 timeout 300 systemctl restart hotserve || die "hotserve did not start again on the restored config"
 i=0
@@ -1372,7 +1436,7 @@ status=$(curl -s --max-time 5 -H "Authorization: Bearer $TOKEN" "$HOOK")
 [ "$(printf '%s' "$status" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')" = "$pid_after" ] \
 	|| die "app pid changed across the refused restart and recovery: reattach failed: $status"
 curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "app not served after recovery"
-echo "refused restart: dpkg exit 0, hint on stderr, no start hint; recovered and reattached to pid $pid_after"
+echo "refused restart: dpkg exit 0, hint on stderr, no start hint; a second upgrade started nothing and gave the start hint; recovered and reattached to pid $pid_after"
 
 stage "stage 4: removal"
 # What remove has to take with it, staged: the persistent timers'
@@ -1805,7 +1869,7 @@ id hotserve >/dev/null || die "purge removed the hotserve account"
 [ -f /etc/hotserve/age/identity ] && [ "$(cat /etc/hotserve/age.pub)" = "$box_key" ] \
 	|| die "purge removed the box's key for secrets, the one way to read the secrets its repository holds"
 grep -q 'kept /etc/hotserve: it still holds' /tmp/purge.out || die "the purge did not say it kept /etc/hotserve"
-grep -q 'age/identity is the box.s key for secrets' /tmp/purge.out || die "the purge did not name the key it kept"
+tr -d '\r' </tmp/purge.out | grep -q 'age/identity is the box.s key for secrets.*once nothing needs them: rm -r /etc/hotserve$' || die "the purge did not name the key it kept, and the command that finishes the job, with no sudo"
 # The path unit's enable state and mask: gone, so a later install
 # starts from nothing (postinstall's was-enabled is true with no state).
 st=$(systemctl is-enabled hotserve-box-apply.path 2>&1) && die "hotserve-box-apply.path is still '$st' after purge" || true

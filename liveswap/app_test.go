@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -90,18 +90,27 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 // Handles built as bare literals (no done channel) exercise the
 // Wait-returns-nil polling fallback.
 type fakeHandle struct {
-	id     string
-	alive  bool
-	exit   string // what Exit reports once dead
-	done   chan struct{}
-	socket string // removed when the "unit" stops, as ExecStopPost= does
+	id    string
+	alive bool
+	exit  string // what Exit reports once dead
+	done  chan struct{}
 	// argv is what this handle was started with, reported back the way
 	// the real runner reports the manager's ExecStart.
 	argv []string
-	mu   sync.Mutex
+	// caps is what the "unit" is bounded to: the start spec's, then
+	// whatever SetCaps last set, as the real handle reports them;
+	// capsUnknown after a SetCaps the fake failed, as the real
+	// handle's worst case (the unit unreadable after the failure).
+	caps        resourceCaps
+	capsUnknown bool
+	mu          sync.Mutex
 }
 
-func (h *fakeHandle) state() handleState { return handleState{PID: 4242, Command: h.argv} }
+func (h *fakeHandle) state() handleState {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return handleState{PID: 4242, Command: h.argv, Caps: h.caps, CapsUnknown: h.capsUnknown}
+}
 
 func (h *fakeHandle) isAlive() bool {
 	h.mu.Lock()
@@ -124,9 +133,6 @@ func (h *fakeHandle) kill() {
 	h.alive = false
 	if h.exit == "" {
 		h.exit = "killed by signal 15 (terminated)" // what a Stop looks like from the runner
-	}
-	if h.socket != "" {
-		_ = os.Remove(h.socket)
 	}
 	if h.done != nil {
 		select {
@@ -158,6 +164,12 @@ type fakeRunner struct {
 	sweepErr        error   // Sweep returns this
 	sweepErrs       []error // consumed one per Sweep call before sweepErr applies
 	sweeps          []handle
+	setCaps         []resourceCaps // every SetCaps, in order
+	setCapsErr      error          // SetCaps returns this (and sets nothing)
+	// setCapsHook, when set, runs inside SetCaps after the call is
+	// recorded and before the handle takes the caps, outside the
+	// runner's lock: a test's chance to overlap another sync with it.
+	setCapsHook func(resourceCaps)
 }
 
 func (r *fakeRunner) Start(spec startSpec) (handle, error) {
@@ -166,7 +178,7 @@ func (r *fakeRunner) Start(spec startSpec) (handle, error) {
 	if r.startErr != nil {
 		return nil, r.startErr
 	}
-	h := &fakeHandle{id: fmt.Sprintf("h%d", len(r.handles)), alive: true, done: make(chan struct{}), socket: spec.socket, argv: spec.command}
+	h := &fakeHandle{id: fmt.Sprintf("h%d", len(r.handles)), alive: true, done: make(chan struct{}), argv: spec.command, caps: spec.caps}
 	if r.startDies != "" {
 		h.exit = r.startDies
 		h.kill()
@@ -191,9 +203,10 @@ func (r *fakeRunner) Exit(h handle) (string, int) {
 	if fh.isAlive() {
 		return "", fh.state().PID
 	}
+	pid := fh.state().PID // state takes the handle's lock too: read it first
 	fh.mu.Lock()
 	defer fh.mu.Unlock()
-	return fh.exit, fh.state().PID
+	return fh.exit, pid
 }
 
 func (r *fakeRunner) RunOnce(_ context.Context, spec startSpec) error {
@@ -226,6 +239,32 @@ func (r *fakeRunner) Wait(h handle) <-chan struct{} {
 		return nil
 	}
 	return fh.done
+}
+
+func (r *fakeRunner) SetCaps(h handle, caps resourceCaps) error {
+	r.mu.Lock()
+	if err := r.setCapsErr; err != nil {
+		r.mu.Unlock()
+		if fh, ok := h.(*fakeHandle); ok {
+			fh.mu.Lock()
+			fh.capsUnknown = true
+			fh.mu.Unlock()
+		}
+		return err
+	}
+	r.setCaps = append(r.setCaps, caps)
+	hook := r.setCapsHook
+	r.mu.Unlock()
+	if hook != nil {
+		hook(caps)
+	}
+	if fh, ok := h.(*fakeHandle); ok {
+		fh.mu.Lock()
+		fh.caps = caps
+		fh.capsUnknown = false
+		fh.mu.Unlock()
+	}
+	return nil
 }
 
 func (r *fakeRunner) Reattach(st handleState) (handle, bool, error) {
@@ -267,6 +306,16 @@ func (r *fakeRunner) Sweep(_ string, keep handle) error {
 	return r.sweepErr
 }
 
+// StopAll is recorded as a sweep keeping nothing. It spares nothing,
+// as the real one: a scripted running migration is no error to it.
+func (r *fakeRunner) StopAll(app string) error {
+	err := r.Sweep(app, nil)
+	if mr := (*migrationRunningError)(nil); errors.As(err, &mr) {
+		return nil
+	}
+	return err
+}
+
 func (r *fakeRunner) lastSweep() handle {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -295,6 +344,23 @@ func (r *fakeRunner) startCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.started)
+}
+
+func (r *fakeRunner) setPreflightErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.preflightErr = err
+}
+
+// lastPreflightAndStart is the spec the last pre-flight checked and the
+// one the last Start (or RunOnce) launched.
+func (r *fakeRunner) lastPreflightAndStart() (preflight, started startSpec, n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.preflights) == 0 || len(r.started) == 0 {
+		return startSpec{}, startSpec{}, len(r.preflights)
+	}
+	return r.preflights[len(r.preflights)-1], r.started[len(r.started)-1], len(r.preflights)
 }
 
 func (r *fakeRunner) handleAt(i int) *fakeHandle {
@@ -379,6 +445,35 @@ type fakeFetcher struct {
 	err     error
 	stats   archiveStats
 	lastReq deployRequest
+	// gate, when set, holds every fetch until the test sends its
+	// outcome (nil: carry on), after telling inFetch: a deploy in
+	// flight, holding deployMu, for as long as a test needs one.
+	gate    chan error
+	inFetch chan struct{}
+}
+
+// holdFetch makes the rig's deploys wait in fetch for the test. held
+// waits until one is waiting there; release lets it go with err as the
+// fetch's outcome (nil: the deploy proceeds).
+func (rig *testRig) holdFetch(t *testing.T) (held func(), release func(error)) {
+	rig.fetch.gate, rig.fetch.inFetch = make(chan error), make(chan struct{})
+	held = func() {
+		t.Helper()
+		select {
+		case <-rig.fetch.inFetch:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no deploy reached fetch")
+		}
+	}
+	release = func(err error) {
+		t.Helper()
+		select {
+		case rig.fetch.gate <- err:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no deploy is held in fetch")
+		}
+	}
+	return held, release
 }
 
 func (f *fakeFetcher) fetch(_ context.Context, spec *appSpec, req deployRequest, progress func(string)) (string, archiveStats, error) {
@@ -386,6 +481,12 @@ func (f *fakeFetcher) fetch(_ context.Context, spec *appSpec, req deployRequest,
 	if !req.rollback { // as the real fetcher: a rollback fetches and extracts nothing
 		progress("downloading")
 		progress("extracting")
+	}
+	if f.gate != nil {
+		f.inFetch <- struct{}{}
+		if err := <-f.gate; err != nil {
+			return "", archiveStats{}, err
+		}
 	}
 	if f.err != nil {
 		return "", archiveStats{}, f.err
@@ -520,7 +621,7 @@ func socketNames(t *testing.T, dir string) []string {
 
 // listenSocket binds a real unix socket at path, as a running app
 // does; closing the listener leaves the file, as an app's exit does
-// (the unit's ExecStopPost removes it — the fake handle mimics that).
+// (hotserve removes it with the instance's run dir: socketRef.retire).
 func listenSocket(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, err
@@ -799,20 +900,26 @@ func TestDeployConcurrentGets409Error(t *testing.T) {
 	}
 }
 
+// deployAt deploys version through the rig and dates its deploy record
+// minute minutes after base: the record's write time is the release's
+// place in the order, and file times are too coarse to tell apart
+// deploys a fake pipeline runs within a millisecond.
+func deployAt(t *testing.T, rig *testRig, version string, base time.Time, minute int) {
+	t.Helper()
+	must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/" + version, version: version}))
+	when := base.Add(time.Duration(minute) * time.Minute)
+	must(t, os.Chtimes(deployRecordPath(rig.spec.dirs.deploys, version), when, when))
+}
+
 func TestDeployGCKeepsNewestReleases(t *testing.T) {
 	rig := newTestRig(t)
-	ctx := context.Background()
-	// keep=2 in testSpec; deploy three versions, backdating each
-	// BEFORE the next deploy so the GC that runs inside Deploy sees
-	// deterministic mtime ordering (v1 oldest, v3 newest).
+	// keep=2 in testSpec; deploy three versions, each recorded a
+	// minute after the last, so the GC inside the third deploy has v3
+	// (its own) and v2 to keep.
+	base := time.Now().Add(-time.Hour)
 	for i, v := range []string{"v1", "v2", "v3"} {
-		must(t, rig.ma.Deploy(ctx, deployRequest{url: "https://x/a", version: v}))
-		mt := time.Now().Add(time.Duration(i-10) * time.Minute)
-		_ = os.Chtimes(rig.spec.dirs.release(v), mt, mt)
+		deployAt(t, rig, v, base, i)
 	}
-	// The final GC ran before v3 was backdated; run it once more the
-	// way the next deploy would see the world.
-	gcReleases(rig.spec.dirs.releases, rig.spec.keep, "v3", zap.NewNop())
 	entries, err := os.ReadDir(rig.spec.dirs.releases)
 	if err != nil {
 		t.Fatal(err)
@@ -826,6 +933,224 @@ func TestDeployGCKeepsNewestReleases(t *testing.T) {
 	}
 	if _, err := os.Stat(rig.spec.dirs.release("v3")); err != nil {
 		t.Fatal("current release must survive GC")
+	}
+	if _, err := os.Stat(rig.spec.dirs.release("v2")); err != nil {
+		t.Fatal("the release deployed before it must survive GC: it is the way back")
+	}
+}
+
+// mtimeSettingFetcher is the fake fetcher, after which the new
+// release's dir gets the mtime its pre_start or instance could give it
+// before release GC runs: the release being started is bound
+// read-write into its sandbox. The zero time leaves it alone.
+type mtimeSettingFetcher struct {
+	*fakeFetcher
+	mtime time.Time
+}
+
+func (f mtimeSettingFetcher) fetch(ctx context.Context, spec *appSpec, req deployRequest, progress func(string)) (string, archiveStats, error) {
+	dir, stats, err := f.fakeFetcher.fetch(ctx, spec, req, progress)
+	if err == nil && !f.mtime.IsZero() {
+		err = os.Chtimes(dir, f.mtime, f.mtime)
+	}
+	return dir, stats, err
+}
+
+// Adversarial: the app can set any mtime on the release it runs from —
+// the running instance on its own dir, an earlier version's instance on
+// what is now a sibling's, the next version's pre_start or instance on
+// its own before GC — and none of it moves available_versions or what
+// the next deploy's GC prunes. With keep 3 and v1..v3 deployed in that
+// order, deploying v4 prunes v1 and only v1, and lists v4 v3 v2. With
+// a release from before records (v0, no record) on disk too and keep 4,
+// v0 is the one pruned whatever mtime it is given — 2099 included: a
+// release with no record outranks no recorded one.
+func TestReleaseOrderIgnoresMtimesTheAppSets(t *testing.T) {
+	future := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	epoch := time.Unix(0, 0)
+	marks := map[string]time.Time{"untouched": {}, "future": future, "epoch": epoch}
+	names := []string{"untouched", "future", "epoch"}
+	for _, legacy := range []bool{false, true} {
+		siblings := []string{"v1", "v2"}
+		before, pruned, after := []string{"v3", "v2", "v1"}, "v1", []string{"v4", "v3", "v2"}
+		var beforeByMtime []string
+		if legacy {
+			siblings = append(siblings, "v0")
+			before, pruned, after = []string{"v3", "v2", "v1", "v0"}, "v0", []string{"v4", "v3", "v2", "v1"}
+			beforeByMtime = []string{"v0"}
+		}
+		for _, own := range names {
+			for _, sibling := range siblings {
+				for _, sib := range names {
+					for _, next := range names {
+						t.Run(fmt.Sprintf("legacy=%t/v3=%s/%s=%s/v4=%s", legacy, own, sibling, sib, next), func(t *testing.T) {
+							rig := newTestRig(t)
+							rig.spec.keep = len(before)
+							base := time.Now().Add(-time.Hour)
+							if legacy {
+								must(t, os.MkdirAll(rig.spec.dirs.release("v0"), 0o750))
+								old := base.Add(-time.Hour)
+								must(t, os.Chtimes(rig.spec.dirs.release("v0"), old, old))
+							}
+							for i, v := range []string{"v1", "v2", "v3"} {
+								deployAt(t, rig, v, base, i)
+							}
+							for v, mark := range map[string]time.Time{"v3": marks[own], sibling: marks[sib]} {
+								if !mark.IsZero() {
+									must(t, os.Chtimes(rig.spec.dirs.release(v), mark, mark))
+								}
+							}
+							if got := rig.ma.status(); !slices.Equal(got.AvailableVersions, before) || !slices.Equal(got.OrderedByMtime, beforeByMtime) {
+								t.Fatalf("before v4: available_versions = %v, ordered_by_mtime = %v", got.AvailableVersions, got.OrderedByMtime)
+							}
+							rig.ma.fetch = mtimeSettingFetcher{fakeFetcher: rig.fetch, mtime: marks[next]}
+							must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/v4", version: "v4"}))
+							onDisk, err := releaseNames(rig.spec.dirs.releases)
+							must(t, err)
+							want := slices.DeleteFunc(slices.Clone(before), func(v string) bool { return v == pruned })
+							want = append(want, "v4")
+							slices.Sort(onDisk)
+							slices.Sort(want)
+							if !slices.Equal(onDisk, want) {
+								t.Fatalf("GC left %v, want %v (%s pruned)", onDisk, want, pruned)
+							}
+							if got := rig.ma.status(); !slices.Equal(got.AvailableVersions, after) || got.OrderedByMtime != nil {
+								t.Fatalf("after v4: available_versions = %v, ordered_by_mtime = %v", got.AvailableVersions, got.OrderedByMtime)
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+// A release with no deploy record sorts after every recorded one, by
+// its dir's mtime among its kind, and the status names it so: that one
+// key is the app's to move.
+func TestStatusNamesReleasesPlacedByMtime(t *testing.T) {
+	rig := newTestRig(t)
+	deployAt(t, rig, "v2", time.Now().Add(-time.Hour), 0)
+	must(t, os.MkdirAll(rig.spec.dirs.release("v1"), 0o750)) // deployed before records existed
+	old := time.Now().Add(-2 * time.Hour)
+	must(t, os.Chtimes(rig.spec.dirs.release("v1"), old, old))
+	got := rig.ma.status()
+	if !slices.Equal(got.AvailableVersions, []string{"v2", "v1"}) || !slices.Equal(got.OrderedByMtime, []string{"v1"}) {
+		t.Fatalf("available_versions = %v, ordered_by_mtime = %v", got.AvailableVersions, got.OrderedByMtime)
+	}
+	body, err := json.Marshal(got)
+	must(t, err)
+	if !strings.Contains(string(body), `"ordered_by_mtime":["v1"]`) {
+		t.Fatalf("status JSON lacks ordered_by_mtime: %s", body)
+	}
+}
+
+// A rollback that fails writes its version's record, newest of all,
+// and that deploy never served: it takes no place from a version that
+// did. keep 3, v1..v3 deployed, a failed rollback to v1, then v4: v4
+// and v3 are held by rank, and the third place is v2's, not v1's.
+func TestAFailedRollbackTakesNoPlaceFromAVersionThatServed(t *testing.T) {
+	rig := newTestRig(t)
+	rig.spec.keep = 3
+	base := time.Now().Add(-time.Hour)
+	for i, v := range []string{"v1", "v2", "v3"} {
+		deployAt(t, rig, v, base, i)
+	}
+	rig.prober.err = errors.New("never became healthy")
+	if err := rig.ma.Deploy(context.Background(), deployRequest{version: "v1", rollback: true}); err == nil {
+		t.Fatal("the rollback to v1 should have failed its health gate")
+	}
+	rig.prober.err = nil
+	if got := rig.ma.status().AvailableVersions; !slices.Equal(got, []string{"v3", "v2", "v1"}) {
+		t.Fatalf("available_versions = %v, want v3 v2 v1: the failed v1 last", got)
+	}
+	must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/v4", version: "v4"}))
+	onDisk, err := releaseNames(rig.spec.dirs.releases)
+	must(t, err)
+	slices.Sort(onDisk)
+	if !slices.Equal(onDisk, []string{"v2", "v3", "v4"}) {
+		t.Fatalf("GC left %v, want v2 v3 v4 (v1, whose latest deploy failed, pruned)", onDisk)
+	}
+}
+
+// A rollback whose record write is lost (a crash after the cutover, a
+// full disk) leaves its version's record at the deploy before: the
+// next deploy's GC still keeps that version, since it is the one the
+// new deploy replaced. keep 2: v1, v2, a rollback to v1 whose record
+// keeps v1's first time, then v3 — v1 and v3 stay.
+func TestALostRollbackRecordDoesNotPruneTheVersionThatServed(t *testing.T) {
+	rig := newTestRig(t)
+	base := time.Now().Add(-time.Hour)
+	deployAt(t, rig, "v1", base, 0)
+	deployAt(t, rig, "v2", base, 1)
+	must(t, rig.ma.Deploy(context.Background(), deployRequest{version: "v1", rollback: true}))
+	must(t, os.Chtimes(deployRecordPath(rig.spec.dirs.deploys, "v1"), base, base)) // the rollback's record never landed
+	// The status agrees with the GC to come: v1 is running, so it is
+	// listed first, whatever its record says.
+	if got := rig.ma.status().AvailableVersions; !slices.Equal(got, []string{"v1", "v2"}) {
+		t.Fatalf("available_versions = %v, want v1 v2: the running version first", got)
+	}
+	must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/v3", version: "v3"}))
+	onDisk, err := releaseNames(rig.spec.dirs.releases)
+	must(t, err)
+	slices.Sort(onDisk)
+	if !slices.Equal(onDisk, []string{"v1", "v3"}) {
+		t.Fatalf("GC left %v, want v1 v3: v1 is the way back from v3", onDisk)
+	}
+}
+
+// The status lists the running version first under the lock that
+// gives current_version: polled while rollbacks cut over between v1
+// and v2, every snapshot that lists the running version lists it
+// first, whichever side of a cutover its disk read fell on.
+func TestStatusListsTheRunningVersionFirstThroughCutovers(t *testing.T) {
+	rig := newTestRig(t)
+	base := time.Now().Add(-time.Hour)
+	deployAt(t, rig, "v1", base, 0)
+	deployAt(t, rig, "v2", base, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			v := []string{"v1", "v2"}[i%2]
+			if err := rig.ma.Deploy(context.Background(), deployRequest{version: v, rollback: true}); err != nil {
+				t.Errorf("rollback to %s: %v", v, err)
+				return
+			}
+		}
+	}()
+	// Errorf and break, never Fatalf: the rollbacks go on until done,
+	// and a goroutine that logs after its test ended panics the binary.
+	for polling := true; polling; {
+		select {
+		case <-done:
+			polling = false
+		default:
+		}
+		s := rig.ma.status()
+		if s.CurrentVersion != "" && slices.Contains(s.AvailableVersions, s.CurrentVersion) && s.AvailableVersions[0] != s.CurrentVersion {
+			t.Errorf("current_version %s, available_versions %v: the running version not first", s.CurrentVersion, s.AvailableVersions)
+			break
+		}
+	}
+	<-done
+}
+
+// With only proxy/ a link, the prune removes nothing — not even the
+// app's own leftovers under run/, which it checks first and would
+// otherwise remove before the refusal.
+func TestPruneRemovesNothingWhenEitherDirIsALink(t *testing.T) {
+	root := shortTempDir(t)
+	shop := newAppDirs(root, "shop")
+	must(t, shop.ensure())
+	demo := newAppDirs(root, "demo")
+	must(t, os.MkdirAll(demo.run, 0o750))
+	must(t, os.Symlink(shop.proxy, demo.proxy))
+	const stale = "5e5e5e5e5e5e5e5e"
+	touchSocket(t, demo.socket(stale))
+	pruneSockets(demo, nil, zap.NewNop())
+	if _, err := os.Lstat(demo.runDir(stale)); err != nil {
+		t.Fatalf("run/ was pruned before proxy/'s refusal: %v", err)
 	}
 }
 
@@ -1466,9 +1791,10 @@ func TestSweepPrunesSocketsNotHeldByTheManager(t *testing.T) {
 }
 
 // Promise: an instance's socket is gone once the instance is stopped —
-// the unit removes it (ExecStopPost=, which the fake handle mimics),
-// and the deploy's sweep would prune it anyway: the old one after a
-// cutover, the new one after a failed health gate.
+// retiring the instance removes its run dir (the unit itself removes
+// nothing: it has one Exec*=, #311), and the deploy's sweep would
+// prune it anyway: the old one after a cutover, the new one after a
+// failed health gate.
 func TestStopRemovesTheInstanceSocket(t *testing.T) {
 	rig := newTestRig(t)
 	rig.prober.bind = true
@@ -1597,6 +1923,109 @@ func TestDestructOnRemovalSweepsWholeApp(t *testing.T) {
 	// Deploy swept twice (pre-start, pre-GC); removal sweeps everything (keep=nil).
 	if n := rig.runner.sweepCount(); n != 3 || rig.runner.lastSweep() != nil {
 		t.Fatalf("removal must sweep the whole app with keep=nil, sweeps=%d last=%v", n, rig.runner.sweeps)
+	}
+}
+
+// liveHandles is every instance the runner started that still runs.
+func (r *fakeRunner) liveHandles() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var live []string
+	for _, h := range r.handles {
+		if h.isAlive() {
+			live = append(live, h.id)
+		}
+	}
+	return live
+}
+
+// Removing an app waits for a deploy of it in flight. A reload stops
+// the old config's servers without waiting for their requests, so
+// without the wait a deploy past Destruct's sweep would start a unit
+// nothing supervises, routes or stops. Whatever the deploy comes to,
+// nothing of the app is left running once Destruct returns, and the
+// removed app takes no deploy after.
+func TestDestructWaitsForADeployInFlight(t *testing.T) {
+	cases := []struct {
+		name     string
+		fetchErr error // the held deploy's fetch outcome
+		gateErr  error // its health gate's
+	}{
+		{"the deploy promotes", nil, nil},
+		{"the deploy fails its health gate", nil, errors.New("health check returned 500")},
+		{"the deploy fails before any launch", errors.New("download failed"), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newTestRig(t)
+			core, logs := observer.New(zap.WarnLevel)
+			rig.ma.logger = zap.New(core)
+			markLive(t)
+			deployV1(t, rig) // serving: Destruct has an instance of its own to stop
+			rig.prober.err = tc.gateErr
+			held, release := rig.holdFetch(t)
+			deployed := make(chan error, 1)
+			go func() {
+				deployed <- rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/2", version: "v2"})
+			}()
+			held()
+			destructed := make(chan error, 1)
+			go func() { destructed <- rig.ma.Destruct() }()
+			// The wait is named: a reload that hangs on it says why.
+			waitUntil(t, "Destruct to name its wait", func() bool {
+				return logs.FilterMessageSnippet("waiting for the deploy to end").Len() == 1
+			})
+			select {
+			case err := <-destructed:
+				t.Fatalf("Destruct returned (%v) while a deploy of the app was in flight", err)
+			default:
+			}
+			release(tc.fetchErr)
+			for _, ch := range []chan error{deployed, destructed} {
+				select {
+				case <-ch: //nolint:errcheck // whatever each comes to: the test judges what is left running
+				case <-time.After(5 * time.Second):
+					t.Fatal("the deploy and then Destruct must both end")
+				}
+			}
+			if live := rig.runner.liveHandles(); len(live) != 0 {
+				t.Fatalf("instances left running after the app's removal: %v", live)
+			}
+			if rig.runner.lastSweep() != nil {
+				t.Fatal("removal must end with a sweep of the whole app")
+			}
+			if err := rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/3", version: "v3"}); !errors.Is(err, errDeployInProgress) {
+				t.Fatalf("a removed app must take no deploy, got %v", err)
+			}
+		})
+	}
+}
+
+// On process exit Destruct does not wait for a deploy: the units stay
+// for the next start to reattach, and shutdown is not held up.
+func TestDestructOnExitDoesNotWaitForADeploy(t *testing.T) {
+	rig := newTestRig(t)
+	markLive(t)
+	deployV1(t, rig)
+	held, release := rig.holdFetch(t)
+	deployed := make(chan error, 1)
+	go func() {
+		deployed <- rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/2", version: "v2"})
+	}()
+	held()
+	swapSeam(t, &caddyExitingSeam, func() bool { return true })
+	destructed := make(chan error, 1)
+	go func() { destructed <- rig.ma.Destruct() }()
+	select {
+	case err := <-destructed:
+		must(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Destruct on exit must not wait for a deploy")
+	}
+	release(nil)
+	must(t, <-deployed)
+	if rig.runner.stopCount() != 1 || len(rig.runner.liveHandles()) != 1 {
+		t.Fatalf("the deploy runs on to its end, and its instance is kept: stops %d, live %v", rig.runner.stopCount(), rig.runner.liveHandles())
 	}
 }
 
@@ -1769,6 +2198,28 @@ func TestRecoverGivesUpOnPermanentErrors(t *testing.T) {
 	}
 }
 
+// A recovery that gave up says why in status until the cause is gone:
+// with state.json removed there is nothing to recover and nothing
+// failing, so the next recovery clears the reason.
+func TestRecoveryWithNothingRecordedClearsAGivenUpReason(t *testing.T) {
+	rig := newTestRig(t)
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{PID: 1}}
+	rig.store.ok = true // the release dir missing: recovery gives up
+	rig.startWatchdogT(t)
+	rig.ma.recover(context.Background(), zap.NewNop())
+	waitUntil(t, "status to name why recovery gave up", func() bool {
+		wd := rig.ma.status().Watchdog
+		return wd != nil && strings.Contains(wd.LastFailure, "release dir is missing")
+	})
+	rig.store.mu.Lock()
+	rig.store.state, rig.store.ok = appState{}, false
+	rig.store.mu.Unlock()
+	must(t, rig.ma.ensureRunning())
+	if wd := rig.ma.status().Watchdog; wd.LastFailure != "" {
+		t.Fatalf("nothing recorded is nothing failing: %+v", wd)
+	}
+}
+
 func TestEnsureRunningReattachSweepFailureIsTransient(t *testing.T) {
 	rig := newTestRig(t)
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
@@ -1820,21 +2271,6 @@ func TestCleanupJoinsRecoveryBeforeReleasing(t *testing.T) {
 	}
 }
 
-// closeRecorder is a RoundTripper that only counts CloseIdleConnections.
-type closeRecorder struct{ closes atomic.Int32 }
-
-func (*closeRecorder) RoundTrip(*http.Request) (*http.Response, error) { return nil, errTest }
-func (c *closeRecorder) CloseIdleConnections()                         { c.closes.Add(1) }
-
-func TestCleanupClosesTheRetiredJWKSClient(t *testing.T) {
-	rt := &closeRecorder{}
-	a := &App{logger: zap.NewNop(), clients: &fetchClients{jwks: &http.Client{Transport: rt}}}
-	must(t, a.Cleanup())
-	if n := rt.closes.Load(); n != 1 {
-		t.Fatalf("Cleanup closed the JWKS client's idle connections %d times, want 1", n)
-	}
-}
-
 // markLive stands in for a started liveswap config being live for the
 // rest of the test (what App.Start/Cleanup maintain).
 func markLive(t *testing.T) {
@@ -1852,9 +2288,8 @@ func TestDestructOnUnconfiguredAppIsANoop(t *testing.T) {
 }
 
 func TestConfigureInstallsTheVerifiersItIsGiven(t *testing.T) {
-	// The OIDC discovery cache lives on the verifier object, so the
-	// set Provision warms is only useful if configure installs those
-	// same objects rather than resolving a cold set of its own.
+	// configure installs the set Provision built and warmed, rather
+	// than resolving one of its own.
 	rig := newTestRig(t)
 	spec := testSpec(t)
 	spec.trust = []deploytrust.Source{oidcSource(t, "https://issuer.example")}
@@ -2264,4 +2699,72 @@ func TestFailedDeployKeepsReleaseWhenStartUnconfirmed(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "left on disk") {
 		t.Fatalf("an unreconciled pre_start must keep the release: %v", err)
 	}
+}
+
+// treeOf lists every path under dir, relative to it, so a test can
+// tell whether anything was written there.
+func treeOf(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	must(t, filepath.Walk(dir, func(p string, _ os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		out = append(out, rel)
+		return err
+	}))
+	return out
+}
+
+// A deploy or rollback into an app dir that is not the directory it
+// names is refused before it reads or writes anything through it
+// (#300): through `<root>/demo -> shop`, or any of the dirs it makes
+// linked to shop's, nothing lands in shop's dirs, nothing is fetched
+// or launched, and the refusal names demo's own path, never shop's.
+func TestDeployRefusesAnAppDirThatIsALink(t *testing.T) {
+	for _, link := range []string{"", "releases", "shared", "tmp", "run", "proxy"} {
+		for _, req := range []deployRequest{
+			{url: "https://x/a.tgz", version: "v9"},
+			{version: "v1", rollback: true}, // a version shop has
+		} {
+			t.Run(link+"/"+req.source(), func(t *testing.T) {
+				rig := newTestRig(t)
+				demo := rig.spec.dirs
+				shop := newAppDirs(demo.root, "shop")
+				staleInstance(t, shop, linkTestNonce)
+				must(t, os.MkdirAll(shop.release("v1"), 0o750))
+				before := treeOf(t, shop.app)
+				want := demo.app
+				if link == "" {
+					must(t, os.Symlink("shop", demo.app))
+				} else {
+					must(t, demo.ensure())
+					want = filepath.Join(demo.app, link)
+					must(t, os.Remove(want))
+					must(t, os.Symlink(filepath.Join("..", "shop", link), want))
+				}
+				err := rig.ma.Deploy(context.Background(), req)
+				if err == nil || !strings.Contains(err.Error(), "refusing to deploy: "+want+" ") || strings.Contains(err.Error(), "shop") {
+					t.Fatalf("want a refusal naming %s and not shop, got %v", want, err)
+				}
+				if rig.fetch.lastReq.version != "" || rig.runner.startCount() != 0 {
+					t.Fatal("the deploy went on through the link")
+				}
+				if after := treeOf(t, shop.app); !slices.Equal(before, after) {
+					t.Fatalf("shop's dirs changed through demo's link:\n before %v\n after  %v", before, after)
+				}
+			})
+		}
+	}
+}
+
+// The one difference the refusal allows is an alias on the liveswap
+// root itself (/srv/liveswap -> /mnt/liveswap): a deploy goes on.
+func TestDeployThroughAnAliasedRoot(t *testing.T) {
+	rig := newTestRig(t)
+	alias := filepath.Join(shortTempDir(t), "alias")
+	must(t, os.Symlink(rig.spec.dirs.root, alias))
+	rig.spec.dirs = newAppDirs(alias, "demo")
+	must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/a.tgz", version: "v1"}))
 }

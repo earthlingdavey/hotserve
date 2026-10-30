@@ -5,8 +5,9 @@ is in git. This page has what comes next, running it: changing the
 config, secrets, the way back from an upgrade, day to day, and what to
 do at 3am. [Hardening the box](hardening.md) — SSH by key only, the
 SSH port shut to everyone but you, and, if you want them, an
-administrator who is not root and Debian's updates installed on their
-own — has a page of its own.
+administrator who is not root, Debian's updates installed on their
+own, and seven kernel network modules no app needs refused — has a
+page of its own.
 
 Names are the ones from the first page.
 
@@ -151,8 +152,9 @@ see during the restart, and how to pick a quiet moment for it.
 - **Deploy** by pushing to `main`; **roll back** from Actions → deploy →
   **Run workflow**, with "Use workflow from" left on `main` and the
   version to go back to: a commit's first 12 characters, as the
-  releases page lists them, and one of the newest five, which is what
-  the box still holds ([examples/node](../examples/node/README.md#rolling-back)).
+  releases page lists them, and one of the five the box deployed most
+  recently (a rollback counts), which is what it still holds
+  ([examples/node](../examples/node/README.md#rolling-back)).
 - **Change the box** — an app's flags, a second app, a new site, a new
   signer, a secret — by a signed push to the box's repository (steps 1
   and 2). The run's output is what changed.

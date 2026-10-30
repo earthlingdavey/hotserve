@@ -1,0 +1,25 @@
+# Proves, on the runner, that the job trusts what the workflows mean it
+# to: the step before checkout (the ca-certificates floor) and the
+# workflow-level NODE_OPTIONS/SSL_CERT_FILE, which put the JavaScript
+# actions (cache, artifacts, dependency-review) on the system store
+# instead of the root list their Node bundles. Node, not a run step:
+# a JavaScript action runs on the runner's own Node with the job's
+# env, exactly as actions/cache does, and a run step's `node` is the
+# image's, a different binary.
+#
+# Three checks, each failing the job:
+#   1. the system bundle holds no root in main.js's DISTRUSTED, and
+#      holds enough roots that the check is not passing on an empty file;
+#   2. this Node, as the job configured it, verifies github.com;
+#   3. the same Node, with the store pointed at a throwaway CA alone,
+#      verifies a local server signed by that CA and REFUSES github.com:
+#      it reads the OpenSSL store and nothing else, so a root dropped
+#      from the system store is dropped for every JavaScript action too.
+# A connection that fails for any reason but the certificate (no
+# network, a timeout) fails the check rather than passing it.
+name: ca trust
+description: Fails the job unless the runner's Node and system store trust no distrusted root.
+
+runs:
+  using: node24
+  main: main.js

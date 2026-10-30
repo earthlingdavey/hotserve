@@ -125,7 +125,11 @@ minute in all; past either, a failure is not written until the
 minute passes, and the answer stays the same 401 — except that the
 box failing to consult the token's issuer is named once a minute
 whatever the budget, and a re-run once the issuer is back goes
-through.
+through. Before reporting a 401 the step sends the request once more,
+3 seconds later: the box refuses the first token under GitHub's new
+signing key while it fetches that key, and the retry goes through —
+unless the box had fetched the keys in the minute before, when the
+journal's refusal says from when a re-run goes through.
 
 What a first deploy that worked looks like, from the laptop:
 
@@ -168,8 +172,9 @@ a tag or another branch is refused with a 401. The box relaunches
 that release from its disk — the same start, health gate and cutover
 as a deploy, and no build — so it is live in about twenty seconds, or
 the run is red with the reason and nothing changed. A version the box
-no longer holds is a 422: it keeps the newest five releases, plus the
-running one. Roll forward the same way you deploy: push a commit.
+no longer holds is a 422: it keeps the five releases it deployed most
+recently, the running one among them (a rollback counts as a deploy).
+Roll forward the same way you deploy: push a commit.
 
 ## Deploying without CI
 

@@ -185,14 +185,30 @@ else
 	*) emit cgroup "denied: $(printf '%s' "$cgerr" | tr '\n' ' ')" ;;
 	esac
 fi
-# Reported, not asserted: whether the memory controller reaches the
-# unit's cgroup at all. That is the question resource caps (#71) stand
-# on, not this sandbox's. With no cgroup in the view there is nothing
-# to look in, and `absent` would read as "not delegated": skipped.
+# Whether the memory controller reaches the unit's cgroup at all: what
+# the caps below stand on (the e2e lane asserts it, the smoke lane's
+# container does not delegate it and reports it). With no cgroup in
+# the view there is nothing to look in, and `absent` would read as
+# "not delegated": skipped.
 if [ -n "$cg_seen" ]; then
 	exists cgroup_memory_max present absent "$cg/memory.max"
 else
 	emit cgroup_memory_max skipped
+fi
+# The caps, as the kernel holds them in this unit's own cgroup: what the
+# app's memory_max / tasks_max / cpu_quota set, or `max` where none
+# is. Read from in here because that is the claim — the cap the app
+# sees is the cap it is under, and (cgroup above) one it cannot change.
+# `absent` is a controller that does not reach the cgroup; skipped as
+# above with no cgroup in the view.
+if [ -n "$cg_seen" ]; then
+	emit cgroup_memory_max_value "$(cat "$cg/memory.max" 2>/dev/null || echo absent)"
+	emit cgroup_pids_max "$(cat "$cg/pids.max" 2>/dev/null || echo absent)"
+	emit cgroup_cpu_max "$(cat "$cg/cpu.max" 2>/dev/null || echo absent)"
+else
+	emit cgroup_memory_max_value skipped
+	emit cgroup_pids_max skipped
+	emit cgroup_cpu_max skipped
 fi
 writable tmp /tmp/.probe-w
 emit home "$HOME"
@@ -203,6 +219,46 @@ emit nofile_hard "$(ulimit -Hn)"
 # LimitCORE=0 (liveswap/systemd_dbus.go).
 emit core_soft "$(ulimit -Sc)"
 emit core_hard "$(ulimit -Hc)"
+# ── Sibling IPC (#311) ────────────────────────────────────────────
+# /dev/mqueue is a mqueuefs the unit mounted itself, in an IPC
+# namespace its own user namespace owns, when its root is owned by this
+# uid (`self`); the host's, bound in, reads as root or nobody. /dev/shm
+# is a tmpfs of the unit's own at the kernel's half of RAM
+# (TemporaryFileSystem=/dev/shm:size=50%, liveswap/systemd_dbus.go) —
+# shm_size_kb against memtotal_kb says so from inside — and a file
+# written there is not on the host: each lane checks for
+# /dev/shm/sandbox-view-canary from outside after the unit ran, so the
+# file is left for the unit's end to take with its mount.
+mq_owner=$(stat -c %u /dev/mqueue 2>&1)
+[ "$mq_owner" = "$(id -u)" ] && emit mqueue_owner self || emit mqueue_owner "other:$mq_owner"
+emit shm_size_kb "$(df -Pk /dev/shm 2>/dev/null | awk 'NR==2{print $2}')"
+emit memtotal_kb "$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)"
+if echo x >/dev/shm/sandbox-view-canary 2>/dev/null; then emit shm_write ok; else emit shm_write failed; fi
+# The syscall filter, in force rather than only set: on a kernel
+# without seccomp the manager skips SystemCallFilter= and every
+# property the lanes read back with `systemctl show` still says it is
+# there. `seccomp` is this process's mode (2 = filter; `absent` on a
+# kernel with no such line), read by the shell itself.
+seccomp_mode=absent
+while read -r sv_key sv_val; do
+	[ "$sv_key" = Seccomp: ] && seccomp_mode=$sv_val
+done </proc/self/status
+emit seccomp "$seccomp_mode"
+# The mode says some filter is loaded, not which. io_uring_setup is
+# the one call this filter takes out of @system-service
+# (DESIGN-sandbox.md), so `refused` (EPERM) is SystemCallFilter=
+# itself at work; a call that reaches the kernel fails EFAULT on the
+# null params instead. sh cannot make a system call, so perl's
+# syscall() does (perl-base is Essential on Debian), and 425 is
+# io_uring_setup on amd64 and arm64 alike. Each lane makes the same
+# call from outside the unit and must see it reach the kernel, or
+# `refused` could be a filter the lane's own process carries (a
+# container runtime's default profile denies io_uring).
+if command -v perl >/dev/null 2>&1; then
+	emit io_uring_setup "$(perl -e 'syscall(425, 1, 0); print $!{EPERM} ? "refused" : "reached"')"
+else
+	emit io_uring_setup skipped
+fi
 # A secret seeded into the supervisor's own environment: hotserve
 # builds the unit's environment rather than passing its own on, and
 # the app must never see it.

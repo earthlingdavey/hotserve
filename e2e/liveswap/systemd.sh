@@ -284,9 +284,14 @@ expect_probe etc_hotserve closed
 expect_probe mgr_root skipped
 expect_probe mgr_environ skipped
 expect_probe cgroup readonly
-# Reported, not asserted: whether the memory controller reaches the
-# unit's cgroup — the question resource caps (#71) stand on.
-echo "INFO: inside the sandbox: cgroup_memory_max=$(probe_val cgroup_memory_max)"
+# The demo app's caps (e2e/Caddyfile: memory_max 256MB, tasks_max 256,
+# cpu_quota 150%), as the kernel holds them in the unit's own cgroup,
+# read from inside it — where, per the row above, they cannot be
+# changed. memory_max is 256MB in SI (humanize), so 256000000 bytes.
+expect_probe cgroup_memory_max present
+expect_probe cgroup_memory_max_value 256000000
+expect_probe cgroup_pids_max 256
+expect_probe cgroup_cpu_max "150000 100000"
 expect_probe tmp writable
 expect_probe home /var/lib/liveswap/demo/shared
 expect_probe xdg_runtime unset
@@ -323,19 +328,81 @@ esac
 [ "$(probe_val varlib_listing)" = "liveswap " ] \
 	&& pass "inside the sandbox: /var/lib shows only the liveswap root" \
 	|| fail "inside the sandbox: /var/lib listing is '$(probe_val varlib_listing)', want only 'liveswap'"
+# Sibling IPC (#311): a mqueuefs the unit mounted itself (its own IPC
+# namespace), and a /dev/shm of its own at the kernel's half of RAM —
+# systemd's own default for a TemporaryFileSystem= would be 10% — that
+# nothing written inside reaches on the host.
+expect_probe mqueue_owner self
+expect_probe shm_write ok
+shm_kb=$(probe_val shm_size_kb)
+mem_kb=$(probe_val memtotal_kb)
+if [ -n "$shm_kb" ] && [ -n "$mem_kb" ] && [ "$mem_kb" -gt 0 ] \
+	&& [ $((shm_kb * 100 / mem_kb)) -ge 49 ] && [ $((shm_kb * 100 / mem_kb)) -le 50 ]; then
+	pass "inside the sandbox: /dev/shm is ${shm_kb} KiB of ${mem_kb} KiB (the host's 50%, not systemd's 10%)"
+else
+	fail "inside the sandbox: /dev/shm is '${shm_kb}' KiB of '${mem_kb}' KiB, want 50%"
+fi
+[ ! -e /dev/shm/sandbox-view-canary ] \
+	&& pass "a file written to /dev/shm inside the unit is not on the host" \
+	|| fail "/dev/shm/sandbox-view-canary written inside the unit is on the host: /dev/shm is shared"
 # The sandboxed app still serves through hotserve like any other.
 curl -fsS --max-time 5 http://127.0.0.1:8080/ | grep -q "probe" \
 	&& pass "the sandboxed release serves through the proxy" \
 	|| fail "the sandboxed release does not serve"
 # And the unit carries the properties the runner set.
 sunit=$(json_str "$(status)" unit)
-props=$(user_systemctl show "$sunit" -p PrivatePIDs,PrivateUsers,ProtectSystem,ProtectControlGroups,TemporaryFileSystem,InaccessiblePaths,LimitCORE,LimitCORESoft)
-for want in "PrivatePIDs=yes" "PrivateUsers=yes" "ProtectControlGroups=yes" "TemporaryFileSystem=/:ro" "LimitCORE=0" "LimitCORESoft=0"; do
+props=$(user_systemctl show "$sunit" -p PrivatePIDs,PrivateUsers,PrivateIPC,ProtectSystem,ProtectControlGroups,TemporaryFileSystem,InaccessiblePaths,LimitCORE,LimitCORESoft,SystemCallArchitectures)
+for want in "PrivatePIDs=yes" "PrivateUsers=yes" "PrivateIPC=yes" "ProtectControlGroups=yes" "TemporaryFileSystem=/:ro" "/dev/shm:mode=1777,size=50%" "LimitCORE=0" "LimitCORESoft=0" "SystemCallArchitectures=native"; do
 	case "$props" in
 	*"$want"*) pass "unit property $want" ;;
 	*) fail "unit lacks $want: $props" ;;
 	esac
 done
+# And the caps as the manager holds them (the kernel's view is the
+# probe's rows above): memory_max brings no swap with it, and status
+# reports the three in the directives' own units.
+caps=$(user_systemctl show "$sunit" -p MemoryMax,MemorySwapMax,TasksMax)
+for want in "MemoryMax=256000000" "MemorySwapMax=0" "TasksMax=256"; do
+	case "$caps" in
+	*"$want"*) pass "unit property $want" ;;
+	*) fail "unit lacks $want: $caps" ;;
+	esac
+done
+s=$(status)
+if [ "$(json_num "$s" memory_max)" = "256000000" ] && [ "$(json_num "$s" tasks_max)" = "256" ] && [ "$(json_num "$s" cpu_quota)" = "150" ]; then
+	pass "status reports the caps (memory_max, tasks_max, cpu_quota)"
+else
+	fail "status does not report the caps: $s"
+fi
+# And names none as unenforced: this host delegates every controller
+# the three caps need (the probe's rows above read the kernel's values).
+case "$s" in
+*caps_unenforced*) fail "status names a cap the host does not enforce: $s" ;;
+*) pass "status names no unenforced cap: every controller reaches the unit" ;;
+esac
+# The syscall filter the manager built: an allow list (no leading ~)
+# that still holds io_uring_enter, the rest of @aio, and not
+# io_uring_setup, whose ring would open sockets RestrictAddressFamilies=
+# never sees. Every app in this suite — Node, Deno, the demo — has been
+# starting under it, and under SystemCallArchitectures=native above.
+filter=" $(user_systemctl show -p SystemCallFilter --value "$sunit") "
+case "$filter" in
+" ~"*) fail "SystemCallFilter is a deny list: $filter" ;;
+*" io_uring_setup "*) fail "SystemCallFilter still allows io_uring_setup" ;;
+*" io_uring_enter "*) pass "SystemCallFilter is @system-service less io_uring_setup" ;;
+*) fail "SystemCallFilter holds no io_uring_enter, so @aio is missing and io_uring_setup's absence proves nothing: $filter" ;;
+esac
+# And the filter is in force inside the unit, not only set on it: on a
+# kernel without seccomp the manager skips it and the read-back above
+# still passes. Inside, the filter mode and io_uring_setup refused;
+# from outside, as the same user, the call must reach the kernel, or
+# the refusal inside proves nothing about the unit's own filter.
+expect_probe seccomp 2
+expect_probe io_uring_setup refused
+outside=$(as_hotserve "perl -e 'syscall(425, 1, 0); print \$!{EPERM} ? q(refused) : q(reached)'")
+[ "$outside" = "reached" ] \
+	&& pass "outside the sandbox: io_uring_setup reaches the kernel" \
+	|| fail "io_uring_setup outside the unit is '$outside', want reached: io_uring_setup=refused inside proves nothing (kernel.io_uring_disabled=$(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo absent); anything but 0 can refuse it outside too)"
 # And the app saw the core-dump limit as 0/0 from inside.
 expect_probe core_soft 0
 expect_probe core_hard 0
@@ -503,6 +570,41 @@ wait_new_pid() { # <old pid> -> sets NEWPID or fails after 30s
 	done
 	return 1
 }
+
+echo "=== systemd 7b: a reload's changed cap reaches the running instance, no restart ==="
+# A Caddyfile reload keeps apps running, so a changed cap is set on the
+# running unit through the manager (syncCaps) rather than waiting for
+# the next launch: the kernel's cpu.max follows, the pid does not
+# change, and status shows the new value. Restoring the file lifts it
+# back the same way. The unit is read fresh: scenario 7 relaunched it.
+s=$(status)
+pid0=$(json_num "$s" pid)
+scg=$(user_systemctl show -p ControlGroup --value "$(json_str "$s" unit)")
+cpu_max() { cat "/sys/fs/cgroup$scg/cpu.max" 2>/dev/null; }
+await_cpu_max() { # <want> -> 0 once the kernel holds it (waits up to 5s)
+	i=0
+	until [ "$(cpu_max)" = "$1" ]; do
+		i=$((i + 1)); [ "$i" -ge 20 ] && return 1; sleep 0.25
+	done
+}
+[ "$(cpu_max)" = "150000 100000" ] && pass "before the reload: the relaunched unit carries cpu_quota 150%" \
+	|| fail "before the reload: cpu.max is '$(cpu_max)', want 150000 100000"
+sed 's/^\(\t*\)cpu_quota 150%$/\1cpu_quota 100%/' /etc/hotserve/Caddyfile > /tmp/caps.Caddyfile
+grep -q 'cpu_quota 100%' /tmp/caps.Caddyfile || die "the cpu_quota edit did not take"
+if load_config /tmp/caps.Caddyfile; then
+	await_cpu_max "100000 100000" && pass "reload: the running unit's cpu.max follows cpu_quota 100%" \
+		|| fail "reload: cpu.max is '$(cpu_max)' after cpu_quota 100%, want 100000 100000"
+	s=$(status)
+	[ "$(json_num "$s" pid)" = "$pid0" ] && pass "reload: same pid, the cap changed without a restart" \
+		|| fail "reload: pid changed from $pid0 to $(json_num "$s" pid)"
+	[ "$(json_num "$s" cpu_quota)" = "100" ] && pass "reload: status reports cpu_quota 100" \
+		|| fail "reload: status reports cpu_quota '$(json_num "$s" cpu_quota)', want 100"
+else
+	fail "reload with cpu_quota 100% rejected: $(cat /tmp/load-body)"
+fi
+load_config /etc/hotserve/Caddyfile || fail "reload restoring cpu_quota 150% rejected: $(cat /tmp/load-body)"
+await_cpu_max "150000 100000" && pass "restore: the running unit's cpu.max is back at cpu_quota 150%" \
+	|| fail "restore: cpu.max is '$(cpu_max)', want 150000 100000"
 
 echo "=== systemd 8: removing the app via reload stops its units; adding it back relaunches ==="
 s=$(status)

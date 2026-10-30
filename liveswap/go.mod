@@ -2,7 +2,7 @@ module github.com/smallhoursorg/hotserve/liveswap
 
 // The Go toolchain is pinned by the golang image in docker-compose.yml —
 // no toolchain directive needed here.
-go 1.26.1
+go 1.27.1
 
 require (
 	github.com/caddyserver/caddy/v2 v2.11.7
@@ -10,7 +10,7 @@ require (
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/dustin/go-humanize v1.1.0
 	github.com/go-jose/go-jose/v4 v4.1.5
-	github.com/godbus/dbus/v5 v5.2.2
+	github.com/godbus/dbus/v5 v5.2.3
 	go.uber.org/goleak v1.3.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.61.0
@@ -56,7 +56,7 @@ require (
 	github.com/dunglas/httpsfv v1.1.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
-	github.com/go-chi/chi/v5 v5.3.2 // indirect
+	github.com/go-chi/chi/v5 v5.4.0 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.5 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

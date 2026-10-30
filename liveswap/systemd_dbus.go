@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -62,6 +63,9 @@ type userManagerClient struct {
 	// would stall the runner.
 	sandboxMu  sync.Mutex
 	sandboxGen uint64 // generation the host was measured capable for; 0 = never
+	// defaultTasksMax is the manager's DefaultTasksMax= as read with the
+	// connection (get), like nofile; infinity kept, 0 = unreadable.
+	defaultTasksMax atomic.Uint64
 }
 
 // userManager is the process-wide client every systemdRunner shares.
@@ -183,6 +187,20 @@ func (c *userManagerClient) get() (*sddbus.Conn, error) {
 		conn.Close()
 		return nil, err
 	}
+	// The manager's DefaultTasksMax, read the same way for the same
+	// reason: it is what an unset tasks_max is lifted to, and what a
+	// unit with none reports (SetCaps, unitCaps). Published with the
+	// connection, so a manager restarted with another value is read
+	// again on the redial. Infinity is kept: a manager configured so
+	// has that as its default, and a lift goes there. 0 = unreadable:
+	// nothing to lift to.
+	var tasksMax uint64
+	if v, err := conn.GetManagerProperty("DefaultTasksMax"); err == nil {
+		tasksMax = parseManagerLimit(v)
+	} else if !conn.Connected() {
+		conn.Close()
+		return nil, err
+	}
 	for _, nc := range raws {
 		if derr := nc.SetDeadline(time.Time{}); derr != nil {
 			conn.Close()
@@ -198,7 +216,8 @@ func (c *userManagerClient) get() (*sddbus.Conn, error) {
 	}
 	c.conn = conn
 	c.nofile.Store(nofile) // published with the connection it was read from
-	c.generation.Add(1)    // ... as is the generation the sandbox cache keys on
+	c.defaultTasksMax.Store(tasksMax)
+	c.generation.Add(1) // ... as is the generation the sandbox cache keys on
 	return conn, nil
 }
 
@@ -206,9 +225,19 @@ func (c *userManagerClient) get() (*sddbus.Conn, error) {
 // manager property ("@t 524288"); 0 for anything unparseable or
 // unlimited, which callers treat as "don't set".
 func parseManagerUint(s string) uint64 {
+	if n := parseManagerLimit(s); n != infinityUSec {
+		return n
+	}
+	return 0
+}
+
+// parseManagerLimit reads the same rendering and keeps infinity: a
+// DefaultTasksMax= of infinity is a default of the manager's like any
+// number, the one a lifted tasks cap then goes to. 0 = unparsable.
+func parseManagerLimit(s string) uint64 {
 	s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "@t"))
 	n, err := strconv.ParseUint(s, 10, 64)
-	if err != nil || n == ^uint64(0) {
+	if err != nil {
 		return 0
 	}
 	return n
@@ -313,26 +342,72 @@ func unitProperties(u unitSpec) []sddbus.Property {
 		{Name: "StandardOutput", Value: godbus.MakeVariant("journal")},
 		{Name: "StandardError", Value: godbus.MakeVariant("journal")},
 	}
-	if u.Socket != "" {
-		// The unit owns its socket file for exactly as long as it runs:
-		// the manager removes it after the service stops, however it
-		// stopped — under the unit's own sandbox, where run/ is bound
-		// writable and /usr/bin/rm is in the base view. Failure is
-		// ignored (the "-" prefix): a socket the app never bound, or
-		// already unlinked, must not mark the unit failed.
-		props = append(props, sddbus.Property{Name: "ExecStopPost", Value: godbus.MakeVariant([]execCommand{
-			{Path: "/usr/bin/rm", Args: []string{"rm", "-f", u.Socket}, IgnoreFailure: true},
-		})})
+	if u.StartTimeout > 0 {
+		// 0 is no bound at all for a oneshot; a sub-microsecond
+		// timeout must not truncate into it.
+		startUSec := max(uint64(u.StartTimeout/time.Microsecond), 1)
+		props = append(props, sddbus.Property{Name: "TimeoutStartUSec", Value: godbus.MakeVariant(startUSec)})
 	}
+	// No ExecStopPost=, nor any Exec*= beside ExecStartEx: the manager
+	// spawns one process per unit (the app's own children join its
+	// namespaces as ever). On a user manager every process the manager
+	// spawns gets a user namespace of its own, so a second one cannot
+	// join the IPC namespace the first made (PrivateIPC=,
+	// sandboxProperties) and fails 226/NAMESPACE on its /dev/mqueue
+	// mount (measured, #311). The instance's socket goes with its run
+	// dir when hotserve retires the instance (socketRef.retire), or in
+	// a confirmed sweep's prune; nothing routes to a leftover
+	// (socket.go).
+	props = append(props, capProperties(u.Caps, false, 0)...)
 	return append(props, sandboxProperties(u.Sandbox)...)
 }
 
-// execCommand is the D-Bus shape of one Exec*= entry, "(sasb)": the
-// binary, its argv, and whether a non-zero exit is ignored.
-type execCommand struct {
-	Path          string
-	Args          []string
-	IgnoreFailure bool
+// usecPerPercent is one percent of a second: CPUQuota=50% is
+// CPUQuotaPerSecUSec=500ms on the bus.
+const usecPerPercent = 10_000
+
+// infinityUSec is what the manager reads, and reports, as "infinity"
+// for a uint64 cgroup property: no cap.
+const infinityUSec = ^uint64(0)
+
+// capProperties renders resourceCaps as the unit's cgroup properties.
+// At a start (live=false) only what is set is emitted, so an app with
+// no caps gets exactly the manager's defaults. Live (SetCaps) every
+// cap is, so a cap a reload removed is lifted from the running unit
+// rather than kept: memory and CPU to infinity, their defaults, and an
+// unset tasks cap to liftTasksTo, the manager's DefaultTasksMax —
+// never infinity, which would lift the manager's own bound too; with
+// liftTasksTo 0 (the default unreadable) TasksMax alone is left as it
+// is, and the memory and CPU resets still go. memory_max comes with
+// MemorySwapMax=0: a cap an app can spill past into swap bounds
+// nothing, and lifting the cap lifts that too.
+func capProperties(c resourceCaps, live bool, liftTasksTo uint64) []sddbus.Property {
+	var props []sddbus.Property
+	if c.memoryMax > 0 || live {
+		mem, swap := infinityUSec, infinityUSec
+		if c.memoryMax > 0 {
+			mem, swap = c.memoryMax, 0
+		}
+		props = append(props,
+			sddbus.Property{Name: "MemoryMax", Value: godbus.MakeVariant(mem)},
+			sddbus.Property{Name: "MemorySwapMax", Value: godbus.MakeVariant(swap)},
+		)
+	}
+	if c.tasksMax > 0 || (live && liftTasksTo > 0) {
+		tasks := liftTasksTo
+		if c.tasksMax > 0 {
+			tasks = uint64(c.tasksMax)
+		}
+		props = append(props, sddbus.Property{Name: "TasksMax", Value: godbus.MakeVariant(tasks)})
+	}
+	if c.cpuQuota > 0 || live {
+		quota := infinityUSec
+		if c.cpuQuota > 0 {
+			quota = uint64(c.cpuQuota) * usecPerPercent
+		}
+		props = append(props, sddbus.Property{Name: "CPUQuotaPerSecUSec", Value: godbus.MakeVariant(quota)})
+	}
+	return props
 }
 
 // execCommandEx is the D-Bus shape of one Exec*Ex= entry, "(sasas)":
@@ -406,6 +481,15 @@ func sandboxProperties(s *sandboxSpec) []sddbus.Property {
 		{Name: "PrivateUsers", Value: godbus.MakeVariant(true)},
 		{Name: "PrivateTmp", Value: godbus.MakeVariant(true)},
 		{Name: "PrivateDevices", Value: godbus.MakeVariant(true)},
+		// Its own IPC namespace: SysV objects and POSIX message queues
+		// are the unit's alone, and /dev/mqueue is a fresh mqueuefs of
+		// that namespace. On a user manager only the first process the
+		// manager spawns can set it up (unitProperties), which is why a
+		// unit has one Exec*=. POSIX shared memory is not covered by
+		// it: that lives in /dev/shm, which PrivateDevices= binds from
+		// the host, and the TemporaryFileSystem= entry below replaces
+		// (#311).
+		{Name: "PrivateIPC", Value: godbus.MakeVariant(true)},
 		// Read-only cgroupfs: the delegated subtree is owned by the
 		// app's own uid, so resource caps are otherwise rewritable.
 		{Name: "ProtectControlGroups", Value: godbus.MakeVariant(true)},
@@ -419,16 +503,43 @@ func sandboxProperties(s *sandboxSpec) []sddbus.Property {
 		{Name: "LockPersonality", Value: godbus.MakeVariant(true)},
 		// AF_NETLINK stays: getifaddrs() — Node's os.networkInterfaces(),
 		// Go's net.Interfaces(), which frameworks call at startup — needs
-		// a read-only netlink socket, and with an empty capability set
-		// netlink cannot change anything.
+		// a netlink socket. A route, link or address change needs
+		// CAP_NET_ADMIN, which the empty capability set denies; what a
+		// generic-netlink family admits unprivileged is its own rule,
+		// and the modules a netlink socket can load are an accepted
+		// residual (DESIGN-sandbox.md, "Module-backed protocols").
 		{Name: "RestrictAddressFamilies", Value: godbus.MakeVariant(allowList{true, []string{"AF_INET", "AF_INET6", "AF_UNIX", "AF_NETLINK"}})},
 		{Name: "SystemCallFilter", Value: godbus.MakeVariant(allowList{true, []string{"@system-service"}})},
+		// Less io_uring_setup, which @system-service admits through @aio.
+		// A ring's IORING_OP_SOCKET (kernel 5.19+) opens a socket of any
+		// family without calling socket(2), and socket(2) is the only
+		// call RestrictAddressFamilies= filters. With no ring, the other
+		// two io_uring calls have nothing to act on. A deny entry after
+		// the allow list takes names out of it, as
+		// SystemCallFilter=~io_uring_setup does on a second unit-file line.
+		{Name: "SystemCallFilter", Value: godbus.MakeVariant(allowList{false, []string{"io_uring_setup"}})},
 		{Name: "SystemCallErrorNumber", Value: godbus.MakeVariant(errnoEPERM)},
+		// The native syscall ABI only. On amd64 the x86-32 ABI reaches
+		// socket(2) through socketcall(), and systemd does not apply
+		// RestrictAddressFamilies= to that ABI at all.
+		{Name: "SystemCallArchitectures", Value: godbus.MakeVariant([]string{"native"})},
 		{Name: "CapabilityBoundingSet", Value: godbus.MakeVariant(uint64(0))},
 		// Start from nothing. The two bind properties appended below
 		// put back the OS the app needs to run and the app's own
 		// directories, and between them they are the whole view.
-		{Name: "TemporaryFileSystem", Value: godbus.MakeVariant([]tmpfsMount{{"/", "ro"}})},
+		// Then a /dev/shm of the unit's own over the host's, which
+		// PrivateDevices= binds into its private /dev: POSIX shared
+		// memory and named semaphores live there, every app has the
+		// one uid, and the IPC namespace does not reach it. size=50%
+		// is the kernel's own default for the host's /dev/shm, so each
+		// app keeps the room the shared one gave it; left unsaid,
+		// systemd makes every TemporaryFileSystem= 10% of RAM
+		// (NESTED_TMPFS_LIMITS, namespace.c), which on a 2 GiB box is
+		// 204 MiB — headless Chromium's known trap at Docker's 64 MiB,
+		// a size nearer. Its pages are charged to the unit's memory
+		// cgroup like any other, so memory_max (#345) is the practical
+		// cap. mode=1777 as the host's. Owner's call (#311).
+		{Name: "TemporaryFileSystem", Value: godbus.MakeVariant([]tmpfsMount{{"/", "ro"}, {"/dev/shm", "mode=1777,size=50%"}})},
 		// The manager hands every unit its own XDG_RUNTIME_DIR and bus
 		// address; both point into a /run/user that is not in the view.
 		{Name: "UnsetEnvironment", Value: godbus.MakeVariant([]string{"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"})},
@@ -512,6 +623,39 @@ func (c *userManagerClient) StopUnit(ctx context.Context, name string) (string, 
 	return jobResult(ctx, ch)
 }
 
+// SetUnitProperties sets runtime (not persisted — transient units
+// persist nothing anyway) properties on a loaded unit.
+func (c *userManagerClient) SetUnitProperties(ctx context.Context, name string, props []sddbus.Property) error {
+	conn, err := c.get()
+	if err != nil {
+		return err
+	}
+	err = conn.SetUnitPropertiesContext(ctx, name, true, props...)
+	c.dropIfDisconnected(conn, err)
+	return err
+}
+
+// DefaultTasksMax is the manager's DefaultTasksMax= as read with the
+// connection (get), resolved: the manager resolves its own percentage
+// to a number, and a unit with no TasksMax= reports exactly this; a
+// manager configured with DefaultTasksMax=infinity reports infinity,
+// which is kept (it is that manager's default, where a lift goes). The
+// read happened under the dial's deadlines, so nothing here can wait
+// on a manager that has stopped answering; a dropped connection reads
+// it again on the redial, which is also when a manager restarted with
+// another value is seen.
+func (c *userManagerClient) DefaultTasksMax(_ context.Context) (uint64, error) {
+	if _, err := c.get(); err != nil {
+		return 0, err
+	}
+	v := c.defaultTasksMax.Load()
+	if v == 0 {
+		// Unreadable at the dial: no number to lift a tasks cap to.
+		return 0, errors.New("the manager's DefaultTasksMax is unreadable")
+	}
+	return v, nil
+}
+
 func (c *userManagerClient) ResetFailedUnit(ctx context.Context, name string) error {
 	conn, err := c.get()
 	if err != nil {
@@ -575,7 +719,41 @@ func statusFromProps(props map[string]any) unitStatus {
 		ExecMainCode:   propInt(props, "ExecMainCode"),
 		ExecMainStatus: propInt(props, "ExecMainStatus"),
 		StopTimeout:    usecDuration(propInt(props, "TimeoutStopUSec")),
+		Caps:           propCaps(props),
+		ControlGroup:   propString(props, "ControlGroup"),
 	}
+}
+
+// propCaps reads the unit's caps back as the manager holds them: a
+// uint64 each, "infinity" (uint64 max) meaning none. A TasksMax= or a
+// CPU quota too large for an int reads as none too, rather than as a
+// bogus bound.
+func propCaps(props map[string]any) resourceCaps {
+	var c resourceCaps
+	if v := propUint64(props, "MemoryMax"); v != infinityUSec {
+		c.memoryMax = v
+	}
+	if v := propUint64(props, "TasksMax"); v != infinityUSec && v <= uint64(math.MaxInt) {
+		c.tasksMax = int(v)
+	}
+	if v := propUint64(props, "CPUQuotaPerSecUSec"); v != infinityUSec && v/usecPerPercent <= uint64(math.MaxInt) {
+		c.cpuQuota = int(v / usecPerPercent)
+	}
+	return c
+}
+
+// propUint64 reads a "t" property; absent reads as infinity (no cap),
+// never as 0, which these properties never mean.
+func propUint64(props map[string]any, key string) uint64 {
+	switch v := props[key].(type) {
+	case uint64:
+		return v
+	case int64:
+		if v >= 0 {
+			return uint64(v)
+		}
+	}
+	return infinityUSec
 }
 
 // usecDuration converts a systemd USec property; "infinity" (uint64

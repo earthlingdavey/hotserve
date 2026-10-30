@@ -22,7 +22,7 @@ var sandboxPropertyNames = []string{
 	"PrivateUsers", "PrivatePIDs", "PrivateTmp", "PrivateDevices",
 	"ProtectControlGroups", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
 	"RestrictNamespaces", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality",
-	"RestrictAddressFamilies", "SystemCallFilter", "SystemCallErrorNumber", "CapabilityBoundingSet",
+	"RestrictAddressFamilies", "SystemCallFilter", "SystemCallErrorNumber", "SystemCallArchitectures", "CapabilityBoundingSet",
 	"TemporaryFileSystem", "BindPaths", "BindReadOnlyPaths", "UnsetEnvironment",
 }
 
@@ -40,26 +40,36 @@ func propMap(u unitSpec) map[string]any {
 	return got
 }
 
-// Promise: the unit owns its socket file for as long as it runs — the
-// manager removes it after the service stops, however it stopped, and
-// a socket the app never bound does not fail the unit. The probe unit
-// has no socket and gets no such hook.
-func TestUnitRemovesItsSocketWhenItStops(t *testing.T) {
-	spec := probeSandboxSpec()
-	got := propMap(unitSpec{ExecStart: []string{"/bin/true"}, Sandbox: spec, Socket: "/var/lib/liveswap/blog/run/0a1b2c3d0a1b2c3d.sock"})
-	cmds, ok := got["ExecStopPost"].([]execCommand)
-	if !ok || len(cmds) != 1 {
-		t.Fatalf("ExecStopPost = %#v, want one command", got["ExecStopPost"])
+// propValues is every value one property is given, in the order the
+// manager reads them. SystemCallFilter= is emitted twice, an allow
+// list and then a deny entry that edits it, and propMap keeps only
+// the last.
+func propValues(u unitSpec, name string) []any {
+	var vs []any
+	for _, p := range unitProperties(u) {
+		if p.Name == name {
+			vs = append(vs, p.Value.Value())
+		}
 	}
-	want := execCommand{Path: "/usr/bin/rm", Args: []string{"rm", "-f", "/var/lib/liveswap/blog/run/0a1b2c3d0a1b2c3d.sock"}, IgnoreFailure: true}
-	if !reflect.DeepEqual(cmds[0], want) {
-		t.Fatalf("ExecStopPost = %+v, want %+v", cmds[0], want)
+	return vs
+}
+
+// Promise: a unit has one Exec*= command, its ExecStartEx — no
+// ExecStopPost= or other — so the manager spawns one process per unit
+// (the app's own children join its namespaces as ever): on a user
+// manager a second process the manager spawns cannot join the IPC
+// namespace the first made (#311). The instance's socket is hotserve's
+// to remove, with the run dir (socketRef.retire), so a unit names no
+// socket at all.
+func TestUnitHasOneExecCommand(t *testing.T) {
+	got := propMap(unitSpec{ExecStart: []string{"/bin/true"}, Sandbox: probeSandboxSpec()})
+	if _, ok := got["ExecStartEx"]; !ok {
+		t.Fatal("no ExecStartEx")
 	}
-	if !spec.inView("/usr/bin/rm") {
-		t.Fatal("rm must be inside the unit's own view, or ExecStopPost cannot run under the sandbox")
-	}
-	if _, present := propMap(unitSpec{ExecStart: []string{"/bin/true"}, Sandbox: spec})["ExecStopPost"]; present {
-		t.Fatal("a unit with no socket (the probe) must not get an ExecStopPost")
+	for name, v := range got {
+		if strings.HasPrefix(name, "Exec") && name != "ExecStartEx" {
+			t.Errorf("%s=%v: a unit has one Exec*= command", name, v)
+		}
 	}
 }
 
@@ -102,14 +112,23 @@ func TestSandboxPropertiesEveryUnit(t *testing.T) {
 	if fam, _ := got["RestrictAddressFamilies"].(allowList); !fam.AllowList || !reflect.DeepEqual(fam.Names, []string{"AF_INET", "AF_INET6", "AF_UNIX", "AF_NETLINK"}) {
 		t.Errorf("RestrictAddressFamilies = %+v", got["RestrictAddressFamilies"])
 	}
-	if f, _ := got["SystemCallFilter"].(allowList); !f.AllowList || !reflect.DeepEqual(f.Names, []string{"@system-service"}) {
-		t.Errorf("SystemCallFilter = %+v", got["SystemCallFilter"])
+	if f := propValues(unitSpec{ExecStart: []string{"/bin/true"}, Sandbox: spec}, "SystemCallFilter"); !reflect.DeepEqual(f, []any{
+		allowList{true, []string{"@system-service"}},
+		allowList{false, []string{"io_uring_setup"}},
+	}) {
+		t.Errorf("SystemCallFilter = %+v", f)
+	}
+	if a, _ := got["SystemCallArchitectures"].([]string); !reflect.DeepEqual(a, []string{"native"}) {
+		t.Errorf("SystemCallArchitectures = %+v", got["SystemCallArchitectures"])
 	}
 	// The whole filesystem, not just the liveswap root: this one line is
 	// the difference between "these paths are hidden" and "only these
-	// paths exist".
-	if tmp, _ := got["TemporaryFileSystem"].([]tmpfsMount); !reflect.DeepEqual(tmp, []tmpfsMount{{"/", "ro"}}) {
-		t.Errorf("TemporaryFileSystem = %+v, want the whole root replaced", got["TemporaryFileSystem"])
+	// paths exist". Then a /dev/shm of the unit's own, inside the
+	// private /dev, over the host's that PrivateDevices= binds (#311),
+	// at the host's default size — systemd's own for a
+	// TemporaryFileSystem= would be 10% of RAM.
+	if tmp, _ := got["TemporaryFileSystem"].([]tmpfsMount); !reflect.DeepEqual(tmp, []tmpfsMount{{"/", "ro"}, {"/dev/shm", "mode=1777,size=50%"}}) {
+		t.Errorf("TemporaryFileSystem = %+v, want the whole root replaced and a /dev/shm of the unit's own", got["TemporaryFileSystem"])
 	}
 	binds := func(name string) map[string]bindMount {
 		m := map[string]bindMount{}
@@ -181,7 +200,10 @@ func TestSandboxViewIsExactlyWhatIsNamed(t *testing.T) {
 			{dest: "/var/lib/liveswap/blog/shared"}},
 	}
 	got := propMap(unitSpec{ExecStart: []string{"/bin/true"}, Sandbox: spec})
-	if tmp, _ := got["TemporaryFileSystem"].([]tmpfsMount); !reflect.DeepEqual(tmp, []tmpfsMount{{"/", "ro"}}) {
+	// The unit's own /dev/shm sits inside the private /dev, which
+	// PrivateDevices= builds within the empty root: it names nothing
+	// of the host's.
+	if tmp, _ := got["TemporaryFileSystem"].([]tmpfsMount); !reflect.DeepEqual(tmp, []tmpfsMount{{"/", "ro"}, {"/dev/shm", "mode=1777,size=50%"}}) {
 		t.Fatalf("the view is not deny-by-default: TemporaryFileSystem = %+v", tmp)
 	}
 	view := map[string]bool{}
@@ -278,7 +300,7 @@ func TestSandboxSpecFor(t *testing.T) {
 }
 
 func TestSandboxProbeCommand(t *testing.T) {
-	full := sandboxProbeCommand()
+	full := sandboxProbeCommand("0a1b2c3d0a1b2c3d")
 	if full[0] != "/bin/sh" || full[1] != "-c" || len(full) != 3 {
 		t.Fatalf("probe must be a single sh -c script, got %v", full)
 	}
@@ -288,6 +310,26 @@ func TestSandboxProbeCommand(t *testing.T) {
 	// the shell as the pid twice and fail the check on every host.
 	if !strings.Contains(full[2], "uid_map") || !strings.Contains(full[2], `"$$" = 1`) {
 		t.Fatalf("full probe checks both namespaces: %q", full[2])
+	}
+	// And the IPC namespace against the one hotserve passes in, and a
+	// write into its /dev/shm named by the probe's nonce (#311).
+	if !strings.Contains(full[2], `"$i" != "$HOTSERVE_IPC_NS"`) || !strings.Contains(full[2], `stat -c %u /dev/mqueue`) || !strings.Contains(full[2], probeShmCanary("0a1b2c3d0a1b2c3d")) {
+		t.Fatalf("full probe checks the IPC namespace and /dev/shm: %q", full[2])
+	}
+	// And seccomp: the manager skips every seccomp-backed setting where
+	// seccomp is unavailable to it, so the probe requires the filter
+	// mode in its own status, read by the shell itself.
+	if !strings.Contains(full[2], "< /proc/self/status") || !strings.Contains(full[2], `[ "$s" = 2 ]`) {
+		t.Fatalf("full probe checks the syscall filter is in force: %q", full[2])
+	}
+	// And that the unit's own seccomp set is there, not a mode inherited
+	// from the manager: RestrictNamespaces= refuses a user namespace with
+	// EPERM, and is skipped exactly when the whole set is. Refused means
+	// EPERM, never just a non-zero exit (a missing unshare must not pass).
+	for _, clause := range []string{"unshare -U true", `*"Operation not permitted"*) u=refused`, `[ "$u" = refused ]`} {
+		if !strings.Contains(full[2], clause) {
+			t.Fatalf("full probe lacks %q: %q", clause, full[2])
+		}
 	}
 	if strings.Contains(full[2], "$$$$") {
 		t.Fatalf("$$$$ reaches the shell as the pid twice: %q", full[2])
@@ -519,8 +561,15 @@ func TestProbeSandboxCapability(t *testing.T) {
 				if s.sandbox == nil || len(s.sandbox.writable) != 0 || s.sandbox.root != "" {
 					t.Errorf("probe unit must carry the sandbox and expose nothing: %+v", s.sandbox)
 				}
-				if !reflect.DeepEqual(s.command, sandboxProbeCommand()) {
+				if !reflect.DeepEqual(s.command, sandboxProbeCommand(s.nonce)) {
 					t.Errorf("probe command mismatch: %v", s.command)
+				}
+				// The script matches unshare's English EPERM text, and a
+				// unit gets the manager's default environment (LANG
+				// included) under its own: without LC_ALL=C a translated
+				// strerror would refuse a capable host.
+				if !slices.Contains(s.env, "LC_ALL=C") {
+					t.Errorf("probe env %v lacks LC_ALL=C", s.env)
 				}
 				if !s.probe {
 					t.Error("the probe unit must be marked as one, or a sweep can mistake it for an app's")
@@ -573,8 +622,7 @@ func TestBuildEnvSandboxedHome(t *testing.T) {
 // starts a unit applies it — a deploy, its pre_start, and a relaunch
 // from the record (recovery, and the watchdog through the same
 // launchVersion) — with nothing read from state.json deciding how much
-// isolation an instance gets. A record written before sandboxing
-// existed relaunches sandboxed like everything else.
+// isolation an instance gets.
 func TestEveryLaunchIsSandboxed(t *testing.T) {
 	rig := newTestRig(t)
 	must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/a.tgz", version: "v1"}))
@@ -596,8 +644,7 @@ func TestEveryLaunchIsSandboxed(t *testing.T) {
 		}
 	}
 
-	// A relaunch from a record — including one with no sandbox field,
-	// written before sandboxing existed — is sandboxed like a deploy.
+	// A relaunch from a record is sandboxed like a deploy.
 	rig2 := newTestRig(t)
 	must(t, rig2.store.save(appState{CurrentVersion: "v1", Nonce: "0a1b2c3d0a1b2c3d", Handle: handleState{Unit: "hotserve-demo.v1.0a1b2c3d0a1b2c3d.service"}}))
 	must(t, mkdirRelease(rig2.spec, "v1"))
