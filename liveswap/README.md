@@ -42,6 +42,12 @@ relaunch one, the running version included, and a deploy of the
 running version with the same artifact relaunches it too (see
 [Relaunching the running version](#relaunching-the-running-version)).
 
+`pre_start` runs while the old version serves, so the old version is
+on the new schema from then on: through the soak, after a deploy that
+fails, and again after a rollback, which leaves the database as it is.
+Every migration has to work with it: see
+[the migration rule](../docs/your-data.md#the-migration-rule).
+
 The cutover is an atomic pointer swap inside a `reverse_proxy` dynamic
 upstream source — no config reload, no socket juggling, and every
 reverse_proxy feature (WebSockets, HTTP/2, streaming, retries) keeps
@@ -636,7 +642,8 @@ Practical consequences worth planning around:
 
 - **Put persistent data in `shared/`.** It survives deploys, it is
   writable, and it is `$HOME` inside the unit. A SQLite file belongs
-  there, not in `/var/lib/myapp`.
+  there, not in `/var/lib/myapp`. It is on one disk, and nothing backs
+  it up: [Your data](../docs/your-data.md).
 - **A same-box database is reached over TCP loopback**, which the
   shared network namespace allows; its unix socket is outside the
   view.

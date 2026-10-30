@@ -113,6 +113,8 @@ changing the config, secrets (whose reference is
 port shut, and, optionally, an administrator who is not root,
 Debian's updates installed on their own, and seven kernel network
 modules no app needs refused.
+[Your data](docs/your-data.md) says what survives what, how to copy it
+off the box, and the rule every migration has to follow.
 The first two use the three directories below, which the e2e suite
 builds and deploys on every change, so what they say works:
 
@@ -151,6 +153,10 @@ GitHub Actions with no stored secret.
   runtime anywhere. That's why there's deliberately no Docker image.
 - **Not a cluster.** Single-node by design. If you outgrow one server,
   you've outgrown hotserve — a good problem.
+- **Not your backup.** No stable release of hotserve backs up your
+  apps' data. That is your job today, and on one server a lost disk
+  takes whatever you have not copied off it. A rollback does not undo a
+  migration either: [Your data](docs/your-data.md).
 
 ## Security
 

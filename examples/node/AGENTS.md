@@ -15,7 +15,11 @@ which runs it under rules that do not show up when you run it locally.
 - **Migrations go in `migrate.js`.** It runs before the new version
   starts; a non-zero exit cancels the deploy and the old version keeps
   serving. It must be safe to run again on a database it has already
-  migrated.
+  migrated. It must also work with the previous version, which serves
+  on the new schema during the soak and after a rollback: add first;
+  stop using the old column in a later release; remove it only once no
+  release you would roll back to uses it
+  ([the rule](https://github.com/smallhoursorg/hotserve/blob/main/docs/your-data.md#the-migration-rule)).
 - **The app ships as one executable**, built by `npm run bundle` with
   Node's single-executable build: `server.js` and `migrate.js` are
   each embedded in a copy of the Node binary. Keep them dependency-
