@@ -782,3 +782,11 @@ Dated one-liners; the full text of each is in git.
   mqueuefs it mounted itself, in an IPC namespace its user namespace
   owns) and that its IPC namespace is not hotserve's own, and that a
   file written in its `/dev/shm` is not on the host.
+- 2026-10-30 — A stop job can SIGKILL a one-process app at once: under
+  `PrivatePIDs=` the manager may take the app for not its child (a race
+  with the intermediate, "Supervising process … which is not our child"),
+  and `unit_kill_context` does not wait for one (systemd v257 and main).
+  The runner now sends SIGTERM and SIGKILL itself and waits out the grace
+  between them (with the SIGCONT a job sends), and asks for the job only
+  for what is left (`terminate`), or when its context ends (`stopJob`).
+  The earlier test's shell had a `sleep` in the cgroup, which hid it.

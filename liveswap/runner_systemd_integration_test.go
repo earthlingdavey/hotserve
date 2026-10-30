@@ -1175,6 +1175,168 @@ func TestIntegrationSystemdSIGTERMReachesNamespaceInit(t *testing.T) {
 	t.Logf("SIGTERM honoured inside the PID namespace: handler ran, stop took %s of a %s grace", took, spec.grace)
 }
 
+// singleProcessRuns is how many instances each single-process test
+// starts. The manager's verdict on an instance is a race, roughly even
+// (singleProcessScript), so one instance proves little; at this many,
+// a run with none on the losing side is about one in a thousand.
+const singleProcessRuns = 10
+
+// singleProcessScript is an app that is one process and nothing else,
+// as a Go, Rust or Node server is: `read` is a builtin, and the app
+// starts nothing to wait with. That is the case the shell apps above
+// cannot see, because their `sleep` is a second process in the cgroup.
+//
+// With PrivatePIDs= the manager reads the app's parent while the
+// intermediate that made the namespace may still be there. If it is,
+// the journal says "Supervising process … which is not our child", and
+// from then on unit_kill_context does not count the main process as
+// something to wait for (systemd v257, unit_kill_context_one returns
+// !is_alien). With no other process in the cgroup, a stop goes from
+// SIGTERM straight to SIGKILL, whatever TimeoutStopSec says.
+//
+// onTerm is the app's SIGTERM trap, and it may use builtins only.
+func singleProcessScript(onTerm string) string {
+	return "trap '" + onTerm + "' TERM\nmkfifo hold\nexec 3<>hold\n: > ready\nwhile :; do read x <&3; done\n"
+}
+
+// startSingleProcess starts instance i of a singleProcessScript app and
+// waits until it is up, and is one process.
+func startSingleProcess(t *testing.T, r *systemdRunner, i int, onTerm string, grace time.Duration) (startSpec, handle) {
+	t.Helper()
+	spec := scriptApp(t, singleProcessScript(onTerm))
+	spec.grace = grace
+	spec.version += strconv.Itoa(i)
+	spec.nonce = "a1b2c3d4a1b2c3" + strconv.FormatInt(int64(16+i), 16)
+	h, err := r.Start(spec)
+	if err != nil {
+		t.Fatalf("start %d: %v", i, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(spec.dir, "ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("instance %d never got ready", i)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pids := unitPIDs(t, h.state().Unit); len(pids) != 1 {
+		t.Fatalf("instance %d is %d processes (%v); this test is about one", i, len(pids), pids)
+	}
+	return spec, h
+}
+
+// busyWork is a trap's body: long enough that a SIGKILL sent at once
+// lands first, and builtins only, so the app stays one process.
+const busyWork = "i=0; while [ $i -lt 300000 ]; do i=$((i+1)); done; : > drained; exit 0"
+
+// TestIntegrationSystemdStopGivesASingleProcessAppItsGrace: Stop gives
+// an app that is one process the same grace as any other, whichever way
+// the manager's race went.
+func TestIntegrationSystemdStopGivesASingleProcessAppItsGrace(t *testing.T) {
+	r := integrationRunner(t)
+	killed := 0
+	for i := range singleProcessRuns {
+		spec, h := startSingleProcess(t, r, i, busyWork, 10*time.Second)
+		if err := r.Stop(h, spec.grace); err != nil {
+			t.Fatalf("stop %d: %v", i, err)
+		}
+		if _, err := os.Stat(filepath.Join(spec.dir, "drained")); err != nil {
+			killed++
+		}
+	}
+	if killed > 0 {
+		t.Fatalf("%d of %d single-process apps were killed before their SIGTERM handler finished", killed, singleProcessRuns)
+	}
+}
+
+// TestIntegrationSystemdStopKillsASingleProcessAppOnlyAfterItsGrace: an
+// app that is one process and ignores SIGTERM keeps its whole grace,
+// and is then killed, in one grace and not two.
+func TestIntegrationSystemdStopKillsASingleProcessAppOnlyAfterItsGrace(t *testing.T) {
+	r := integrationRunner(t)
+	const grace = time.Second
+	early, late := 0, 0
+	for i := range singleProcessRuns {
+		spec, h := startSingleProcess(t, r, i, "", grace)
+		started := time.Now()
+		if err := r.Stop(h, spec.grace); err != nil {
+			t.Fatalf("stop %d: %v", i, err)
+		}
+		switch took := time.Since(started); {
+		case took < grace:
+			early++
+		case took > 2*grace:
+			late++
+		}
+		if r.Alive(h) {
+			t.Fatalf("instance %d is alive after Stop", i)
+		}
+	}
+	if early > 0 || late > 0 {
+		t.Fatalf("of %d SIGTERM-ignoring apps with a %s grace, %d were killed early and %d outlived it twice over", singleProcessRuns, grace, early, late)
+	}
+}
+
+// TestIntegrationSystemdSweepGivesASingleProcessStrayItsGrace: a stray
+// is a unit too, and its SIGTERM handler gets the same chance.
+func TestIntegrationSystemdSweepGivesASingleProcessStrayItsGrace(t *testing.T) {
+	r := integrationRunner(t)
+	killed := 0
+	for i := range singleProcessRuns {
+		spec, _ := startSingleProcess(t, r, i, busyWork, 10*time.Second)
+		if err := r.Sweep(spec.app, nil); err != nil {
+			t.Fatalf("sweep %d: %v", i, err)
+		}
+		if _, err := os.Stat(filepath.Join(spec.dir, "drained")); err != nil {
+			killed++
+		}
+	}
+	if killed > 0 {
+		t.Fatalf("%d of %d single-process strays were killed before their SIGTERM handler finished", killed, singleProcessRuns)
+	}
+}
+
+// TestIntegrationSystemdStopWakesAStoppedApp: an app that is stopped
+// (SIGSTOP, a debugger gone) still runs its SIGTERM handler, as it does
+// under a stop job, which follows the signal with SIGCONT.
+func TestIntegrationSystemdStopWakesAStoppedApp(t *testing.T) {
+	r := integrationRunner(t)
+	spec, h := startSingleProcess(t, r, 0, busyWork, 10*time.Second)
+	for _, p := range unitPIDs(t, h.state().Unit) {
+		if err := syscall.Kill(p, syscall.SIGSTOP); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Stop(h, spec.grace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(spec.dir, "drained")); err != nil {
+		t.Fatalf("the stopped app's SIGTERM handler never ran: %v", err)
+	}
+}
+
+// TestIntegrationSystemdSweepCutShortStillEndsTheUnit: a sweep whose
+// context ends during an app's grace (the sweep of apps no longer
+// configured has one for them all) reports the stop unconfirmed, and
+// the unit still ends: the manager holds the deadline from there.
+func TestIntegrationSystemdSweepCutShortStillEndsTheUnit(t *testing.T) {
+	r := integrationRunner(t)
+	const grace = 2 * time.Second
+	spec, h := startSingleProcess(t, r, 0, "", grace)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := r.sweep(ctx, spec.app, nil, nil, false); !unitUnconfirmed(err) {
+		t.Fatalf("a sweep cut short is unconfirmed, got %v", err)
+	}
+	select {
+	case <-r.Wait(h):
+	case <-time.After(grace + 5*time.Second):
+		t.Fatal("nothing ended the unit once the sweep's context had ended")
+	}
+}
+
 // TestIntegrationSystemdCapsHoldAndChangeLive: the caps a unit starts
 // with read back from the manager at the values given; SetCaps changes
 // a running unit's with its process untouched, lifting what is now

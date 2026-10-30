@@ -39,10 +39,11 @@ import (
 //     Reattach adopts only a unit observed running; a failed one is
 //     logged with its exit status, reset, and never adopted; a unit
 //     whose state cannot be read is an error, never "not running".
-//  4. Stop returns nil only when the stop job reported "done" and the
-//     unit was then observed gone — with KillMode=control-group and
-//     SendSIGKILL the cgroup is empty at that point. Any other outcome
-//     is an error, and callers keep the release on disk and skip GC.
+//  4. Stop returns nil only when the unit was observed gone: it ended
+//     inside its grace (terminate), or a stop job reported "done" — with
+//     KillMode=control-group and SendSIGKILL the cgroup is empty at that
+//     point. Any other outcome is an error, and callers keep the release
+//     on disk and skip GC.
 //  5. Once a start request may have reached the manager, the unit is
 //     reconciled by name: an ambiguous failure ends with the unit
 //     observed running (adopted), observed gone, or reported as
@@ -91,6 +92,8 @@ type systemdConn interface {
 	StartTransientUnit(ctx context.Context, u unitSpec) (string, error)
 	// StopUnit enqueues a stop job and blocks until it completes.
 	StopUnit(ctx context.Context, name string) (string, error)
+	// KillUnit sends sig to every process of the unit, and starts no job.
+	KillUnit(ctx context.Context, name string, sig syscall.Signal) error
 	// UnitStatus reads the unit's load/active state and, for a loaded
 	// service, its main PID and exit facts. A unit the manager no
 	// longer knows is reported with LoadState "not-found", not an error.
@@ -167,7 +170,7 @@ type unitStatus struct {
 }
 
 // stopBudget is how long a stop of this unit can take before the
-// manager's SIGKILL lands: its own TimeoutStopSec, or the caller's
+// SIGKILL lands: its own TimeoutStopSec, or the caller's
 // grace when that is unknown or larger.
 func (s unitStatus) stopBudget(grace time.Duration) time.Duration {
 	if s.StopTimeout > grace {
@@ -882,7 +885,7 @@ func (r *systemdRunner) reconcileStart(u unitSpec, cause error) (handle, error) 
 	// given the stop budget the unit was created with.
 	ctx, cancel := context.WithTimeout(r.ctx, u.StopTimeout+stopSlack)
 	defer cancel()
-	return nil, r.stopUnobserved(ctx, unit, cause)
+	return nil, r.stopUnobserved(ctx, unit, u.StopTimeout, cause)
 }
 
 // RunOnce runs a oneshot unit to completion. Its start job only
@@ -905,7 +908,7 @@ func (r *systemdRunner) RunOnce(ctx context.Context, spec startSpec) error {
 		// on the runner's own context — the caller's is already done.
 		stopCtx, cancel := context.WithTimeout(r.ctx, u.StopTimeout+stopSlack)
 		defer cancel()
-		return r.stopUnobserved(stopCtx, u.Name, cause)
+		return r.stopUnobserved(stopCtx, u.Name, u.StopTimeout, cause)
 	}
 	if res == "done" {
 		return nil
@@ -947,15 +950,87 @@ func (s unitStatus) exitAfterEnd() string {
 	return s.exitString()
 }
 
-// stopUnobserved stops a unit and returns cause if the unit is
-// confirmed gone, or an unconfirmed error if not.
-func (r *systemdRunner) stopUnobserved(ctx context.Context, unit string, cause error) error {
-	res, err := r.conn.StopUnit(ctx, unit)
-	if err != nil {
-		return &unitUnconfirmedError{unit: unit, err: cause}
+// terminate is the part of a stop that gives an app its grace: SIGTERM
+// to the unit's whole cgroup, up to budget for it to end, then SIGKILL.
+// It reports whether the unit ended; if not, the stop job is still owed.
+//
+// This is hotserve's to do because a stop job does not always do it.
+// Under PrivatePIDs= the manager may read the app's parent while the
+// intermediate that made the namespace is still there, and then treats
+// the app as not its child ("Supervising process … which is not our
+// child" in the journal). unit_kill_context does not wait for a process
+// like that, so with nothing else in the cgroup (a Go, Rust or Node
+// server) the job follows its SIGTERM with SIGKILL at once, whatever
+// TimeoutStopSec says (systemd v257, unit_kill_context_one, and the
+// same on main). A job started before the SIGKILL would also run
+// TimeoutStopSec a second time for the units the race spared. A stop
+// the manager starts itself, at a reboot, is still its own (the Owed
+// table, DESIGN-liveswap.md).
+//
+// A signal the manager refuses leaves the stop to the job, and is logged
+// because that job may cost the app its grace. SIGCONT is what a stop
+// job sends too: a stopped app would otherwise sit out its grace with
+// the SIGTERM pending. A ctx that ends leaves the stop to the job as
+// well (stopJob).
+func (r *systemdRunner) terminate(ctx context.Context, unit string, budget time.Duration) bool {
+	if err := r.killUnit(ctx, unit, syscall.SIGTERM); err != nil {
+		r.log().Warn("could not signal the unit; leaving it to a stop job, which may not give it its grace", zap.String("unit", unit), zap.Error(err))
+		return false
 	}
-	if res != "done" {
-		return &unitUnconfirmedError{unit: unit, err: fmt.Errorf("%w (stop job %s)", cause, res)}
+	_ = r.killUnit(ctx, unit, syscall.SIGCONT)
+	grace := time.NewTimer(budget)
+	defer grace.Stop()
+	t := time.NewTicker(r.poll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-grace.C:
+			r.log().Warn("the app did not end within its grace; sending SIGKILL", zap.String("unit", unit), zap.Duration("grace", budget))
+			_ = r.killUnit(ctx, unit, syscall.SIGKILL)
+			return false
+		case <-t.C:
+			pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+			st, err := r.conn.UnitStatus(pollCtx, unit)
+			cancel()
+			if err == nil && !st.running() {
+				return true
+			}
+		}
+	}
+}
+
+func (r *systemdRunner) killUnit(ctx context.Context, unit string, sig syscall.Signal) error {
+	ctx, cancel := context.WithTimeout(ctx, pollTimeout)
+	defer cancel()
+	return r.conn.KillUnit(ctx, unit, sig)
+}
+
+// stopJob asks the manager to stop unit. A ctx that has ended gets a
+// context of its own: godbus sends nothing on an ended one, and the job
+// is what then holds the deadline hotserve is no longer waiting out.
+func (r *systemdRunner) stopJob(ctx context.Context, unit string) (string, error) {
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), pollTimeout)
+		defer cancel()
+	}
+	return r.conn.StopUnit(ctx, unit)
+}
+
+// stopUnobserved stops a unit, giving it budget to end (terminate), and
+// returns cause if the unit is confirmed gone, or an unconfirmed error
+// if not.
+func (r *systemdRunner) stopUnobserved(ctx context.Context, unit string, budget time.Duration, cause error) error {
+	if !r.terminate(ctx, unit, budget) {
+		res, err := r.stopJob(ctx, unit)
+		if err != nil {
+			return &unitUnconfirmedError{unit: unit, err: cause}
+		}
+		if res != "done" {
+			return &unitUnconfirmedError{unit: unit, err: fmt.Errorf("%w (stop job %s)", cause, res)}
+		}
 	}
 	st, err := r.conn.UnitStatus(ctx, unit)
 	if err != nil || st.running() {
@@ -992,11 +1067,12 @@ func (r *systemdRunner) Wait(h handle) <-chan struct{} {
 	return sh.done
 }
 
-// Stop asks the manager to stop the unit, which applies the unit's own
-// TimeoutStopSec (the grace it was started with) between SIGTERM and
-// SIGKILL across the whole cgroup, then waits for the watcher to
-// observe the unit gone. grace here only sizes that wait: a reattached
-// unit keeps the budget it was created with.
+// Stop gives the unit its own TimeoutStopSec (the grace it was started
+// with) between SIGTERM and SIGKILL across the whole cgroup (terminate),
+// asks the manager to stop whatever that did not end, then waits for
+// the watcher to observe the unit gone. grace counts only when the unit
+// says nothing of its own: a reattached unit keeps the budget it was
+// created with, whatever the config says now.
 func (r *systemdRunner) Stop(h handle, grace time.Duration) error {
 	sh, ok := h.(*systemdHandle)
 	if !ok {
@@ -1013,24 +1089,26 @@ func (r *systemdRunner) Stop(h handle, grace time.Duration) error {
 	// handle, else the caller's grace. Callers hold deployMu for this
 	// long, which is the operator's grace by construction.
 	fallback := sh.stopTimeout
-	if grace > fallback {
+	if fallback <= 0 {
 		fallback = grace
 	}
 	budget := r.stopBudgetFor(r.ctx, sh.unit, fallback)
 	ctx, cancel := context.WithTimeout(r.ctx, budget+stopSlack)
 	defer cancel()
-	res, err := r.conn.StopUnit(ctx, sh.unit)
-	if err != nil {
-		return fmt.Errorf("stopping unit %s: %w", sh.unit, err)
-	}
-	if res != "done" {
-		return fmt.Errorf("unit %s: stop job %s", sh.unit, res)
+	if !r.terminate(ctx, sh.unit, budget) {
+		res, err := r.stopJob(ctx, sh.unit)
+		if err != nil {
+			return fmt.Errorf("stopping unit %s: %w", sh.unit, err)
+		}
+		if res != "done" {
+			return fmt.Errorf("unit %s: stop job %s", sh.unit, res)
+		}
 	}
 	select {
 	case <-sh.done:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("unit %s: stop job done but the unit was not observed gone within %s", sh.unit, budget+stopSlack)
+		return fmt.Errorf("unit %s: not observed gone within %s", sh.unit, budget+stopSlack)
 	}
 }
 
@@ -1081,7 +1159,7 @@ func (r *systemdRunner) Reattach(st handleState) (handle, bool, error) {
 			stopCtx, stopCancel := context.WithTimeout(r.ctx, grace+stopSlack)
 			defer stopCancel()
 			bare := fmt.Errorf("recorded unit %s was running without the sandbox", st.Unit)
-			if err := r.stopUnobserved(stopCtx, st.Unit, bare); !errors.Is(err, bare) || errors.As(err, new(*unitUnconfirmedError)) {
+			if err := r.stopUnobserved(stopCtx, st.Unit, grace, bare); !errors.Is(err, bare) || errors.As(err, new(*unitUnconfirmedError)) {
 				return nil, false, fmt.Errorf("stopping it: %w", err)
 			}
 			return nil, false, nil
@@ -1199,7 +1277,7 @@ func (r *systemdRunner) sweep(parent context.Context, app string, keep handle, s
 			r.log().Warn("stopping stray unit not owned by this instance", zap.String("unit", u.Name), zap.Int("pid", u.MainPID))
 			ctx, cancel := context.WithTimeout(parent, budget+stopSlack)
 			defer cancel()
-			if serr := r.stopUnobserved(ctx, u.Name, fmt.Errorf("stray unit %s", u.Name)); unitUnconfirmed(serr) {
+			if serr := r.stopUnobserved(ctx, u.Name, budget, fmt.Errorf("stray unit %s", u.Name)); unitUnconfirmed(serr) {
 				record(serr)
 			}
 		}(u)

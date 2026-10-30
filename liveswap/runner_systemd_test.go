@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -51,6 +52,16 @@ type fakeSystemdConn struct {
 	// read: listed, then gone by the time the reader looks.
 	vanishOnRead map[string]bool
 	stopDelay    time.Duration // StopUnit sleeps this long (concurrency tests)
+	// events is every KillUnit ("SIGTERM", "SIGKILL") and StopUnit
+	// ("stop") in the order they arrived, for the tests of that order.
+	events []string
+	// killErr is what KillUnit returns. Refused by default, which sends
+	// a stop straight to the stop job: the tests of what comes before
+	// the job clear it.
+	killErr error
+	// termEndsUnitAfter is how long after a SIGTERM the unit ends, as an
+	// app that handles it does; 0 is an app that ignores it.
+	termEndsUnitAfter time.Duration
 	// setProps records every SetUnitProperties call by unit, in order.
 	setProps    map[string][][]sddbus.Property
 	setPropsErr error // SetUnitProperties returns this
@@ -74,7 +85,7 @@ func (f *fakeSystemdConn) DefaultTasksMax(_ context.Context) (uint64, error) {
 }
 
 func newFakeSystemdConn() *fakeSystemdConn {
-	return &fakeSystemdConn{status: map[string]unitStatus{}}
+	return &fakeSystemdConn{status: map[string]unitStatus{}, killErr: errors.New("fake: KillUnit not scripted")}
 }
 
 func (f *fakeSystemdConn) SetUnitProperties(_ context.Context, name string, props []sddbus.Property) error {
@@ -125,7 +136,11 @@ func (f *fakeSystemdConn) StartTransientUnit(ctx context.Context, u unitSpec) (s
 	return res, nil
 }
 
-func (f *fakeSystemdConn) StopUnit(_ context.Context, name string) (string, error) {
+func (f *fakeSystemdConn) StopUnit(ctx context.Context, name string) (string, error) {
+	// godbus sends nothing on a context already ended.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	f.mu.Lock()
 	delay := f.stopDelay
 	f.mu.Unlock()
@@ -135,6 +150,7 @@ func (f *fakeSystemdConn) StopUnit(_ context.Context, name string) (string, erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, name)
+	f.events = append(f.events, "stop")
 	if f.stopErr != nil {
 		return "", f.stopErr
 	}
@@ -145,6 +161,36 @@ func (f *fakeSystemdConn) StopUnit(_ context.Context, name string) (string, erro
 		delete(f.status, name)
 	}
 	return "done", nil
+}
+
+func (f *fakeSystemdConn) KillUnit(_ context.Context, name string, sig syscall.Signal) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch sig {
+	case syscall.SIGTERM:
+		f.events = append(f.events, "SIGTERM")
+	case syscall.SIGCONT:
+		f.events = append(f.events, "SIGCONT")
+	default:
+		f.events = append(f.events, "SIGKILL")
+	}
+	if f.killErr != nil {
+		return f.killErr
+	}
+	if sig == syscall.SIGTERM && f.termEndsUnitAfter > 0 {
+		time.AfterFunc(f.termEndsUnitAfter, func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			delete(f.status, name)
+		})
+	}
+	return nil
+}
+
+func (f *fakeSystemdConn) killEvents() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.events...)
 }
 
 func (f *fakeSystemdConn) UnitStatus(_ context.Context, name string) (unitStatus, error) {
@@ -567,6 +613,191 @@ func TestSystemdRunnerStopWaitsForObservedExit(t *testing.T) {
 	}
 	if r.Alive(h) {
 		t.Fatal("handle must be dead after Stop returns nil")
+	}
+}
+
+// The manager may not wait after its own SIGTERM (the integration lane's
+// singleProcessScript says when), so hotserve sends it and does the
+// waiting. An app that handles it ends inside its grace, and the stop
+// job is not needed: the unit is already gone.
+func TestSystemdRunnerStopSendsSIGTERMAndWaitsForTheAppToEnd(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	h, err := r.Start(testApp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.mu.Lock()
+	conn.killErr = nil
+	conn.termEndsUnitAfter = 30 * time.Millisecond
+	conn.mu.Unlock()
+	if err := r.Stop(h, 10*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "SIGCONT"}) {
+		t.Fatalf("an app that ends on SIGTERM needs that and nothing more, got %v", got)
+	}
+	if r.Alive(h) {
+		t.Fatal("handle must be dead after Stop returns nil")
+	}
+}
+
+// An app that ignores SIGTERM keeps its whole grace, then is killed, and
+// only then is the stop job asked for. A stop job before the SIGKILL
+// would start the unit's TimeoutStopSec a second time.
+func TestSystemdRunnerStopKillsOnlyAfterTheGrace(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	const grace = 150 * time.Millisecond
+	spec := testApp(t)
+	spec.grace = grace
+	h, err := r.Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.mu.Lock()
+	conn.killErr = nil
+	conn.mu.Unlock()
+	started := time.Now()
+	if err := r.Stop(h, grace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if took := time.Since(started); took < grace {
+		t.Fatalf("killed after %s, before its %s grace", took, grace)
+	}
+	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "SIGCONT", "SIGKILL", "stop"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// The grace is the one the unit was started with, as for a sweep: a
+// config reloaded since does not stretch it, as the caller's grace would.
+func TestSystemdRunnerStopKeepsTheGraceTheUnitStartedWith(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	spec := testApp(t)
+	spec.grace = 50 * time.Millisecond
+	h, err := r.Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.mu.Lock()
+	conn.killErr = nil
+	conn.mu.Unlock()
+	started := time.Now()
+	if err := r.Stop(h, 10*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if took := time.Since(started); took > 5*time.Second {
+		t.Fatalf("a unit started with a %s grace got %s", spec.grace, took)
+	}
+}
+
+// A context that ends during the grace ends hotserve's wait, not the
+// stop: the job goes to the manager on a context of its own, and the
+// manager holds the deadline from there. The caller still hears the
+// stop is unconfirmed, because it is.
+func TestSystemdRunnerStopJobStillGoesWhenTheContextEndsInTheGrace(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	unit := "hotserve-demo.v1.1111111111111111.service"
+	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	conn.mu.Lock()
+	conn.killErr = nil
+	conn.stopLeaves = true // the job is still running when the caller looks
+	conn.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	cause := errors.New("stray")
+	err := r.stopUnobserved(ctx, unit, 10*time.Second, cause)
+	if !unitUnconfirmed(err) {
+		t.Fatalf("a context that ended before the unit was seen gone is unconfirmed, got %v", err)
+	}
+	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "SIGCONT", "stop"}) {
+		t.Fatalf("the stop job must reach the manager, got %v", got)
+	}
+}
+
+// What a stop did to an app is in the journal, whichever way it went.
+func TestSystemdRunnerTerminateSaysWhatItDid(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	core, logs := observer.New(zap.WarnLevel)
+	r.logger.Store(zap.New(core))
+	unit := "hotserve-demo.v1.1111111111111111.service"
+	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	conn.mu.Lock()
+	conn.killErr = errors.New("connection reset")
+	conn.mu.Unlock()
+	if r.terminate(context.Background(), unit, time.Second) {
+		t.Fatal("a refused signal ended nothing")
+	}
+	if got := logs.FilterMessageSnippet("stop job").FilterField(zap.String("unit", unit)).Len(); got != 1 {
+		t.Fatalf("a refused SIGTERM must be logged, naming the unit, once; got %d of %v", got, logs.All())
+	}
+	conn.mu.Lock()
+	conn.killErr = nil
+	conn.mu.Unlock()
+	if r.terminate(context.Background(), unit, 10*time.Millisecond) {
+		t.Fatal("an app that ignores SIGTERM has not ended")
+	}
+	if got := logs.FilterMessageSnippet("SIGKILL").FilterField(zap.String("unit", unit)).Len(); got != 1 {
+		t.Fatalf("an escalation must be logged, naming the unit, once; got %d of %v", got, logs.All())
+	}
+}
+
+// When the unit is never seen to go, the error must not claim a stop
+// job: when terminate ended the unit, there was none.
+func TestSystemdRunnerStopErrorClaimsNoStopJob(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	spec := testApp(t)
+	spec.grace = time.Millisecond
+	h, err := r.Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.mu.Lock()
+	conn.stopLeaves = true
+	conn.mu.Unlock()
+	time.AfterFunc(50*time.Millisecond, r.close)
+	err = r.Stop(h, spec.grace)
+	if err == nil || !strings.Contains(err.Error(), "not observed gone") || strings.Contains(err.Error(), "stop job") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// A signal the manager refuses must not cost the grace, or the stop: the
+// stop job is the way that still works, and is asked for at once.
+func TestSystemdRunnerStopGoesToTheStopJobWhenTheSignalFails(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	h, err := r.Start(testApp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.mu.Lock()
+	conn.killErr = errors.New("no matching processes to kill")
+	conn.mu.Unlock()
+	started := time.Now()
+	if err := r.Stop(h, 10*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if took := time.Since(started); took > 5*time.Second {
+		t.Fatalf("a refused signal cost %s of the grace", took)
+	}
+	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "stop"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// A stray is a unit too: its app gets the same SIGTERM and the same wait.
+func TestSystemdRunnerSweepSendsAStraySIGTERMAndWaits(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	unit := "hotserve-demo.v1.1111111111111111.service"
+	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true, StopTimeout: 10 * time.Second})
+	conn.mu.Lock()
+	conn.killErr = nil
+	conn.termEndsUnitAfter = 30 * time.Millisecond
+	conn.mu.Unlock()
+	if err := r.sweep(context.Background(), "demo", nil, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "SIGCONT"}) {
+		t.Fatalf("got %v", got)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	sddbus "github.com/coreos/go-systemd/v22/dbus"
@@ -621,6 +622,18 @@ func (c *userManagerClient) StopUnit(ctx context.Context, name string) (string, 
 		return "", err
 	}
 	return jobResult(ctx, ch)
+}
+
+func (c *userManagerClient) KillUnit(ctx context.Context, name string, sig syscall.Signal) error {
+	conn, err := c.get()
+	if err != nil {
+		return err
+	}
+	if err := conn.KillUnitWithTarget(ctx, name, sddbus.All, int32(sig)); err != nil { //nolint:gosec // a signal number fits
+		c.dropIfDisconnected(conn, err)
+		return err
+	}
+	return nil
 }
 
 // SetUnitProperties sets runtime (not persisted — transient units
