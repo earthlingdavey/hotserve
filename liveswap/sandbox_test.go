@@ -100,7 +100,7 @@ func TestSandboxPropertiesEveryUnit(t *testing.T) {
 		"PrivateTmp":            true,
 		"PrivateDevices":        true,
 		"ProtectControlGroups":  true,
-		"RestrictNamespaces":    uint64(0),
+		"RestrictNamespaces":    restrictNamespacesAllowed,
 		"CapabilityBoundingSet": uint64(0),
 		"SystemCallErrorNumber": int32(1),
 		"NoNewPrivileges":       true,
@@ -127,7 +127,7 @@ func TestSandboxPropertiesEveryUnit(t *testing.T) {
 	// private /dev, over the host's that PrivateDevices= binds (#311),
 	// at the host's default size — systemd's own for a
 	// TemporaryFileSystem= would be 10% of RAM.
-	if tmp, _ := got["TemporaryFileSystem"].([]tmpfsMount); !reflect.DeepEqual(tmp, []tmpfsMount{{"/", "ro"}, {"/dev/shm", "mode=1777,size=50%"}}) {
+	if tmp, _ := got["TemporaryFileSystem"].([]tmpfsMount); !reflect.DeepEqual(tmp, []tmpfsMount{{"/", "ro"}, {"/dev/shm", shmOptions()}}) {
 		t.Errorf("TemporaryFileSystem = %+v, want the whole root replaced and a /dev/shm of the unit's own", got["TemporaryFileSystem"])
 	}
 	binds := func(name string) map[string]bindMount {
@@ -203,7 +203,7 @@ func TestSandboxViewIsExactlyWhatIsNamed(t *testing.T) {
 	// The unit's own /dev/shm sits inside the private /dev, which
 	// PrivateDevices= builds within the empty root: it names nothing
 	// of the host's.
-	if tmp, _ := got["TemporaryFileSystem"].([]tmpfsMount); !reflect.DeepEqual(tmp, []tmpfsMount{{"/", "ro"}, {"/dev/shm", "mode=1777,size=50%"}}) {
+	if tmp, _ := got["TemporaryFileSystem"].([]tmpfsMount); !reflect.DeepEqual(tmp, []tmpfsMount{{"/", "ro"}, {"/dev/shm", shmOptions()}}) {
 		t.Fatalf("the view is not deny-by-default: TemporaryFileSystem = %+v", tmp)
 	}
 	view := map[string]bool{}

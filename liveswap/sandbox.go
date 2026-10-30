@@ -409,8 +409,8 @@ func probeSandboxSpec() *sandboxSpec {
 // Two checks cover seccomp. `Seccomp: 2` in the process's status says
 // some filter is loaded, but neither whose — one the manager itself
 // runs under reads 2 as well — nor which of the unit's several. So
-// the probe also tries `unshare -U`, which RestrictNamespaces= (the
-// empty set, sandboxProperties) refuses with EPERM: that setting is
+// the probe also tries `unshare -U`, which RestrictNamespaces=
+// (sandboxProperties) refuses with EPERM: that setting is
 // skipped exactly when the whole set is, so a namespace the probe can
 // make means the unit's own filters are not there, whatever mode it
 // inherited. An outer filter cannot refuse that unshare for the unit

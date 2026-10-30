@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	sddbus "github.com/coreos/go-systemd/v22/dbus"
@@ -497,8 +496,8 @@ func sandboxProperties(s *sandboxSpec) []sddbus.Property {
 		{Name: "ProtectKernelTunables", Value: godbus.MakeVariant(true)},
 		{Name: "ProtectKernelModules", Value: godbus.MakeVariant(true)},
 		{Name: "ProtectKernelLogs", Value: godbus.MakeVariant(true)},
-		// RestrictNamespaces=yes: the allowed set is empty.
-		{Name: "RestrictNamespaces", Value: godbus.MakeVariant(uint64(0))},
+		// No namespace an app can make (restrictNamespacesAllowed).
+		{Name: "RestrictNamespaces", Value: godbus.MakeVariant(restrictNamespacesAllowed)},
 		{Name: "RestrictRealtime", Value: godbus.MakeVariant(true)},
 		{Name: "RestrictSUIDSGID", Value: godbus.MakeVariant(true)},
 		{Name: "LockPersonality", Value: godbus.MakeVariant(true)},
@@ -533,14 +532,14 @@ func sandboxProperties(s *sandboxSpec) []sddbus.Property {
 		// memory and named semaphores live there, every app has the
 		// one uid, and the IPC namespace does not reach it. size=50%
 		// is the kernel's own default for the host's /dev/shm, so each
-		// app keeps the room the shared one gave it; left unsaid,
+		// app keeps the room the shared one gave it (shmOptions); left unsaid,
 		// systemd makes every TemporaryFileSystem= 10% of RAM
 		// (NESTED_TMPFS_LIMITS, namespace.c), which on a 2 GiB box is
 		// 204 MiB — headless Chromium's known trap at Docker's 64 MiB,
 		// a size nearer. Its pages are charged to the unit's memory
 		// cgroup like any other, so memory_max (#345) is the practical
 		// cap. mode=1777 as the host's. Owner's call (#311).
-		{Name: "TemporaryFileSystem", Value: godbus.MakeVariant([]tmpfsMount{{"/", "ro"}, {"/dev/shm", "mode=1777,size=50%"}})},
+		{Name: "TemporaryFileSystem", Value: godbus.MakeVariant([]tmpfsMount{{"/", "ro"}, {"/dev/shm", shmOptions()}})},
 		// The manager hands every unit its own XDG_RUNTIME_DIR and bus
 		// address; both point into a /run/user that is not in the view.
 		{Name: "UnsetEnvironment", Value: godbus.MakeVariant([]string{"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"})},
@@ -556,6 +555,42 @@ func sandboxProperties(s *sandboxSpec) []sddbus.Property {
 	props = appendIfAny(props, "BindPaths", writable)
 	props = append(props, sddbus.Property{Name: "PrivatePIDs", Value: godbus.MakeVariant("yes")})
 	return props
+}
+
+// restrictNamespacesAllowed is the one namespace type the seccomp filter
+// lets through: CLONE_NEWTIME, which needs CAP_SYS_ADMIN, and a unit's
+// bounding set is empty, so no app can make one. The empty set would say
+// it better and does not survive: the manager writes a transient unit's
+// flags as names, so 0 reaches the unit's file as `RestrictNamespaces=`,
+// which reads back as no restriction at all. A reload re-reads that file,
+// and a start job that runs after one would launch the app with it.
+// (systemd v257: bus_set_transient_namespace_flag, then
+// config_parse_restrict_namespaces.)
+const restrictNamespacesAllowed = uint64(0x80)
+
+// shmOptions is the options of a unit's /dev/shm: half of RAM, the
+// kernel's default for the host's, in bytes. A percentage says the same
+// and does not survive: the manager escapes it as `size=50%%` in the
+// unit's file and reads that back as written, which fails the mount, so
+// a start job that runs after a reload fails with 226/NAMESPACE. If RAM
+// cannot be read the percentage still works, short of a reload.
+func shmOptions() string {
+	const percent = "mode=1777,size=50%"
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return percent
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if rest, ok := strings.CutPrefix(line, "MemTotal:"); ok {
+			fields := strings.Fields(rest)
+			if len(fields) == 2 && fields[1] == "kB" {
+				if kb, err := strconv.ParseUint(fields[0], 10, 64); err == nil && kb > 0 {
+					return "mode=1777,size=" + strconv.FormatUint(kb*1024/2, 10)
+				}
+			}
+		}
+	}
+	return percent
 }
 
 // appendIfAny adds a list-valued property only when it has entries;
@@ -624,14 +659,30 @@ func (c *userManagerClient) StopUnit(ctx context.Context, name string) (string, 
 	return jobResult(ctx, ch)
 }
 
-func (c *userManagerClient) KillUnit(ctx context.Context, name string, sig syscall.Signal) error {
+func (c *userManagerClient) Reload(ctx context.Context) error {
 	conn, err := c.get()
 	if err != nil {
 		return err
 	}
-	if err := conn.KillUnitWithTarget(ctx, name, sddbus.All, int32(sig)); err != nil { //nolint:gosec // a signal number fits
+	if err := conn.ReloadContext(ctx); err != nil {
 		c.dropIfDisconnected(conn, err)
 		return err
+	}
+	// A reload applies the manager's config, and a unit with no TasksMax=
+	// then reports the new default. A property get takes no context, so
+	// the wait is bounded here; what fails keeps the number held.
+	read := make(chan uint64, 1)
+	go func() {
+		if v, err := conn.GetManagerProperty("DefaultTasksMax"); err == nil {
+			read <- parseManagerLimit(v)
+		}
+	}()
+	select {
+	case v := <-read:
+		if v != 0 {
+			c.defaultTasksMax.Store(v)
+		}
+	case <-ctx.Done():
 	}
 	return nil
 }
@@ -648,15 +699,15 @@ func (c *userManagerClient) SetUnitProperties(ctx context.Context, name string, 
 	return err
 }
 
-// DefaultTasksMax is the manager's DefaultTasksMax= as read with the
-// connection (get), resolved: the manager resolves its own percentage
+// DefaultTasksMax is the manager's DefaultTasksMax= as last read (get,
+// Reload), resolved: the manager resolves its own percentage
 // to a number, and a unit with no TasksMax= reports exactly this; a
 // manager configured with DefaultTasksMax=infinity reports infinity,
 // which is kept (it is that manager's default, where a lift goes). The
 // read happened under the dial's deadlines, so nothing here can wait
 // on a manager that has stopped answering; a dropped connection reads
 // it again on the redial, which is also when a manager restarted with
-// another value is seen.
+// another value is seen, and each Reload reads it again too.
 func (c *userManagerClient) DefaultTasksMax(_ context.Context) (uint64, error) {
 	if _, err := c.get(); err != nil {
 		return 0, err

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -177,8 +178,8 @@ func TestIPCAndSharedMemoryArePrivate(t *testing.T) {
 	for _, m := range tmp {
 		if m.Path == "/dev/shm" {
 			shm = true
-			if !strings.Contains(m.Options, "size=50%") {
-				t.Errorf("TemporaryFileSystem=/dev/shm:%s: without size=50%% systemd caps it at 10%% of RAM, less than the host's /dev/shm gave every app", m.Options)
+			if !regexp.MustCompile(`(^|,)size=[0-9]+$`).MatchString(m.Options) {
+				t.Errorf("TemporaryFileSystem=/dev/shm:%s: without a size systemd caps it at 10%% of RAM, less than the host's /dev/shm gave every app; and a percentage comes back from the unit's file as size=50%%%%, which fails the mount (shmOptions)", m.Options)
 			}
 		}
 	}

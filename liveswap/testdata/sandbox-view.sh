@@ -224,7 +224,7 @@ emit core_hard "$(ulimit -Hc)"
 # namespace its own user namespace owns, when its root is owned by this
 # uid (`self`); the host's, bound in, reads as root or nobody. /dev/shm
 # is a tmpfs of the unit's own at the kernel's half of RAM
-# (TemporaryFileSystem=/dev/shm:size=50%, liveswap/systemd_dbus.go) —
+# (TemporaryFileSystem=/dev/shm:size=<half of RAM>, shmOptions) —
 # shm_size_kb against memtotal_kb says so from inside — and a file
 # written there is not on the host: each lane checks for
 # /dev/shm/sandbox-view-canary from outside after the unit ran, so the

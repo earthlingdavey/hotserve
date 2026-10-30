@@ -968,8 +968,9 @@ beside its `ExecStartEx`: the manager spawns one process per unit
 
 - Namespaces: `PrivateUsers=yes`, `PrivatePIDs=yes`, `PrivateTmp=yes`,
   `PrivateDevices=yes`, `PrivateIPC=yes` (its own SysV IPC, POSIX
-  message queues and `/dev/mqueue`); `RestrictNamespaces=` (empty set
-  — an app cannot create further namespaces). `/dev/shm`, which
+  message queues and `/dev/mqueue`); `RestrictNamespaces=time` (the
+  one type left needs a capability no unit has, so an app cannot create
+  further namespaces). `/dev/shm`, which
   `PrivateDevices=` binds from the host and no IPC namespace covers,
   is a tmpfs of the unit's own (`TemporaryFileSystem=`, `size=50%` as
   the kernel gives the host's; `memory_max` is the practical cap;

@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -52,16 +51,10 @@ type fakeSystemdConn struct {
 	// read: listed, then gone by the time the reader looks.
 	vanishOnRead map[string]bool
 	stopDelay    time.Duration // StopUnit sleeps this long (concurrency tests)
-	// events is every KillUnit ("SIGTERM", "SIGKILL") and StopUnit
-	// ("stop") in the order they arrived, for the tests of that order.
-	events []string
-	// killErr is what KillUnit returns. Refused by default, which sends
-	// a stop straight to the stop job: the tests of what comes before
-	// the job clear it.
-	killErr error
-	// termEndsUnitAfter is how long after a SIGTERM the unit ends, as an
-	// app that handles it does; 0 is an app that ignores it.
-	termEndsUnitAfter time.Duration
+	// events is every Reload ("reload") and StopUnit ("stop") in order.
+	events      []string
+	reloadErr   error         // Reload returns this
+	reloadDelay time.Duration // Reload sleeps this long first
 	// setProps records every SetUnitProperties call by unit, in order.
 	setProps    map[string][][]sddbus.Property
 	setPropsErr error // SetUnitProperties returns this
@@ -85,7 +78,7 @@ func (f *fakeSystemdConn) DefaultTasksMax(_ context.Context) (uint64, error) {
 }
 
 func newFakeSystemdConn() *fakeSystemdConn {
-	return &fakeSystemdConn{status: map[string]unitStatus{}, killErr: errors.New("fake: KillUnit not scripted")}
+	return &fakeSystemdConn{status: map[string]unitStatus{}}
 }
 
 func (f *fakeSystemdConn) SetUnitProperties(_ context.Context, name string, props []sddbus.Property) error {
@@ -163,31 +156,20 @@ func (f *fakeSystemdConn) StopUnit(ctx context.Context, name string) (string, er
 	return "done", nil
 }
 
-func (f *fakeSystemdConn) KillUnit(_ context.Context, name string, sig syscall.Signal) error {
+func (f *fakeSystemdConn) Reload(context.Context) error {
+	f.mu.Lock()
+	delay := f.reloadDelay
+	f.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	switch sig {
-	case syscall.SIGTERM:
-		f.events = append(f.events, "SIGTERM")
-	case syscall.SIGCONT:
-		f.events = append(f.events, "SIGCONT")
-	default:
-		f.events = append(f.events, "SIGKILL")
-	}
-	if f.killErr != nil {
-		return f.killErr
-	}
-	if sig == syscall.SIGTERM && f.termEndsUnitAfter > 0 {
-		time.AfterFunc(f.termEndsUnitAfter, func() {
-			f.mu.Lock()
-			defer f.mu.Unlock()
-			delete(f.status, name)
-		})
-	}
-	return nil
+	f.events = append(f.events, "reload")
+	return f.reloadErr
 }
 
-func (f *fakeSystemdConn) killEvents() []string {
+func (f *fakeSystemdConn) managerEvents() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.events...)
@@ -616,189 +598,193 @@ func TestSystemdRunnerStopWaitsForObservedExit(t *testing.T) {
 	}
 }
 
-// The manager may not wait after its own SIGTERM (the integration lane's
-// singleProcessScript says when), so hotserve sends it and does the
-// waiting. An app that handles it ends inside its grace, and the stop
-// job is not needed: the unit is already gone.
-func TestSystemdRunnerStopSendsSIGTERMAndWaitsForTheAppToEnd(t *testing.T) {
+// waitManagerEvents waits for the manager to have seen n events.
+func waitManagerEvents(t *testing.T, conn *fakeSystemdConn, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := conn.managerEvents()
+		if len(got) >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited for %d manager events, have %v", n, got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A start owes one reload, so the manager's verdict on the app is reached
+// with the intermediate gone; the watcher pays it, and a stop after that
+// is the stop job alone, which holds the grace.
+func TestSystemdRunnerWatcherPaysTheReloadAndStopIsTheJob(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
 	h, err := r.Start(testApp(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn.mu.Lock()
-	conn.killErr = nil
-	conn.termEndsUnitAfter = 30 * time.Millisecond
-	conn.mu.Unlock()
-	if err := r.Stop(h, 10*time.Second); err != nil {
-		t.Fatalf("Stop: %v", err)
+	waitManagerEvents(t, conn, 1)
+	time.Sleep(20 * time.Millisecond) // many polls: it is paid once
+	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload"}) {
+		t.Fatalf("after Start: %v", got)
 	}
-	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "SIGCONT"}) {
-		t.Fatalf("an app that ends on SIGTERM needs that and nothing more, got %v", got)
+	if err := r.Stop(h, time.Second); err != nil {
+		t.Fatal(err)
 	}
-	if r.Alive(h) {
-		t.Fatal("handle must be dead after Stop returns nil")
+	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload", "stop"}) {
+		t.Fatalf("after Stop: %v", got)
 	}
 }
 
-// An app that ignores SIGTERM keeps its whole grace, then is killed, and
-// only then is the stop job asked for. A stop job before the SIGKILL
-// would start the unit's TimeoutStopSec a second time.
-func TestSystemdRunnerStopKillsOnlyAfterTheGrace(t *testing.T) {
+// A pid the watcher sees move has had no verdict, whatever an earlier
+// reload said of the pid before it: a manager slower than the settle.
+func TestSystemdRunnerAMovedMainPIDOwesAnotherReload(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
-	const grace = 150 * time.Millisecond
-	spec := testApp(t)
-	spec.grace = grace
-	h, err := r.Start(spec)
+	h, err := r.Start(testApp(t))
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitManagerEvents(t, conn, 1)
+	conn.setStatus(h.state().Unit, unitStatus{LoadState: "loaded", ActiveState: "active", MainPID: 5252})
+	waitManagerEvents(t, conn, 2)
+}
+
+// A reload that fails costs no start: it is said once, naming the unit,
+// with what it may cost, and tried again until one succeeds.
+func TestSystemdRunnerAFailedReloadIsSaidOnceAndTriedAgain(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	r.reloadRetry = 2 * time.Millisecond
+	core, logs := observer.New(zap.WarnLevel)
+	r.setLogger(zap.New(core))
 	conn.mu.Lock()
-	conn.killErr = nil
+	conn.reloadErr = errors.New("connection reset")
 	conn.mu.Unlock()
-	started := time.Now()
-	if err := r.Stop(h, grace); err != nil {
-		t.Fatalf("Stop: %v", err)
+	h, err := r.Start(testApp(t))
+	if err != nil {
+		t.Fatalf("a failed reload must not fail the start: %v", err)
 	}
-	if took := time.Since(started); took < grace {
-		t.Fatalf("killed after %s, before its %s grace", took, grace)
+	if !r.Alive(h) {
+		t.Fatal("the app must be running")
 	}
-	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "SIGCONT", "SIGKILL", "stop"}) {
+	waitManagerEvents(t, conn, 3)
+	conn.mu.Lock()
+	conn.reloadErr = nil
+	conn.mu.Unlock()
+	sh := h.(*systemdHandle)
+	for deadline := time.Now().Add(5 * time.Second); sh.reloadOwedSince.Load() != 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the debt was never paid")
+		}
+	}
+	if got := logs.FilterMessageSnippet("no grace").FilterField(zap.String("unit", h.state().Unit)).Len(); got != 1 {
+		t.Fatalf("said %d times: %v", got, logs.All())
+	}
+}
+
+// A stop of a unit still owing pays first, or the job may give it no
+// grace.
+func TestSystemdRunnerStopPaysAReloadStillOwed(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	r.reloadRetry = time.Hour
+	conn.mu.Lock()
+	conn.reloadErr = errors.New("connection reset")
+	conn.mu.Unlock()
+	h, err := r.Start(testApp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitManagerEvents(t, conn, 1)
+	if err := r.Stop(h, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload", "reload", "stop"}) {
 		t.Fatalf("got %v", got)
 	}
 }
 
-// The grace is the one the unit was started with, as for a sweep: a
-// config reloaded since does not stretch it, as the caller's grace would.
-func TestSystemdRunnerStopKeepsTheGraceTheUnitStartedWith(t *testing.T) {
+// One reload settles every unit, so a debt older than a reload that began
+// late enough costs nothing more: N apps at a restart are not N reloads.
+func TestSystemdRunnerAReloadPaysEveryDebtOlderThanIt(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
-	spec := testApp(t)
-	spec.grace = 50 * time.Millisecond
-	h, err := r.Start(spec)
-	if err != nil {
-		t.Fatal(err)
+	r.poll = time.Millisecond
+	h := &systemdHandle{unit: "hotserve-demo.v1.1111111111111111.service"}
+	h.reloadOwedSince.Store(time.Now().Add(-time.Hour).UnixNano())
+	r.reloaded.Store(time.Now().UnixNano())
+	r.payReloadOwed(h)
+	if got := conn.managerEvents(); len(got) != 0 {
+		t.Fatalf("got %v", got)
 	}
-	conn.mu.Lock()
-	conn.killErr = nil
-	conn.mu.Unlock()
-	started := time.Now()
-	if err := r.Stop(h, 10*time.Second); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	if took := time.Since(started); took > 5*time.Second {
-		t.Fatalf("a unit started with a %s grace got %s", spec.grace, took)
+	if h.reloadOwedSince.Load() != 0 {
+		t.Fatal("the debt stands")
 	}
 }
 
-// A context that ends during the grace ends hotserve's wait, not the
-// stop: the job goes to the manager on a context of its own, and the
-// manager holds the deadline from there. The caller still hears the
-// stop is unconfirmed, because it is.
-func TestSystemdRunnerStopJobStillGoesWhenTheContextEndsInTheGrace(t *testing.T) {
+// A pre_start's start job lasts as long as it runs, so the reload goes
+// while it does.
+func TestSystemdRunnerRunOnceReloadsWhileItRuns(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	conn.mu.Lock()
+	conn.blockStart = true
+	conn.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.RunOnce(ctx, testApp(t)) }()
+	waitManagerEvents(t, conn, 1)
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("a cancelled pre_start must not report success")
+	}
+	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload", "reload", "stop"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// A unit no handle knows is reloaded for first: a stray, or a pre_start
+// whose request was cancelled.
+func TestSystemdRunnerStopUnobservedReloadsBeforeTheJob(t *testing.T) {
+	r, conn := newTestSystemdRunner(t)
+	unit := "hotserve-demo.v1.1111111111111111.service"
+	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	if err := r.sweep(context.Background(), "demo", nil, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload", "stop"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// A reload slow enough to outlast the caller's context must not cost the
+// stop: before there was a reload the job went at once, and the manager
+// holds the deadline from there.
+func TestSystemdRunnerStopJobStillGoesAfterASlowReload(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
 	unit := "hotserve-demo.v1.1111111111111111.service"
 	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
 	conn.mu.Lock()
-	conn.killErr = nil
+	conn.reloadDelay = 100 * time.Millisecond
 	conn.stopLeaves = true // the job is still running when the caller looks
 	conn.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	cause := errors.New("stray")
-	err := r.stopUnobserved(ctx, unit, 10*time.Second, cause)
-	if !unitUnconfirmed(err) {
+	if err := r.stopUnobserved(ctx, unit, errors.New("stray")); !unitUnconfirmed(err) {
 		t.Fatalf("a context that ended before the unit was seen gone is unconfirmed, got %v", err)
 	}
-	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "SIGCONT", "stop"}) {
+	if got := conn.managerEvents(); !slices.Equal(got, []string{"reload", "stop"}) {
 		t.Fatalf("the stop job must reach the manager, got %v", got)
 	}
 }
 
-// What a stop did to an app is in the journal, whichever way it went.
-func TestSystemdRunnerTerminateSaysWhatItDid(t *testing.T) {
-	r, conn := newTestSystemdRunner(t)
-	core, logs := observer.New(zap.WarnLevel)
-	r.logger.Store(zap.New(core))
-	unit := "hotserve-demo.v1.1111111111111111.service"
-	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
-	conn.mu.Lock()
-	conn.killErr = errors.New("connection reset")
-	conn.mu.Unlock()
-	if r.terminate(context.Background(), unit, time.Second) {
-		t.Fatal("a refused signal ended nothing")
-	}
-	if got := logs.FilterMessageSnippet("stop job").FilterField(zap.String("unit", unit)).Len(); got != 1 {
-		t.Fatalf("a refused SIGTERM must be logged, naming the unit, once; got %d of %v", got, logs.All())
-	}
-	conn.mu.Lock()
-	conn.killErr = nil
-	conn.mu.Unlock()
-	if r.terminate(context.Background(), unit, 10*time.Millisecond) {
-		t.Fatal("an app that ignores SIGTERM has not ended")
-	}
-	if got := logs.FilterMessageSnippet("SIGKILL").FilterField(zap.String("unit", unit)).Len(); got != 1 {
-		t.Fatalf("an escalation must be logged, naming the unit, once; got %d of %v", got, logs.All())
-	}
-}
-
-// When the unit is never seen to go, the error must not claim a stop
-// job: when terminate ended the unit, there was none.
-func TestSystemdRunnerStopErrorClaimsNoStopJob(t *testing.T) {
-	r, conn := newTestSystemdRunner(t)
-	spec := testApp(t)
-	spec.grace = time.Millisecond
-	h, err := r.Start(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.mu.Lock()
-	conn.stopLeaves = true
-	conn.mu.Unlock()
-	time.AfterFunc(50*time.Millisecond, r.close)
-	err = r.Stop(h, spec.grace)
-	if err == nil || !strings.Contains(err.Error(), "not observed gone") || strings.Contains(err.Error(), "stop job") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-// A signal the manager refuses must not cost the grace, or the stop: the
-// stop job is the way that still works, and is asked for at once.
-func TestSystemdRunnerStopGoesToTheStopJobWhenTheSignalFails(t *testing.T) {
-	r, conn := newTestSystemdRunner(t)
-	h, err := r.Start(testApp(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.mu.Lock()
-	conn.killErr = errors.New("no matching processes to kill")
-	conn.mu.Unlock()
-	started := time.Now()
-	if err := r.Stop(h, 10*time.Second); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	if took := time.Since(started); took > 5*time.Second {
-		t.Fatalf("a refused signal cost %s of the grace", took)
-	}
-	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "stop"}) {
-		t.Fatalf("got %v", got)
-	}
-}
-
-// A stray is a unit too: its app gets the same SIGTERM and the same wait.
-func TestSystemdRunnerSweepSendsAStraySIGTERMAndWaits(t *testing.T) {
+// A reattached unit may have been started before hotserve did any of
+// this, so a restart owes a reload too.
+func TestSystemdRunnerReattachOwesAReload(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
 	unit := "hotserve-demo.v1.1111111111111111.service"
-	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true, StopTimeout: 10 * time.Second})
-	conn.mu.Lock()
-	conn.killErr = nil
-	conn.termEndsUnitAfter = 30 * time.Millisecond
-	conn.mu.Unlock()
-	if err := r.sweep(context.Background(), "demo", nil, nil, false); err != nil {
-		t.Fatal(err)
+	conn.setStatus(unit, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true, MainPID: 4242})
+	h, ok, err := r.Reattach(handleState{Unit: unit})
+	if err != nil || !ok || h == nil {
+		t.Fatalf("Reattach: %v, %v, %v", h, ok, err)
 	}
-	if got := conn.killEvents(); !slices.Equal(got, []string{"SIGTERM", "SIGCONT"}) {
-		t.Fatalf("got %v", got)
-	}
+	waitManagerEvents(t, conn, 1)
 }
 
 func TestSystemdRunnerStartJobFailureResetsUnit(t *testing.T) {

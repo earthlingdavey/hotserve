@@ -271,8 +271,9 @@ below as a contract the sandbox path must keep.
 - The unit's cgroup is the lifetime boundary (`KillMode=control-group`):
   nothing outlives the unit. A unit has no controlling terminal.
 - Privilege and system-call surface, every unit: `NoNewPrivileges=`,
-  `CapabilityBoundingSet=` (empty), `RestrictNamespaces=` (empty set —
-  an app cannot create further namespaces), `RestrictRealtime=`,
+  `CapabilityBoundingSet=` (empty), `RestrictNamespaces=time` (the
+  one type left needs a capability no unit has, so an app cannot create
+  further namespaces; the empty set does not survive a reload), `RestrictRealtime=`,
   `RestrictSUIDSGID=`, `LockPersonality=`, `ProtectKernelTunables=`,
   `ProtectKernelModules=`, `ProtectKernelLogs=`,
   `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK`
@@ -399,7 +400,8 @@ below as a contract the sandbox path must keep.
   (a migration that writes where the app cannot read is a bug caught
   at deploy time, not 3am).
 - Stop semantics MUST remain: SIGTERM to the whole cgroup, `grace`
-  (`TimeoutStopSec=`), then SIGKILL — with PID-namespace teardown as
+  (`TimeoutStopSec=`, which the manager holds only for a main process it
+  knows for its child: `reload`), then SIGKILL — with PID-namespace teardown as
   the backstop (killing the in-namespace init kills everything in the
   namespace; no survivor is possible). The existing escalation tests
   define the contract.
@@ -782,11 +784,26 @@ Dated one-liners; the full text of each is in git.
   mqueuefs it mounted itself, in an IPC namespace its user namespace
   owns) and that its IPC namespace is not hotserve's own, and that a
   file written in its `/dev/shm` is not on the host.
-- 2026-10-30 — A stop job can SIGKILL a one-process app at once: under
+- 2026-10-30 — A stop could SIGKILL a one-process app at once: under
   `PrivatePIDs=` the manager may take the app for not its child (a race
   with the intermediate, "Supervising process … which is not our child"),
   and `unit_kill_context` does not wait for one (systemd v257 and main).
-  The runner now sends SIGTERM and SIGKILL itself and waits out the grace
-  between them (with the SIGCONT a job sends), and asks for the job only
-  for what is left (`terminate`), or when its context ends (`stopJob`).
-  The earlier test's shell had a `sleep` in the cgroup, which hid it.
+  A daemon-reload reaches the verdict again with the intermediate gone, so
+  a unit starts owing one and its watcher pays it (`reload`,
+  `payReloadOwed`); a pre_start's goes while it runs. Measured on a plain
+  user manager: 5 of 14 instances lost their grace with no reload, none of
+  14 with one; 30 starts under 122 reloads all ran and kept their grace;
+  of 246 properties, a reload changed none of what a unit does. A second
+  process moved into the cgroup also worked (14 of 14) and was not taken:
+  it is a process and a unit per start, for what a reload does with
+  neither. The earlier test's shell had a `sleep` in the cgroup, which hid
+  all this. Reloading exposed two values that did not survive the unit's
+  file: a start job that runs after a reload runs from that file, and 38
+  of 60 starts under continuous reloads failed 226/NAMESPACE on a
+  `/dev/shm` of `size=50%%`, which is also what kept them from running
+  with `RestrictNamespaces=` read back empty, meaning no restriction. So
+  `/dev/shm` says its size in bytes (`shmOptions`), and the allowed set is
+  `time` (`restrictNamespacesAllowed`), which needs a capability no unit
+  has; the filter still refuses `setns` outright, `time` being outside
+  `NAMESPACE_FLAGS_ALL`. A reload by hand had the same window before any
+  of this.

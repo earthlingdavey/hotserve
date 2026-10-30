@@ -352,7 +352,7 @@ curl -fsS --max-time 5 http://127.0.0.1:8080/ | grep -q "probe" \
 # And the unit carries the properties the runner set.
 sunit=$(json_str "$(status)" unit)
 props=$(user_systemctl show "$sunit" -p PrivatePIDs,PrivateUsers,PrivateIPC,ProtectSystem,ProtectControlGroups,TemporaryFileSystem,InaccessiblePaths,LimitCORE,LimitCORESoft,SystemCallArchitectures)
-for want in "PrivatePIDs=yes" "PrivateUsers=yes" "PrivateIPC=yes" "ProtectControlGroups=yes" "TemporaryFileSystem=/:ro" "/dev/shm:mode=1777,size=50%" "LimitCORE=0" "LimitCORESoft=0" "SystemCallArchitectures=native"; do
+for want in "PrivatePIDs=yes" "PrivateUsers=yes" "PrivateIPC=yes" "ProtectControlGroups=yes" "TemporaryFileSystem=/:ro" "/dev/shm:mode=1777,size=" "LimitCORE=0" "LimitCORESoft=0" "SystemCallArchitectures=native"; do
 	case "$props" in
 	*"$want"*) pass "unit property $want" ;;
 	*) fail "unit lacks $want: $props" ;;

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1211,6 +1212,7 @@ func startSingleProcess(t *testing.T, r *systemdRunner, i int, onTerm string, gr
 	if err != nil {
 		t.Fatalf("start %d: %v", i, err)
 	}
+	t.Cleanup(func() { _ = r.Stop(h, spec.grace) }) // a no-op for one already stopped
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if _, err := os.Stat(filepath.Join(spec.dir, "ready")); err == nil {
@@ -1334,6 +1336,344 @@ func TestIntegrationSystemdSweepCutShortStillEndsTheUnit(t *testing.T) {
 	case <-r.Wait(h):
 	case <-time.After(grace + 5*time.Second):
 		t.Fatal("nothing ended the unit once the sweep's context had ended")
+	}
+}
+
+// TestIntegrationSystemdConcurrentStartsKeepTheirGrace: every start
+// reloads the manager, so apps deployed in parallel reload it under each
+// other's start jobs. Each still starts, and each keeps its grace.
+func TestIntegrationSystemdConcurrentStartsKeepTheirGrace(t *testing.T) {
+	r := integrationRunner(t)
+	specs := make([]startSpec, singleProcessRuns)
+	handles := make([]handle, singleProcessRuns)
+	errs := make([]error, singleProcessRuns)
+	var wg sync.WaitGroup
+	for i := range specs {
+		specs[i] = scriptApp(t, singleProcessScript(busyWork))
+		specs[i].grace = 10 * time.Second
+		specs[i].version += strconv.Itoa(i)
+		specs[i].nonce = "b1b2c3d4a1b2c3" + strconv.FormatInt(int64(16+i), 16)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			handles[i], errs[i] = r.Start(specs[i])
+		}()
+	}
+	wg.Wait()
+	t.Cleanup(func() {
+		for i, h := range handles {
+			if h != nil {
+				_ = r.Stop(h, specs[i].grace)
+			}
+		}
+	})
+	killed := 0
+	for i, h := range handles {
+		if errs[i] != nil {
+			t.Fatalf("start %d: %v", i, errs[i])
+		}
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(filepath.Join(specs[i].dir, "ready")); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("instance %d never got ready", i)
+			}
+		}
+		if err := r.Stop(h, specs[i].grace); err != nil {
+			t.Fatalf("stop %d: %v", i, err)
+		}
+		if _, err := os.Stat(filepath.Join(specs[i].dir, "drained")); err != nil {
+			killed++
+		}
+	}
+	if killed > 0 {
+		t.Fatalf("%d of %d apps started side by side lost their grace", killed, singleProcessRuns)
+	}
+}
+
+// TestIntegrationSystemdReloadLeavesAUnitAsItStarted: a reload reads a
+// transient unit back from the file the manager wrote for it, so
+// everything hotserve set must survive that: argv as written
+// (no-env-expand), the environment, the caps and the whole sandbox. A
+// value that does not is a unit that starts differently if a reload lands
+// before its start job runs. A reattach must still take it for sandboxed.
+func TestIntegrationSystemdReloadLeavesAUnitAsItStarted(t *testing.T) {
+	r := integrationRunner(t)
+	r.poll = time.Hour // no reload from the watcher before the first look
+	spec := scriptApp(t, "exec sleep 300\n")
+	spec.command = []string{"./server", "$HOME", "$$", "100%", "two words", `quo"te`}
+	spec.env = append(spec.env, "SPACED=a b", "PERCENT=100%", "DOLLAR=$HOME", `QUOTED=a"b`, `BACKSLASH=a\b`)
+	spec.caps = resourceCaps{memoryMax: 64 << 20, tasksMax: 40, cpuQuota: 50}
+	h, err := r.Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := h.state().Unit
+	t.Cleanup(func() { run(t, "systemctl", "--user", "kill", "-s", "KILL", unit) })
+	// Everything but ExecStart's runtime fields (pid, times) and what
+	// is measured; After= and Requires= are the same sets, reordered.
+	show := func() []string {
+		var keep []string
+		for _, l := range strings.Split(run(t, "systemctl", "--user", "show", unit), "\n") {
+			k, _, _ := strings.Cut(l, "=")
+			switch {
+			case strings.HasPrefix(k, "ExecStart"):
+				l, _, _ = strings.Cut(l, " ; start_time")
+			case strings.Contains(k, "Current"), strings.Contains(k, "Peak"), strings.Contains(k, "Timestamp"),
+				strings.HasPrefix(k, "CPUUsage"), strings.HasPrefix(k, "IO"), strings.HasPrefix(k, "IP"),
+				strings.HasPrefix(k, "Memory") && strings.Contains(k, "Available"),
+				k == "After", k == "Requires", k == "InvocationID", k == "NRestarts":
+				continue
+			}
+			keep = append(keep, l)
+		}
+		return keep
+	}
+	before := show()
+	if err := r.conn.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after := show()
+	var gone []string
+	for _, l := range before {
+		if !slices.Contains(after, l) {
+			gone = append(gone, l)
+		}
+	}
+	if len(gone) > 0 {
+		t.Fatalf("a reload changed the unit; lines gone: %q", gone)
+	}
+	if pid := h.state().PID; !alivePID(pid) {
+		t.Fatalf("the app did not survive the reload: pid %d", pid)
+	}
+	h2, ok, err := r.Reattach(h.state())
+	if err != nil || !ok || h2 == nil {
+		t.Fatalf("a reattach after a reload: %v, %v, %v", h2, ok, err)
+	}
+}
+
+// TestIntegrationSystemdNoNamespaceIsAvailable: RestrictNamespaces= lets
+// the time type through the filter (restrictNamespacesAllowed), because
+// the empty set does not survive a reload. No app can make one all the
+// same, and the filter still refuses every other type.
+func TestIntegrationSystemdNoNamespaceIsAvailable(t *testing.T) {
+	r := integrationRunner(t)
+	spec := scriptApp(t, `for f in -U -m -n -p -i -u -C -T "-U -m"; do unshare $f true 2>/dev/null && echo "$f made" >> verdict || echo "$f refused" >> verdict; done
+: > ready
+exec sleep 300
+`)
+	h, err := r.Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Stop(h, spec.grace) })
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(spec.dir, "ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the app never finished trying")
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(spec.dir, "verdict"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("from inside the unit:\n%s", b)
+	if strings.Contains(string(b), "made") || strings.Count(string(b), "refused") != 9 {
+		t.Fatalf("an app made a namespace, or did not try every one:\n%s", b)
+	}
+}
+
+// TestIntegrationSystemdStartsUnderReloadKeepTheirSandbox: a start job
+// that runs after a reload runs from the unit read back from its file, and
+// every app's start and stop reloads. Each must still start, and still be
+// refused a namespace: a value that does not survive the file either fails
+// the unit (a /dev/shm size=50%% mount) or silently drops the sandbox (an
+// empty RestrictNamespaces= means no restriction).
+func TestIntegrationSystemdStartsUnderReloadKeepTheirSandbox(t *testing.T) {
+	r := integrationRunner(t)
+	var quit atomic.Bool
+	var reloads sync.WaitGroup
+	reloads.Add(1)
+	go func() {
+		defer reloads.Done()
+		// Far more than any box does; with no pause at all, the manager
+		// does little else and a start can run past its deadline.
+		for !quit.Load() {
+			_ = r.conn.Reload(context.Background())
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	const n = 24
+	specs := make([]startSpec, n)
+	handles := make([]handle, n)
+	errs := make([]error, n)
+	var starts sync.WaitGroup
+	for i := range specs {
+		specs[i] = scriptApp(t, "trap 'exit 0' TERM\nunshare -U true 2>/dev/null && echo unshared > verdict || echo refused > verdict\nsleep 300 &\nwait\n")
+		specs[i].version += strconv.Itoa(i)
+		specs[i].nonce = "d1b2c3d4a1b2c3" + strconv.FormatInt(int64(16+i), 16)
+		starts.Add(1)
+		go func() {
+			defer starts.Done()
+			handles[i], errs[i] = r.Start(specs[i])
+		}()
+	}
+	starts.Wait()
+	quit.Store(true)
+	reloads.Wait()
+	t.Cleanup(func() {
+		for i, h := range handles {
+			if h != nil {
+				_ = r.Stop(h, specs[i].grace)
+			}
+		}
+	})
+	time.Sleep(2 * time.Second)
+	bad := map[string]int{}
+	for i := range specs {
+		if errs[i] != nil {
+			bad["start refused"]++
+			t.Logf("start %d: %v", i, errs[i])
+			continue
+		}
+		v, _ := os.ReadFile(filepath.Join(specs[i].dir, "verdict"))
+		switch got := strings.TrimSpace(string(v)); got {
+		case "refused":
+		case "":
+			bad["never ran"]++
+		default:
+			bad[got]++
+		}
+	}
+	if len(bad) > 0 {
+		t.Fatalf("of %d apps started under reloads: %v", n, bad)
+	}
+}
+
+// TestIntegrationSystemdPreStartPastItsDeadlineGetsItsGrace: a pre_start
+// is a oneshot whose start job lasts as long as it runs, and past its
+// deadline it is the manager that stops it, so nothing of hotserve's is
+// in the path: its handler must still finish.
+func TestIntegrationSystemdPreStartPastItsDeadlineGetsItsGrace(t *testing.T) {
+	r := integrationRunner(t)
+	killed := 0
+	for i := range singleProcessRuns {
+		spec := scriptApp(t, singleProcessScript(busyWork))
+		spec.grace = 10 * time.Second
+		spec.startTimeout = time.Second
+		spec.version += strconv.Itoa(i)
+		spec.nonce = "c1b2c3d4a1b2c3" + strconv.FormatInt(int64(16+i), 16)
+		if err := r.RunOnce(context.Background(), spec); err == nil {
+			t.Fatalf("run %d: a pre_start past its deadline must fail", i)
+		}
+		if _, err := os.Stat(filepath.Join(spec.dir, "drained")); err != nil {
+			killed++
+		}
+	}
+	if killed > 0 {
+		t.Fatalf("%d of %d pre_starts past their deadline were killed before their handler finished", killed, singleProcessRuns)
+	}
+}
+
+// TestIntegrationSystemdReloadRefreshesDefaultTasksMax: a reload applies
+// the manager's config, and a unit with no TasksMax= then reports the new
+// default. hotserve reads a TasksMax equal to the default as unset
+// (unitCaps), so the number it holds must move with it.
+func TestIntegrationSystemdReloadRefreshesDefaultTasksMax(t *testing.T) {
+	integrationRunner(t)
+	ctx := context.Background()
+	before, err := userManager.DefaultTasksMax(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".config/systemd/user.conf.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(dir, "zz-itest-tasks.conf")
+	want := before + 123
+	if err := os.WriteFile(conf, []byte("[Manager]\nDefaultTasksMax="+strconv.FormatUint(want, 10)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(conf)
+		_ = userManager.Reload(ctx)
+	})
+	if err := userManager.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := userManager.DefaultTasksMax(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("after a reload that made it %d, hotserve holds %d", want, got)
+	}
+}
+
+// TestIntegrationSystemdManagerStopGivesASingleProcessAppItsGrace: a
+// stop the manager starts itself, as at a reboot, with no hotserve in
+// the path: the app's handler still finishes.
+func TestIntegrationSystemdManagerStopGivesASingleProcessAppItsGrace(t *testing.T) {
+	r := integrationRunner(t)
+	killed := 0
+	for i := range singleProcessRuns {
+		spec, h := startSingleProcess(t, r, i, busyWork, 10*time.Second)
+		for deadline := time.Now().Add(5 * time.Second); h.(*systemdHandle).reloadOwedSince.Load() != 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the reload was never paid")
+			}
+		}
+		run(t, "systemctl", "--user", "stop", h.state().Unit)
+		select {
+		case <-r.Wait(h):
+		case <-time.After(spec.grace + 5*time.Second):
+			t.Fatalf("instance %d: the manager's stop was never seen to end", i)
+		}
+		if _, err := os.Stat(filepath.Join(spec.dir, "drained")); err != nil {
+			killed++
+		}
+	}
+	if killed > 0 {
+		t.Fatalf("%d of %d single-process apps were killed before their SIGTERM handler finished", killed, singleProcessRuns)
+	}
+}
+
+// TestIntegrationSystemdARepeatedStopSignalsOnce: a stop that finds one
+// already in progress, as recovery's sweep does after hotserve restarts
+// during a stop, joins it. An app that reads a second SIGTERM as "force
+// quit" (uvicorn, Celery) must not see one, and the grace must not start
+// again.
+func TestIntegrationSystemdARepeatedStopSignalsOnce(t *testing.T) {
+	r := integrationRunner(t)
+	const grace = 2 * time.Second
+	spec, h := startSingleProcess(t, r, 0, "echo term >> terms", grace)
+	started := time.Now()
+	stopped := make(chan error, 1)
+	go func() { stopped <- r.Stop(h, spec.grace) }()
+	time.Sleep(300 * time.Millisecond)
+	if err := r.Sweep(spec.app, nil); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(spec.dir, "terms"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(b), "term"); n != 1 {
+		t.Fatalf("the app saw %d SIGTERMs", n)
+	}
+	if took := time.Since(started); took > grace+time.Second {
+		t.Fatalf("a %s grace took %s", grace, took)
 	}
 }
 
