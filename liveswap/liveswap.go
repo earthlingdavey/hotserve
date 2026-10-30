@@ -539,9 +539,6 @@ func (a *App) Validate() error {
 		if err := validateSocketPath(a.Root, name); err != nil {
 			return err
 		}
-		if err := validateBindPath(a.Root); err != nil {
-			return fmt.Errorf("root: %w", err)
-		}
 		for k := range cfg.Env {
 			if !validEnvKey(k) {
 				return fmt.Errorf("app %s: env key %q is not a valid environment variable name (must match %s)", name, k, envKeyRe)

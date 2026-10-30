@@ -38,6 +38,7 @@ func integrationRunner(t *testing.T) *systemdRunner {
 	logger, _ := zap.NewDevelopment()
 	r := newSystemdRunner(userManager, logger.Named(t.Name()))
 	r.poll = 50 * time.Millisecond
+	r.margin = 200 * time.Millisecond
 	t.Cleanup(r.close)
 	return r
 }
@@ -1403,7 +1404,7 @@ func TestIntegrationSystemdReloadLeavesAUnitAsItStarted(t *testing.T) {
 	r.poll = time.Hour // no reload from the watcher before the first look
 	spec := scriptApp(t, "exec sleep 300\n")
 	// Every character validateBindPath lets through that a path might hold.
-	dir := filepath.Join(spec.dir, "a.b_c-d+e,f=g~h@i#j%k;l$m&n*o[p]é")
+	dir := filepath.Join(spec.dir, "a.b_c-d+e,f=g~h@i#j%k;l$m&n*o[p]é\u00a0q\u2003r")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1412,8 +1413,13 @@ func TestIntegrationSystemdReloadLeavesAUnitAsItStarted(t *testing.T) {
 	}
 	spec.dir = dir
 	spec.sandbox = itestSandbox(dir)
-	spec.command = []string{"./server", "$HOME", "$$", "100%", "two words", `quo"te`}
-	spec.env = append(spec.env, "SPACED=a b", "PERCENT=100%", "DOLLAR=$HOME", `QUOTED=a"b`, `BACKSLASH=a\b`)
+	// What an operator's text can hold. Measured: only bytes that are not
+	// UTF-8 fail, at the start, naming D-Bus.
+	awkward := []string{"$HOME", "$$", "${X}", "100%", "%h", "two words", "  lead  ", `quo"te`, "'", `a\b`, `trail\`, "a\nb", "a\tb", "a\rb", "a\vb", "a\ab", "a\x7fb", "日本語", "😀", "a;b", "#a", "@a", "-a", "a:b", "a=b=c", ""}
+	spec.command = append([]string{"./server"}, awkward...)
+	for i, v := range awkward {
+		spec.env = append(spec.env, "AWKWARD"+strconv.Itoa(i)+"="+v)
+	}
 	spec.caps = resourceCaps{memoryMax: 64 << 20, tasksMax: 40, cpuQuota: 50}
 	h, err := r.Start(spec)
 	if err != nil {
@@ -1426,10 +1432,10 @@ func TestIntegrationSystemdReloadLeavesAUnitAsItStarted(t *testing.T) {
 	show := func() []string {
 		var keep []string
 		for _, l := range strings.Split(run(t, "systemctl", "--user", "show", unit), "\n") {
+			// Wherever it falls: a newline in argv splits ExecStart's line.
+			l, _, _ = strings.Cut(l, " ; start_time")
 			k, _, _ := strings.Cut(l, "=")
 			switch {
-			case strings.HasPrefix(k, "ExecStart"):
-				l, _, _ = strings.Cut(l, " ; start_time")
 			case strings.Contains(k, "Current"), strings.Contains(k, "Peak"), strings.Contains(k, "Timestamp"),
 				strings.HasPrefix(k, "CPUUsage"), strings.HasPrefix(k, "IO"), strings.HasPrefix(k, "IP"),
 				strings.HasPrefix(k, "Memory") && strings.Contains(k, "Available"),
@@ -1441,7 +1447,7 @@ func TestIntegrationSystemdReloadLeavesAUnitAsItStarted(t *testing.T) {
 		return keep
 	}
 	before := show()
-	if err := r.conn.Reload(context.Background()); err != nil {
+	if err := r.conn.Reload(context.Background(), monoNow()); err != nil {
 		t.Fatal(err)
 	}
 	after := show()
@@ -1496,6 +1502,79 @@ exec sleep 300
 	}
 }
 
+// TestIntegrationSystemdAUnitAReloadCannotReadIsStillRunning: over 1 MiB of
+// environment is accepted over D-Bus and does not survive the unit's file,
+// so a reload leaves it error/active with the app alive. hotserve must go
+// on knowing that, and a stop must still end it. (A launch refuses this
+// much: buildEnvFull. This is the backstop, for what escaping adds.)
+func TestIntegrationSystemdAUnitAReloadCannotReadIsStillRunning(t *testing.T) {
+	r := integrationRunner(t)
+	spec := scriptApp(t, "trap 'exit 0' TERM\nsleep 300 &\nwait\n")
+	for k := range 10 {
+		spec.env = append(spec.env, "BIG"+strconv.Itoa(k)+"="+strings.Repeat("v", 120*1024))
+	}
+	h, err := r.Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	pid := h.state().PID
+	if err := r.conn.Reload(context.Background(), monoNow()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // the watcher's polls
+	if got := run(t, "systemctl", "--user", "show", h.state().Unit, "-p", "LoadState", "--value"); strings.TrimSpace(got) != "error" {
+		t.Fatalf("this test needs a unit whose file does not load, got %q", got)
+	}
+	if !r.Alive(h) || !alivePID(pid) {
+		t.Fatalf("alive: hotserve says %v, the process says %v", r.Alive(h), alivePID(pid))
+	}
+	// And a restart of hotserve adopts it, rather than taking the defaults
+	// the manager now reports for a bare unit.
+	if h2, ok, err := r.Reattach(h.state()); err != nil || !ok || h2 == nil || !alivePID(pid) {
+		t.Fatalf("a reattach: %v, %v, %v; alive %v", h2, ok, err, alivePID(pid))
+	}
+	if err := r.Stop(h, spec.grace); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if alivePID(pid) {
+		t.Fatal("the app outlived its stop")
+	}
+}
+
+// TestIntegrationSystemdWhatThePreflightAdmitsSurvivesAReload: the limit is
+// the real one. As much as the pre-flight lets through, plain or as written
+// by the manager's escaping, reads back.
+func TestIntegrationSystemdWhatThePreflightAdmitsSurvivesAReload(t *testing.T) {
+	r := integrationRunner(t)
+	r.margin = time.Hour
+	for name, value := range map[string]string{"plain": "v", "cjk": "日"} {
+		t.Run(name, func(t *testing.T) {
+			spec := scriptApp(t, "trap 'exit 0' TERM\nsleep 300 &\nwait\n")
+			spec.version = "preflightadmits" + name
+			for k := 0; ; k++ {
+				more := spec
+				more.env = append(slices.Clone(spec.env), "BIG"+strconv.Itoa(k)+"="+strings.Repeat(value, 60*1024/len(value)))
+				if r.Preflight(more) != nil {
+					break
+				}
+				spec = more
+			}
+			h, err := r.Start(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = r.Stop(h, spec.grace) })
+			if err := r.conn.Reload(context.Background(), monoNow()); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(run(t, "systemctl", "--user", "show", h.state().Unit, "-p", "LoadState", "--value")); got != "loaded" {
+				t.Fatalf("%d values the pre-flight admitted left the unit %s", len(spec.env), got)
+			}
+		})
+	}
+}
+
 // TestIntegrationSystemdStartsUnderReloadKeepTheirSandbox: a start job
 // that runs after a reload runs from the unit read back from its file, and
 // every app's start and stop reloads. Each must still start, and still be
@@ -1512,7 +1591,7 @@ func TestIntegrationSystemdStartsUnderReloadKeepTheirSandbox(t *testing.T) {
 		// Far more than any box does; with no pause at all, the manager
 		// does little else and a start can run past its deadline.
 		for !quit.Load() {
-			_ = r.conn.Reload(context.Background())
+			_ = r.conn.Reload(context.Background(), monoNow())
 			time.Sleep(50 * time.Millisecond)
 		}
 	}()
@@ -1588,6 +1667,30 @@ func TestIntegrationSystemdPreStartPastItsDeadlineGetsItsGrace(t *testing.T) {
 	}
 }
 
+// TestIntegrationSystemdPreStartWithAShortDeadlineGetsItsGrace: the same
+// on production's intervals, with a deadline short of two of their polls.
+func TestIntegrationSystemdPreStartWithAShortDeadlineGetsItsGrace(t *testing.T) {
+	r := integrationRunner(t)
+	r.poll = unitPollInterval
+	killed := 0
+	for i := range singleProcessRuns {
+		spec := scriptApp(t, singleProcessScript(busyWork))
+		spec.grace = 10 * time.Second
+		spec.startTimeout = 700 * time.Millisecond
+		spec.version += strconv.Itoa(i)
+		spec.nonce = "c2b2c3d4a1b2c3" + strconv.FormatInt(int64(16+i), 16)
+		if err := r.RunOnce(context.Background(), spec); err == nil {
+			t.Fatalf("run %d: a pre_start past its deadline must fail", i)
+		}
+		if _, err := os.Stat(filepath.Join(spec.dir, "drained")); err != nil {
+			killed++
+		}
+	}
+	if killed > 0 {
+		t.Fatalf("%d of %d pre_starts past a short deadline were killed before their handler finished", killed, singleProcessRuns)
+	}
+}
+
 // TestIntegrationSystemdReloadRefreshesDefaultTasksMax: a reload applies
 // the manager's config, and a unit with no TasksMax= then reports the new
 // default. hotserve reads a TasksMax equal to the default as unset
@@ -1614,9 +1717,9 @@ func TestIntegrationSystemdReloadRefreshesDefaultTasksMax(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = os.Remove(conf)
-		_ = userManager.Reload(ctx)
+		_ = userManager.Reload(ctx, monoNow())
 	})
-	if err := userManager.Reload(ctx); err != nil {
+	if err := userManager.Reload(ctx, monoNow()); err != nil {
 		t.Fatal(err)
 	}
 	got, err := userManager.DefaultTasksMax(ctx)
@@ -1651,9 +1754,9 @@ func TestIntegrationSystemdReloadRefreshesDefaultLimitNOFILE(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = os.Remove(conf)
-		_ = userManager.Reload(ctx)
+		_ = userManager.Reload(ctx, monoNow())
 	})
-	if err := userManager.Reload(ctx); err != nil {
+	if err := userManager.Reload(ctx, monoNow()); err != nil {
 		t.Fatal(err)
 	}
 	if got := userManager.nofile.Load(); got != want {

@@ -67,9 +67,9 @@ type userManagerClient struct {
 	// defaultTasksMax is the manager's DefaultTasksMax=, read when nofile
 	// is; infinity kept, 0 = unreadable.
 	defaultTasksMax atomic.Uint64
-	// reloadBegan is ReloadBegan's: there is one manager, whichever app's
-	// runner reloads it.
-	reloadBegan atomic.Int64
+	// reloads is what Reload goes through: there is one manager, whichever
+	// app's runner reloads it.
+	reloads reloadGate
 }
 
 // userManager is the process-wide client every systemdRunner shares.
@@ -663,22 +663,22 @@ func (c *userManagerClient) StopUnit(ctx context.Context, name string) (string, 
 	return jobResult(ctx, ch)
 }
 
-func (c *userManagerClient) Reload(ctx context.Context) error {
-	conn, err := c.get()
-	if err != nil {
-		return err
-	}
-	began := time.Now().UnixNano()
-	if err := conn.ReloadContext(ctx); err != nil {
-		c.dropIfDisconnected(conn, err)
-		return err
-	}
-	c.reloadBegan.Store(began)
-	c.refreshLimits(ctx, conn.GetManagerProperty)
-	return nil
+func (c *userManagerClient) Reload(ctx context.Context, after int64) error {
+	return c.reloads.do(after, func() error {
+		conn, err := c.get()
+		if err != nil {
+			return err
+		}
+		if err := conn.ReloadContext(ctx); err != nil {
+			c.dropIfDisconnected(conn, err)
+			return err
+		}
+		c.refreshLimits(ctx, conn.GetManagerProperty)
+		return nil
+	})
 }
 
-func (c *userManagerClient) ReloadBegan() int64 { return c.reloadBegan.Load() }
+func (c *userManagerClient) ReloadBegan() int64 { return c.reloads.began.Load() }
 
 // refreshLimits reads again what a reload may have changed: it applies
 // the manager's config, so the ceiling a unit is stamped with moves, and
@@ -687,11 +687,14 @@ func (c *userManagerClient) ReloadBegan() int64 { return c.reloadBegan.Load() }
 // held.
 func (c *userManagerClient) refreshLimits(ctx context.Context, get func(string) (string, error)) {
 	var nofile, tasksMax uint64
+	var nofileRead bool
 	read := make(chan struct{})
 	go func() {
 		defer close(read)
-		if v, err := get("DefaultLimitNOFILE"); err == nil {
-			nofile = parseManagerUint(v)
+		// 0 is two things here: infinity, which is no override from now
+		// on, and what cannot be parsed, which is nothing learned.
+		if v, err := get("DefaultLimitNOFILE"); err == nil && parseManagerLimit(v) != 0 {
+			nofile, nofileRead = parseManagerUint(v), true
 		}
 		if v, err := get("DefaultTasksMax"); err == nil {
 			tasksMax = parseManagerLimit(v)
@@ -699,7 +702,7 @@ func (c *userManagerClient) refreshLimits(ctx context.Context, get func(string) 
 	}()
 	select {
 	case <-read:
-		if nofile != 0 {
+		if nofileRead {
 			c.nofile.Store(nofile)
 		}
 		if tasksMax != 0 {

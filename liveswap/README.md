@@ -177,7 +177,9 @@ own runtime directory and bus — the sockets a sandboxed app must not
 hold. Setting either has no effect rather than an error. Keys must be valid
 variable names (`[A-Za-z_][A-Za-z0-9_]*`) — systemd rejects anything
 else, so config load does too. Anything more an app needs must be
-passed explicitly via `env` or `env_file`. Apps get the user manager's
+passed explicitly via `env` or `env_file`, up to 900 KiB in all as systemd
+writes it, where a byte outside printable ASCII takes four: more is refused
+at launch, because systemd could not read the unit back. Apps get the user manager's
 resource limits; each unit sets its open-files limit (soft and hard)
 to the manager's ceiling, which the package raises to match
 `hotserve.service` (1048576) via a `user@<uid>.service.d` drop-in —

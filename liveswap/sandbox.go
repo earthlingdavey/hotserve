@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
@@ -376,11 +375,12 @@ func supervisorPaths() []string {
 // writes a transient unit's BindPaths= as they stand, and a reload reads
 // them back, split at the space or the colon, or as a bad setting; a start
 // job that runs after one then binds the wrong thing or fails. Measured on
-// systemd 257: whitespace, `:`, both quotes and `\`, and control
-// characters by the same parser. The rest survives, `%` and `;` included.
+// systemd 257: space, tab, `:`, both quotes and `\`, and ASCII control
+// characters by the same parser. The rest survives, `%`, `;` and non-ASCII
+// spaces included.
 func validateBindPath(p string) error {
 	if i := strings.IndexFunc(p, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune(`:'"\`, r)
+		return r <= ' ' || r == 0x7f || strings.ContainsRune(`:'"\`, r)
 	}); i >= 0 {
 		return fmt.Errorf("path %q holds %q, which systemd cannot read back from a unit's file: a daemon-reload would bind the wrong thing or fail the app's next start. Use a path without whitespace, colons, quotes or backslashes", p, []rune(p[i:])[0])
 	}
@@ -641,6 +641,9 @@ func validateSandboxRoot(root string) error {
 	}
 	supervisor := supervisorPaths()
 	for _, r := range roots {
+		if err := validateBindPath(r); err != nil {
+			return fmt.Errorf("root: %w", err)
+		}
 		for _, h := range supervisor {
 			if pathWithin(r, h) {
 				return fmt.Errorf("root %q is inside %s, which holds hotserve's own keys, sockets and env files; use a root outside it (the default is /var/lib/liveswap)", root, h)

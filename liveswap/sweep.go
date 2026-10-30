@@ -103,8 +103,10 @@ func sweepUnknownApps(ctx context.Context, conn systemdConn, root string, logger
 // sweepUnowned stops every unit of an app nobody owns and then prunes
 // its socket dirs — as one step under the app's ownerLock, so a reload
 // acquiring the app cannot slip in between and adopt what is about to
-// be removed. The caller's deadline bounds the whole sweep, so a slow
-// manager cannot hold the start-time sweep open indefinitely; each
+// be removed. The caller's deadline bounds the sweep's decisions, so a
+// slow manager cannot hold the start-time sweep open indefinitely, though
+// its reload and the stop jobs it has decided on still go, each with a
+// bound of its own, so a stop is not lost to the deadline; each
 // stop re-checks the pool first, so a reload adopting the app between
 // listing and stopping keeps its unit. Ownership is not monotonic — a
 // candidate config can own the app for a moment and be cleaned up —

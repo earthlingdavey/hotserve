@@ -358,6 +358,11 @@ for want in "PrivatePIDs=yes" "PrivateUsers=yes" "PrivateIPC=yes" "ProtectContro
 	*) fail "unit lacks $want: $props" ;;
 	esac
 done
+# In bytes: a percentage does not survive the unit's file (shmOptions).
+case "$props" in
+*"/dev/shm:mode=1777,size="*%*) fail "unit's /dev/shm is sized by percentage: $props" ;;
+*) pass "unit's /dev/shm is sized in bytes" ;;
+esac
 # And the caps as the manager holds them (the kernel's view is the
 # probe's rows above): memory_max brings no swap with it, and status
 # reports the three in the directives' own units.
