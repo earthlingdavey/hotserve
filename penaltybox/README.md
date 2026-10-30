@@ -9,6 +9,14 @@ penalty box and gets `429` + `Retry-After` — before its requests reach
 the origin — until the box expires. The hint header is stripped before
 the response reaches the client.
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. If you run a release, read it at
+that release's tag: `dpkg-query -W hotserve` on the box gives the
+version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
+box installs the
+[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+
 If you know [Fastly's penalty boxes][fastly-concepts] or HAProxy's
 [stick tables][haproxy-docs], you already understand this module — it is
 the deliberate Caddy counterpart to those recipes, with matching

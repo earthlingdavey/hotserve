@@ -9,6 +9,14 @@ socket, health-gate it, atomically cut traffic over, gracefully stop
 the old one. No Kubernetes, no Nomad, no SSH keys in CI, no extra daemons.
 One binary. Part of [hotserve](https://github.com/smallhoursorg/hotserve), from [smallhours](https://github.com/smallhoursorg).
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. If you run a release, read it at
+that release's tag: `dpkg-query -W hotserve` on the box gives the
+version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
+box installs the
+[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+
 ```
 git push → CI builds app.tar.gz → uploads it → curl webhook → Caddy hot-swaps it
 ```
@@ -41,6 +49,7 @@ existing version with other bytes is rejected; rollback is how you
 relaunch one, the running version included, and a deploy of the
 running version with the same artifact relaunches it too (see
 [Relaunching the running version](#relaunching-the-running-version)).
+v0.3.1 refuses both for the running version.
 
 The cutover is an atomic pointer swap inside a `reverse_proxy` dynamic
 upstream source — no config reload, no socket juggling, and every
@@ -276,7 +285,7 @@ resolved at config load.
 | `env`, `env_file` | — | Extra environment |
 | `health_path` | `/health` | 2xx = healthy; `off` = process-liveness only |
 | `health_interval` / `health_timeout` | `5s` / `2s` | Probe cadence |
-| `soak` | `15s` | Continuous health required before cutover. `0` is no soak: traffic moves on the first healthy probe. Refused with `health_path off`, where nothing is probed and the gate would look once, straight after the process starts: set a `health_path`, or a `soak` above 0 |
+| `soak` | `15s` | Continuous health required before cutover. `0` is no soak: traffic moves on the first healthy probe. Refused with `health_path off`, where nothing is probed and the gate would look once, straight after the process starts: set a `health_path`, or a `soak` above 0. On v0.3.1 `soak 0` is 15s, and `health_path off` does not refuse it |
 | `deadline` | `5m` | Bound on pre_start and, separately, on the health gate (soak included, so `soak` cannot exceed it). The gate is judged once per `health_interval`, so it can run over by one interval plus two `health_timeout`s (the probe before the last tick and the one on it); a soak that falls due on that first tick past the deadline still passes |
 | `drain` | `5s` | In-flight grace after cutover, before SIGTERM |
 | `grace` | `10s` | SIGTERM → SIGKILL window |
@@ -289,14 +298,16 @@ resolved at config load.
 | `deploy_log_lines` | `40` | How many of the app's last journal lines a failed deploy's response carries (see [Webhook API](#webhook-api)); `0` keeps the app's output on the box (no tail, and no health probe body). At most 1000, and 8 KiB whatever the count |
 | `max_artifact_size` | `100MB` | Download cap; decompressed cap is 10× |
 | `max_artifact_entries` | `100000` | Cap on the files, directories and links one artifact creates (implied parent directories included). The byte cap does not bound what extraction *consumes* — every object costs an inode and most a disk block — so this is what keeps one hostile artifact from filling the disk for everything else on the box. A CI-built artifact is thousands; a Next.js standalone output is ~5–20k |
-| `memory_max` | none | RAM for every unit of the app, e.g. `512MB` (at least `1MB`); at it the kernel kills the process that asked, the unit fails and the watchdog restarts the app. No swap under it. See [Resource caps](#resource-caps) |
-| `tasks_max` | none (the user manager's own default, 15% of threads-max) | Threads and processes of every unit of the app; past it a fork or thread fails with EAGAIN. Removing it on a reload puts the running unit back on the manager's default, where that default can be read; otherwise the unit keeps the cap until its next launch, and the journal says so |
-| `cpu_quota` | none | CPU time for every unit of the app, in percent of one CPU: `200%` is two CPUs' worth, at most `100000%`; past it the app waits, nothing is killed |
+| `memory_max` | none | RAM for every unit of the app, e.g. `512MB` (at least `1MB`); at it the kernel kills the process that asked, the unit fails and the watchdog restarts the app. No swap under it. See [Resource caps](#resource-caps). Not in v0.3.1 |
+| `tasks_max` | none (the user manager's own default, 15% of threads-max) | Threads and processes of every unit of the app; past it a fork or thread fails with EAGAIN. Removing it on a reload puts the running unit back on the manager's default, where that default can be read; otherwise the unit keeps the cap until its next launch, and the journal says so. Not in v0.3.1 |
+| `cpu_quota` | none | CPU time for every unit of the app, in percent of one CPU: `200%` is two CPUs' worth, at most `100000%`; past it the app waits, nothing is killed. Not in v0.3.1 |
 
 Every duration, count and size above must be more than `0`, except `soak`
 and `deploy_log_lines`, where `0` is a setting. A `0` elsewhere is
 refused when the config loads, naming the option and its minimum;
-leave an option out to get its default.
+leave an option out to get its default. On v0.3.1 a `0` in any of them
+but `deploy_log_lines` is taken as unset, so it gets the default
+(`soak 0` is 15s, `keep 0` is 5), and none is refused.
 
 Both caps are cliffs an app can grow into, so each successful deploy
 logs the artifact's entry count and decompressed size and, past **75%**
@@ -314,6 +325,8 @@ files fit the byte budget comfortably; refusing those is the entry
 cap's job.
 
 ### Resource caps
+
+Not in v0.3.1, which refuses all three: `unknown app subdirective`.
 
 `memory_max`, `tasks_max` and `cpu_quota` bound every unit of the app —
 the instance and its `pre_start` alike — as the unit's own
@@ -457,7 +470,7 @@ either delivers it or hotserve does not start with an app configured:
 | PID namespace (`PrivatePIDs=`) — supervisor, user manager and siblings **invisible and unsignalable** |
 | Deny-by-default filesystem: the whole host filesystem replaced by an empty read-only tmpfs, only named paths bound back |
 | hotserve's keys and sockets, other apps, and every path nothing named — **absent**, not merely unreadable |
-| Private `/tmp`, minimal `/dev`, read-only cgroupfs, no capabilities, `@system-service` syscall filter less `io_uring_setup`, the native syscall ABI only, `AF_INET`/`AF_INET6`/`AF_UNIX`/`AF_NETLINK` only for `socket()` — the protocol modules under them (`sctp`, `l2tp_ip`, `l2tp_ip6`, `smc`) load for any program unless [hardening step 5](../docs/hardening.md#5-kernel-modules-no-app-needs-if-you-want-them) refuses them (#315) — no nested namespaces |
+| Private `/tmp`, minimal `/dev`, read-only cgroupfs, no capabilities, `@system-service` syscall filter less `io_uring_setup`, the native syscall ABI only, `AF_INET`/`AF_INET6`/`AF_UNIX`/`AF_NETLINK` only for `socket()` — the protocol modules under them (`sctp`, `l2tp_ip`, `l2tp_ip6`, `smc`) load for any program unless [hardening step 5](../docs/hardening.md#5-kernel-modules-no-app-needs-if-you-want-them) refuses them (#315) — no nested namespaces. (v0.3.1: plain `@system-service`, with `io_uring` and other ABIs allowed.) |
 
 `PrivatePIDs=` needs systemd 257, which Debian 13 — the supported
 host — ships, and the `.deb` refuses to install on anything older.
@@ -538,7 +551,8 @@ too, and stops at a refusal rather than retrying it (see
 
 **The host is measured at start.** Capability is probed by running a
 throwaway unit and checking the namespaces and seccomp from inside
-(`journalctl -t hotserve-sandbox-probe` shows what it saw). A host
+(`journalctl -t hotserve-sandbox-probe` shows what it saw; v0.3.1
+checks only the namespaces). A host
 that cannot deliver the sandbox fails the start — admin socket and
 proxy included — with the probe's reason. That measurement is cached
 per connection to the user manager, so a reload does not repeat it;
@@ -689,8 +703,8 @@ skips the units' seccomp settings: a kernel without seccomp,
 whose own filter stops systemd installing one. The probe reads the
 seccomp mode inside its unit and checks that `RestrictNamespaces=`
 refuses it a user namespace. `journalctl -t hotserve-sandbox-probe`
-says why it refused (`seccomp 0`, `unshare allowed`). The fix is the
-host's: permit unprivileged user namespaces and seccomp for hotserve's
+says why it refused (`seccomp 0`, `unshare allowed`); v0.3.1 has no
+seccomp check. The fix is the host's: permit unprivileged user namespaces and seccomp for hotserve's
 user manager, or move to Debian 13. There is no way to run there
 without the sandbox. One case the probe cannot see: a container host
 whose existing seccomp rules leave the kernel no room for the units'
@@ -836,7 +850,9 @@ at most `max_token_ttl <duration>` (default `24h`): a token without
 `iat`, or minted to live longer, is refused, and the journal's
 `refused` names the directive. `hotserve deploy-token` mints for
 `--ttl` (default `5m`) and warns above an hour. Mint one per deploy;
-a job that cannot raises the bound on its block.
+a job that cannot raises the bound on its block. Not in v0.3.1, which
+refuses `max_token_ttl` as an `unknown deploy_trust subdirective` and
+accepts a token of any lifetime until it expires.
 
 The OIDC presets also **require an identity claim** — one of
 `repository`/`repository_id`/… (github), `project_path`/`project_id`/…
@@ -1127,7 +1143,9 @@ hangs up (a cancelled job, a step timeout) does not stop a running
 `pre_start`: a migration stopped midway would leave the app's data
 half-changed, so it runs to its end, still bounded by `deadline`, and
 the deploy then fails before any traffic moves. Until then a retry,
-a rollback included, gets the 409. To end a migration that hangs
+a rollback included, gets the 409. Not on v0.3.1, where a client that
+hangs up stops the `pre_start` midway and the deploy fails: do not
+cancel a job that is migrating. To end a migration that hangs
 sooner than its `deadline`, stop its unit yourself; it is named
 `hotserve-<app>.<version>.<nonce>.prestart.service`. For example, as root:
 `runuser -u hotserve -- env XDG_RUNTIME_DIR=/run/user/$(id -u hotserve) systemctl --user stop 'hotserve-blog.*.prestart.service'`. The deploy
@@ -1142,7 +1160,11 @@ serves on. The deploy itself ends with the hotserve that ran it (its
 client sees the connection drop): the next start, or the next deploy,
 removes the release it extracted and records it failed — `the deploy
 was cut short: hotserve stopped or restarted during it` — so the same
-version can be deployed again. Re-run the job.
+version can be deployed again. Re-run the job. Not on v0.3.1, where
+the next start's sweep stops a running `pre_start` midway and the
+extracted release stays with no record: a deploy of that version is
+refused as already existing, and a rollback to it runs no
+`pre_start`. Deploy a new version, and check what the migration left.
 
 **A failed deploy says why, from the app's side.** The 5xx body's
 `status.last_deploy` carries the phase it stopped in, `phases` — each
@@ -1240,6 +1262,10 @@ code. Every line passes the response filter. The examples'
 on the last line's code — or on the real one when nothing streamed.
 
 ### Relaunching the running version
+
+Not in v0.3.1, which refuses a rollback, and a deploy, to the running
+version with a `422`: `version <version> is already running; bump the
+version to redeploy`. There, deploy a new version.
 
 A rollback to the version that is running, or a deploy of it that is
 for the same artifact, relaunches it: the same pipeline from
@@ -1484,7 +1510,8 @@ re-run never deploys other bytes under a version the box has. The
 example workflows rebuild the tarball on a re-run, and `tar -czf`
 stamps it with the build time, so their re-run is the `422`; to
 relaunch the running version from the Actions tab, **Run workflow**
-with it as the rollback target. A URL or push deploy that fails has its extracted
+with it as the rollback target (v0.3.1 refuses that: push a new
+commit there). A URL or push deploy that fails has its extracted
 release removed, so its version can be deployed again (a failed
 rollback leaves its on-disk release alone) — unless the 5xx body says
 `release <version> left
@@ -1552,7 +1579,9 @@ with any of those settings. A curl that gives up before the cutover
 fails the deploy, and the old version keeps serving. A `pre_start`
 still running is not stopped: it runs to its end, and the deploy lock
 is held until then, so a retry gets the 409. Stopping its `.prestart`
-unit ends it sooner (see [Webhook API](#webhook-api)). A curl that
+unit ends it sooner (see [Webhook API](#webhook-api)). Not on v0.3.1,
+where a client that hangs up stops the `pre_start` midway and the
+deploy fails: do not cancel a job that is migrating. A curl that
 gives up after the cutover turns red a deploy the box completed.
 
 ## Server layout
@@ -1609,7 +1638,8 @@ its socket (see [Sandbox](#sandbox)).
   deploy, a rollback, or a relaunch after a crash, a sustained health failure, or a reboot — never by
   restarting a running app mid-reload. To give an app one now, roll
   back to the running version ([Relaunching the running
-  version](#relaunching-the-running-version)).
+  version](#relaunching-the-running-version)); on v0.3.1, which
+  refuses that, deploy a new version.
 - **No post-promote *auto*-revert.** Once traffic cuts over, the deploy
   is done; if the new version misbehaves later, roll back explicitly
   with `?rollback=<version>` (its release dir is still on disk — that's

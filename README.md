@@ -12,6 +12,14 @@ Kubernetes, no SSH keys in CI. Powered by
 git push  →  CI builds app.tar.gz  →  webhook  →  hotserve swaps it live. Zero downtime.
 ```
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. If you run a release, read it at
+that release's tag: `dpkg-query -W hotserve` on the box gives the
+version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
+box installs the
+[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+
 Built in:
 
 | Module | What it does |
@@ -75,7 +83,7 @@ apps without them. One case passes that check: a container host whose
 existing seccomp rules leave the kernel no room for the app units'
 system-call filter
 ([liveswap/DESIGN-sandbox.md](liveswap/DESIGN-sandbox.md), "What this
-does NOT stop").
+does NOT stop"). v0.3.1 checks only the namespaces, not seccomp.
 
 **systemd is not optional.** liveswap runs your apps as transient
 units on your user's systemd manager and there is no fallback runner,
@@ -163,7 +171,7 @@ rests on:
   and one SSRF bug in an app could otherwise reconfigure the server.
   Apps themselves run unprivileged, with `NoNewPrivileges`, and write
   no core dump (`LimitCORE=0`), so a crash cannot leave an app's
-  memory on disk.
+  memory on disk. (Not on v0.3.1, which sets no LimitCORE.)
 - **Every app is sandboxed, with no opt-out.** Apps share the
   `hotserve` user, so each runs in its own systemd sandbox: it sees
   its own release, its `shared/` data, its instance's socket directory

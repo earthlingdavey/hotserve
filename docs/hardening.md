@@ -1,5 +1,13 @@
 # Hardening the box
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. If you run a release, read it at
+that release's tag: `dpkg-query -W hotserve` on the box gives the
+version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
+box installs the
+[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+
 [Your first deploy](first-deploy.md) leaves a working box with the
 doors a fresh server has. This page closes them: SSH by key only, the
 SSH port shut to everyone but you, and, if you want them, an
@@ -201,7 +209,8 @@ setting.
 ## 6. A ceiling for all the apps together, if you want one
 
 Each app can be bounded on its own (`memory_max`, `tasks_max` and
-`cpu_quota` in its block — [liveswap/README.md](../liveswap/README.md#resource-caps)),
+`cpu_quota` in its block — [liveswap/README.md](../liveswap/README.md#resource-caps);
+v0.3.1 refuses all three as unknown, while this step works there),
 and that is what keeps one app's burst from stalling another. What
 that does not set is a ceiling for the apps *as a whole* against
 hotserve itself, which shares the box with them: hotserve runs in

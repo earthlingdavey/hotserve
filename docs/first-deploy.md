@@ -1,5 +1,13 @@
 # Your first deploy
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. If you run a release, read it at
+that release's tag: `dpkg-query -W hotserve` on the box gives the
+version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
+box installs the
+[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+
 From a fresh server to an app you deploy by pushing to `main`, in four
 steps. At the end you have hotserve serving one app over HTTPS, the
 box's config in a repository of its own that the box applies when you
@@ -111,7 +119,8 @@ The box's repository (step 3) then needs its Actions variable
 checks with the latest stable release unless told otherwise, and a
 release candidate is never that. (With more than one box, a
 `HOTSERVE_VERSION` file beside this box's Caddyfile pins this box
-alone: the template's README, "A box on another release".)
+alone: the template's README, "A box on another release". v0.3.1's
+template has no such file, and takes only the variable.)
 
 </details>
 
@@ -506,7 +515,7 @@ commit's version is already there, and the rebuilt bytes are not the
 ones it runs (the box relaunches a running version only for the very
 same artifact). Push a new commit to deploy again, or **Run workflow**
 with the running version as the rollback target to relaunch it as it
-is.
+is. v0.3.1 refuses that rollback, so there only the new commit works.
 
 ## What you have
 

@@ -1,5 +1,19 @@
 # Deploying from outside GitHub
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. If you run a release, read it at
+that release's tag: `dpkg-query -W hotserve` on the box gives the
+version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
+box installs the
+[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+
+v0.3.1's tag has no copy of this page. There, the box template's
+[Outside GitHub](https://github.com/smallhoursorg/hotserve/blob/v0.3.1/examples/box/README.md#outside-github)
+and liveswap's
+[`deploy_trust`](https://github.com/smallhoursorg/hotserve/blob/v0.3.1/liveswap/README.md#deploy-authentication-deploy_trust)
+cover it.
+
 [Your first deploy](first-deploy.md) deploys from GitHub Actions, with
 a token GitHub mints for each run and nothing stored anywhere. The box
 takes more than that: a token from any other CI's OpenID Connect
@@ -126,7 +140,9 @@ The token lives for `--ttl` from now, five minutes unless you say
 otherwise, and whoever reads it can deploy until then. The box refuses
 one minted to live longer than its block's `max_token_ttl`, 24 hours
 unless the block sets one, and the command warns on stderr above an
-hour. `--subject <name>` puts a `sub` claim in it, which the deploy record
+hour. v0.3.1 does neither: it refuses `max_token_ttl` as unknown,
+and accepts a token of any lifetime until it expires. `--subject
+<name>` puts a `sub` claim in it, which the deploy record
 and the app's status show as `deployed_by`, and the journal's `deploy
 authorized` line as `via`; `--claims k=v,k2=v2` adds any other claim.
 

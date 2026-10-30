@@ -1,5 +1,13 @@
 # Secrets
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. If you run a release, read it at
+that release's tag: `dpkg-query -W hotserve` on the box gives the
+version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
+box installs the
+[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+
 An app's secrets are commits, like the box's config. Each value is a
 file of its own in the box's repository, encrypted on your laptop with
 [age](https://age-encryption.org) to the box's own key and to every
@@ -307,6 +315,23 @@ stamps it with the time, so for them that re-run is refused as a
 different artifact under a version the box already has — use the
 rollback. Either launch is a deploy: the app's in-memory state goes
 with the old instance.
+
+**On v0.3.1** there is no such relaunch. It refuses a rollback, and a
+deploy, to the version that is running, with a 422 that reads
+`version <version> is already running; bump the version to redeploy`.
+There, once the box's run for the secret is green, deploy a new
+version of the app, which launches it with the new value through the
+same health gate and cutover. In a checkout of the **app's**
+repository, not the box's, where an empty commit changes nothing, an
+empty commit is enough:
+
+```sh
+git commit --allow-empty -m "Launch with the new secret" && git push
+```
+
+The value has reached the app once that app's deploy run is green and
+its output's `current_version` is the new commit's first 12
+characters.
 
 An env file edited or deleted on the box by hand is put back by the
 next push, as a hand edit of the Caddyfile is: the repository is the

@@ -1,5 +1,13 @@
 # After the first deploy
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. If you run a release, read it at
+that release's tag: `dpkg-query -W hotserve` on the box gives the
+version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
+box installs the
+[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+
 [Your first deploy](first-deploy.md) leaves a working box whose config
 is in git. This page has what comes next, running it: changing the
 config, secrets, the way back from an upgrade, day to day, and what to
@@ -36,6 +44,7 @@ A reload never restarts a running app: a changed `app` block applies
 at the app's next launch — its next deploy or rollback, or a relaunch
 after a crash. A rollback to the running version gives it one now
 ([When a value reaches the app](secrets.md#when-a-value-reaches-the-app)).
+v0.3.1 refuses that rollback, so there deploy a new version.
 
 <details>
 <summary><b>If the app is a Deno app</b></summary>
@@ -209,7 +218,8 @@ revert`, push.
 
 A secret that has leaked is changed like any other (`make secret`, a
 push), and reaches the app at its next launch: roll back to the
-running version, or deploy a new one ([When a value reaches the
-app](secrets.md#when-a-value-reaches-the-app)). A hand edit of an
+running version (v0.3.1 refuses that), or deploy a new one ([When a
+value reaches the app](secrets.md#when-a-value-reaches-the-app)). A
+hand edit of an
 env file under `/etc/hotserve/secrets/` is overwritten by the next
 push, as a hand edit of the Caddyfile is.

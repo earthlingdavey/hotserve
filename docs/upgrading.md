@@ -1,5 +1,13 @@
 # Upgrading hotserve
 
+**Which release this describes.** On the `main` branch, this page can
+describe what no release has yet. Read it at the tag of the release
+you are upgrading to, usually the
+[latest](https://github.com/smallhoursorg/hotserve/releases/latest):
+`https://github.com/smallhoursorg/hotserve/tree/v<version>` (a
+candidate's `~rc1` is `-rc1` in the tag). `dpkg-query -W hotserve` on
+the box gives the version it runs now.
+
 A release is a new `.deb`; installing it over the old one is the
 upgrade. Everything on this page runs as root on the box
 (`ssh root@box.example.com`). This fetches the `.deb` for the box's
@@ -183,8 +191,9 @@ So after patching, relaunch each app. In its repository, Actions →
 deploy → **Run workflow**, with the running version as the version to
 roll back to: a rollback to the running version relaunches it from
 the box's disk, through the same health gate and cutover as any
-deploy, with no build. Or push a commit — an empty one is enough —
-which deploys a new version the same way:
+deploy, with no build. (v0.3.1 refuses that rollback, so there use
+the commit.) Or push a commit — an empty one is enough — which
+deploys a new version the same way:
 
 ```sh
 git commit --allow-empty -m "Relaunch after patching" && git push
