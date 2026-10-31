@@ -814,8 +814,8 @@ Presets:
 - `deploy_trust oidc { issuer <url>; audience <a>; … }` — any OIDC
   provider (CircleCI, Buildkite, k8s, …).
 - `deploy_trust local { public_key <path>; audience <a> }` — a key you
-  control, for non-CI deploys. Generate it with `hotserve
-  deploy-keygen`, mint tokens with `hotserve deploy-token`.
+  control, for a laptop or a runner with no OIDC. Generate it with
+  `hotserve deploy-keygen`, mint tokens with `hotserve deploy-token`.
 
 [docs/outside-github.md](../docs/outside-github.md) walks through the
 `gitlab`, `oidc` and `local` presets end to end: a key's two halves,
@@ -880,10 +880,12 @@ it from access logs automatically.
 `deploy_trust` is repeatable, and a request is authorized if **any**
 block accepts it. That is how a team combines CI with per-developer
 break-glass keys — think of the `local` blocks as an `authorized_keys`
-list:
+list. This is the global options' `liveswap` block, not a whole file:
 
 ```caddyfile
 liveswap {
+	artifact_allowlist api.github.com/repos/your-org/
+
 	# Everyday path: CI deploys on merge, no secret anywhere.
 	deploy_trust github {
 		audience blog
@@ -895,18 +897,36 @@ liveswap {
 	# block; no shared secret, no effect on the others. The audience
 	# names this box (its deploy hostname), so a token minted for
 	# another box that trusts the same key is refused here; mint with
-	# `--audience blog.example.com`.
-	deploy_trust local { public_key /etc/hotserve/alice.pub  audience blog.example.com  subject alice }
-	deploy_trust local { public_key /etc/hotserve/bob.pub    audience blog.example.com  subject bob }
+	# `--audience blog.example.com --subject alice`.
+	deploy_trust local {
+		public_key /etc/hotserve/alice.pub
+		audience blog.example.com
+		subject alice
+	}
+	deploy_trust local {
+		public_key /etc/hotserve/bob.pub
+		audience blog.example.com
+		subject bob
+	}
 
-	app blog { command node server.js }
+	app blog {
+		command node server.js
+	}
 }
 ```
 
+A `github` block's `audience` is what the job must ask GitHub for. The
+templates' `scripts/deploy.sh` asks for `hotserve`, so `audience blog`
+above needs `HOTSERVE_AUDIENCE: blog` in the job's `env:`, beside
+`HOTSERVE_URL`, so the rollback step gets it too, or the box answers
+401.
+
 Each dev runs `hotserve deploy-keygen` once and hands you the `.pub`
-(public — safe to share); you add a block and reload. Use OIDC in CI,
-never a `local` key in CI (that would store a long-lived private key in
-CI secrets — the thing OIDC exists to avoid).
+(public — safe to share); you add a block and reload. Use OIDC in CI
+wherever the runner has it: a `local` key there stores a long-lived
+private key in CI secrets — the thing OIDC exists to avoid. A runner
+with no OIDC is what a key in CI is for
+([docs/outside-github.md](../docs/outside-github.md)).
 
 Every authorized deploy records **who authorized it**: the label of the
 source that accepted the token, then what the token says about where
