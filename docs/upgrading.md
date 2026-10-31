@@ -6,7 +6,9 @@ you are upgrading to, usually the
 [latest](https://github.com/smallhoursorg/hotserve/releases/latest):
 `https://github.com/smallhoursorg/hotserve/tree/v<version>` (a
 candidate's `~rc1` is `-rc1` in the tag). `dpkg-query -W hotserve` on
-the box gives the version it runs now.
+the box gives the version it runs now. Take the install blocks below
+from here whichever you read: they stop at a failed checksum, and
+v0.3.1's copy goes on to `apt install`.
 
 A release is a new `.deb`; installing it over the old one is the
 upgrade. Everything on this page runs as root on the box
