@@ -300,10 +300,11 @@ func dialPrivate(socket string) (*godbus.Conn, net.Conn, error) {
 // plain ExecStart: that one carries no flags, and through it systemd
 // substitutes the unit's environment into every argv word at exec
 // time ("$VAR" word-splits, "$$" becomes "$", a word naming an unset
-// variable leaves argv). With the flag the argv execs byte for byte,
-// as no shell is in the way either — the unit-file spelling is a ":"
-// before the path. The manager still reports it as ExecStart, which
-// is what propExecStart reads back.
+// variable leaves argv). With the flag the argv reaches the sibling
+// shell byte for byte, and its `exec "$@"` hands it on as it is — the
+// unit-file spelling is a ":" before the path. The manager still
+// reports it as ExecStart, which propExecStart reads back with the
+// shell stripped.
 func unitProperties(u unitSpec) []sddbus.Property {
 	typ := "simple"
 	if u.Oneshot {
@@ -436,13 +437,28 @@ type execCommandEx struct {
 // holds TimeoutStopSec= as configured (unit_kill_context, v257);
 // measured, every instance with a sibling kept its grace, 22 of 36
 // without lost it. systemd 258 fixes the fork (commit 698ac172aa);
-// Debian 13 ships 257. The sibling sleeps, dies with the namespace
-// when the app exits, and is one task and about a megabyte; `sleep`
-// and `sh` are in every unit's view (/usr). no-env-expand still holds:
-// the argv reaches the shell byte for byte and "$@" hands it on.
+// Debian 13 ships 257.
+//
+// What the app sees of it: one child it did not spawn (the shell's
+// fork survives the exec), which sleeps for the app's whole life and
+// dies at the stop's SIGTERM — the manager signals the whole cgroup —
+// so the app gets one SIGCHLD then, as a prefork master does from a
+// worker. Under PrivatePIDs= any extra process is the app's child or
+// is reparented to it, so no sibling avoids that. It costs one task,
+// which is why tasks_max's floor is 2, and about a megabyte. `unset
+// PWD` first: dash exports PWD, and invariant 8 of the runner says a
+// unit's environment is exactly the one the caller built. Both tools
+// are Essential on Debian and under /usr, which every view binds;
+// Preflight still checks them (siblingToolsPresent), because a shell
+// whose sleep fails execs the app alone, the race open and nothing
+// red. no-env-expand still holds: the argv reaches the shell byte for
+// byte and "$@" hands it on. The script is a wire format: appArgv
+// recognises units of this hotserve by it, so a change here makes
+// every running unit read back as the shell's argv until relaunched.
 const (
 	siblingShell  = "/bin/sh"
-	siblingScript = `/usr/bin/sleep infinity & exec "$@"`
+	siblingSleep  = "/usr/bin/sleep"
+	siblingScript = `unset PWD; ` + siblingSleep + ` infinity & exec "$@"`
 	siblingArgv0  = "hotserve-app"
 )
 

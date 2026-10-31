@@ -290,7 +290,7 @@ resolved at config load.
 | `max_artifact_size` | `100MB` | Download cap; decompressed cap is 10× |
 | `max_artifact_entries` | `100000` | Cap on the files, directories and links one artifact creates (implied parent directories included). The byte cap does not bound what extraction *consumes* — every object costs an inode and most a disk block — so this is what keeps one hostile artifact from filling the disk for everything else on the box. A CI-built artifact is thousands; a Next.js standalone output is ~5–20k |
 | `memory_max` | none | RAM for every unit of the app, e.g. `512MB` (at least `1MB`); at it the kernel kills the process that asked, the unit fails and the watchdog restarts the app. No swap under it. See [Resource caps](#resource-caps) |
-| `tasks_max` | none (the user manager's own default, 15% of threads-max) | Threads and processes of every unit of the app; past it a fork or thread fails with EAGAIN. Removing it on a reload puts the running unit back on the manager's default, where that default can be read; otherwise the unit keeps the cap until its next launch, and the journal says so |
+| `tasks_max` | none (the user manager's own default, 15% of threads-max) | Threads and processes of every unit of the app; past it a fork or thread fails with EAGAIN. The unit's sleeping sibling (below, "worker trees never outlive it") is one of them, so the app itself gets one fewer and the least you can set is 2. Removing it on a reload puts the running unit back on the manager's default, where that default can be read; otherwise the unit keeps the cap until its next launch, and the journal says so |
 | `cpu_quota` | none | CPU time for every unit of the app, in percent of one CPU: `200%` is two CPUs' worth, at most `100000%`; past it the app waits, nothing is killed |
 
 Every duration, count and size above must be more than `0`, except `soak`
@@ -324,7 +324,7 @@ you set it. What each one does when it is hit:
 | Cap hit | What happens | What you see |
 |---|---|---|
 | `memory_max` | The kernel kills the process that asked for the memory — under a `sh -c` or `npm start` command that is a child — and the manager then stops the unit (`Result=oom-kill`); the watchdog restarts the app, on its budget. A `pre_start` that hits it fails the deploy | `journalctl -k` shows the kill — the kernel's line names the unit's cgroup and the process; the app's own journal (`journalctl -t hotserve-<app>`) shows nothing, a killed process prints no last line; the deploy's response or `watchdog.last_restart_cause` says `crash`, and the exit the runner records ends `; the kernel's OOM killer took a process of the unit (its memory_max, or the box's memory), and the unit was stopped for it` |
-| `tasks_max` | A `fork` or thread creation fails with `EAGAIN`. A runtime limps on; a `sh -c` wrapped `command` dies on the first refused fork (dash exits 2), which the watchdog reads as a crash | the app's own error, in its journal |
+| `tasks_max` | A `fork` or thread creation fails with `EAGAIN`. A runtime limps on; a `sh -c` wrapped `command` dies on the first refused fork (dash exits 2), which the watchdog reads as a crash. Every unit starts as such a shell (the sibling), which is why a cap of 1 is refused at config time | the app's own error, in its journal |
 | `cpu_quota` | The unit waits for the next 100 ms period. Nothing is killed | latency; `cpu.stat`'s `nr_throttled` in the unit's cgroup |
 
 Sizing, measured 2026-10-22: an idle Node server has 7 threads (11 under
@@ -1630,8 +1630,12 @@ its socket (see [Sandbox](#sandbox)).
   `sleep infinity` beside the app in `systemctl --user status`: hotserve
   starts every app behind a shell that forks that sibling and becomes
   the app, because systemd 257 waits an app's `grace` on a stop only
-  when its process is not alone in the cgroup (#380). It dies with the
-  app and costs one task and about a megabyte.
+  when its process is not alone in the cgroup (#380). To the app it is
+  one child it did not spawn: it sleeps for the app's whole life, dies
+  at the stop's SIGTERM with everything else in the cgroup, and the app
+  gets one SIGCHLD then, as a prefork master does from a worker. It
+  costs one task (`tasks_max` counts it) and about a megabyte, and adds
+  nothing to the app's environment.
 - **Changed app definitions apply at the app's next launch** — a
   deploy, a rollback, or a relaunch after a crash, a sustained health failure, or a reboot — never by
   restarting a running app mid-reload. To give an app one now, roll

@@ -1380,6 +1380,58 @@ func TestIntegrationSystemdOneProcessAppKeepsItsGrace(t *testing.T) {
 	t.Logf("%d of %d starts had the manager mark the main pid alien (\"not our child\"); every handler finished", lost, n)
 }
 
+// TestIntegrationSystemdUnitEnvironmentIsTheBuiltEnv: the sibling
+// shell adds nothing to the app's environment. dash exports PWD, which
+// the script unsets before the exec; invariant 8 of the runner says a
+// unit's environment is exactly the one the caller built on the
+// manager's defaults, and this is the one place a shell is in the way.
+// The command is /usr/bin/env itself, not a script: a `#!/bin/sh` app
+// would export PWD on its own account, which is its business.
+func TestIntegrationSystemdUnitEnvironmentIsTheBuiltEnv(t *testing.T) {
+	r := integrationRunner(t)
+	root, release, shared := sandboxRoot(t)
+	spec := startSpec{
+		app: "itest", version: "envexact", nonce: "0a1b2c3d0a1b2c3d", command: []string{"/usr/bin/env"}, dir: release,
+		env: []string{"PATH=" + os.Getenv("PATH"), "SHARED=" + shared}, grace: 5 * time.Second,
+		sandbox: &sandboxSpec{root: root, appDir: filepath.Join(root, "itest"), appName: "itest",
+			writable: []bindPath{{dest: release, source: release}, {dest: shared, source: shared}}},
+	}
+	unit, err := unitName(spec, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.RunOnce(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	// The app's stdout is its journal, which may be a moment behind.
+	// _SYSTEMD_USER_UNIT is the field on the process's own lines; the
+	// manager's lines about the unit carry USER_UNIT instead.
+	var out string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b, err := exec.Command("journalctl", "-q", "-o", "cat", "--no-pager", "_SYSTEMD_USER_UNIT="+unit).CombinedOutput()
+		if err != nil {
+			t.Fatalf("journalctl for %s: %v\n%s", unit, err, b)
+		}
+		out = string(b)
+		if strings.Contains(out, "SHARED="+shared) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(out, "SHARED="+shared) {
+		t.Fatalf("the built env did not reach the app (or its journal):\n%s", out)
+	}
+	for _, kv := range strings.Split(out, "\n") {
+		switch k, _, _ := strings.Cut(kv, "="); k {
+		case "PWD", "OLDPWD", "SHLVL", "_":
+			t.Errorf("the sibling shell left %q in the app's environment", kv)
+		}
+	}
+}
+
 // TestIntegrationSystemdPreStartKeepsItsGraceAtDeadline: a pre_start
 // that runs past the unit's own TimeoutStartSec= is stopped by the
 // manager with its grace, the sibling in its cgroup too. Before it, a

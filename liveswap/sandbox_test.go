@@ -1270,8 +1270,9 @@ func TestAppDirAliasToSiblingRefused(t *testing.T) {
 // supervisor's view of the filesystem, which under a deny-by-default
 // sandbox is not the unit's. A runtime installed outside /usr —
 // /opt/node/bin/node, an nvm shim under a home directory — resolves
-// here and then does not exist in there, and systemd reports that as a
-// bare status=203/EXEC after the unit has already been created.
+// here and then does not exist in there, and the sibling shell reports
+// that as `exec: …: not found`, exit status 127, after the unit has
+// already been created.
 func TestUnitForRefusesCommandOutsideTheView(t *testing.T) {
 	r, _ := newTestSystemdRunner(t)
 	root := t.TempDir()
@@ -1444,7 +1445,7 @@ func TestSymlinkedRootUnderPrivateTmpLaunches(t *testing.T) {
 // follow symlinks, so a shim under a bound directory pointing at an
 // unbound one (the vendored-runtime layout /usr/local/bin/node ->
 // /opt/node/bin/node) would pass an unresolved check and then die as
-// the bare 203/EXEC the check exists to replace.
+// the shell's `not found`, exit 127, the check exists to replace.
 func TestUnitForResolvesTheCommandBeforeTestingTheView(t *testing.T) {
 	r, _ := newTestSystemdRunner(t)
 	root := t.TempDir()

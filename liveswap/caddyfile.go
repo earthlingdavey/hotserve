@@ -300,7 +300,10 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser) error {
 			}
 			cfg.MemoryMax = size
 		case "tasks_max":
-			if err := parseCountArg(d, &cfg.TasksMax, 1); err != nil {
+			// 2, not 1: the sibling every unit carries (withSibling) is
+			// one task, so a cap of 1 refuses the fork of the sibling
+			// and the shell dies before the app runs.
+			if err := parseCountArg(d, &cfg.TasksMax, 2); err != nil {
 				return err
 			}
 		case "cpu_quota":

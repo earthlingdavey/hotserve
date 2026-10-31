@@ -571,7 +571,27 @@ func resolveInView(spec startSpec) (argv0, target string, err error) {
 		}
 		return "", "", &preflightError{fmt.Sprintf("%s is not inside the sandbox view of app %s%s: an app sees its release dir, its shared dir and the OS runtime (/usr and a named handful of /etc), and nothing else on this host — ship the runtime inside the release, or install it under /usr", target, spec.app, via)}
 	}
+	if err := siblingToolsPresent(siblingShell, siblingSleep); err != nil {
+		return "", "", err
+	}
 	return argv0, target, nil
+}
+
+// siblingToolsPresent: the shell and the sleep every unit's command
+// runs behind (withSibling) exist and execute on this host. Both are
+// Essential on Debian and under /usr, in every view, so this is a
+// host that is not the supported one; it is checked because the
+// failure is silent otherwise: a shell whose `sleep … &` fails prints
+// one line to the app's journal and execs the app alone, with the
+// one-process race of #380 open and the unit green.
+func siblingToolsPresent(shell, sleep string) error {
+	for _, p := range []string{shell, sleep} {
+		fi, err := os.Stat(p)
+		if err != nil || fi.IsDir() || fi.Mode().Perm()&0o111 == 0 {
+			return &preflightError{fmt.Sprintf("%s is missing or not executable on this host: every app unit runs its command behind `%s -c '%s'`, so the manager waits the app's grace on systemd 257 (#380); the supported host is Debian 13, where both are Essential", p, shell, siblingScript)}
+		}
+	}
+	return nil
 }
 
 // Preflight is a launch's early word, a deploy's and a relaunch's: the

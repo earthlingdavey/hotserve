@@ -263,8 +263,10 @@ type AppConfig struct {
 
 	// TasksMax bounds the threads and processes of every unit of the
 	// app; past it a fork or thread fails with EAGAIN, which a `sh -c`
-	// wrapped command dies on. Default none: the user manager's own,
-	// 15% of the kernel's threads-max.
+	// wrapped command dies on. The unit's sleeping sibling (#380) is
+	// one of them, so the app itself gets one fewer, and the floor is
+	// 2. Default none: the user manager's own, 15% of the kernel's
+	// threads-max.
 	TasksMax int `json:"tasks_max,omitempty"`
 
 	// CPUQuota bounds the CPU time of every unit of the app, in percent

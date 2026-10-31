@@ -177,7 +177,7 @@ func TestCaddyfileRefusesZeroWhereItWouldReadAsUnset(t *testing.T) {
 		{"max_artifact_size 0MB", "max_artifact_size must be at least 1 byte, got 0MB"},
 		{"memory_max 0", "memory_max must be at least 1.0 MB, got 0"},
 		{"memory_max 999999", "memory_max must be at least 1.0 MB, got 999999"},
-		{"tasks_max 0", "tasks_max must be at least 1, got 0"},
+		{"tasks_max 1", "tasks_max must be at least 2, got 1"},
 		{"cpu_quota 0%", "cpu_quota must be at least 1%, got 0%"},
 		{"cpu_quota 100001%", "cpu_quota must be at most 100000% (a thousand CPUs' worth), got 100001%"},
 		{"drain -1s", "drain must be more than 0, got -1s"},

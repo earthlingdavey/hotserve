@@ -461,7 +461,12 @@ func TestUnitExecStartIsByteExact(t *testing.T) {
 func TestEveryUnitCarriesASibling(t *testing.T) {
 	argv := []string{"./server", "--flag"}
 	got := withSibling(argv)
-	if got[0] != "/bin/sh" || got[1] != "-c" || !strings.Contains(got[2], "sleep infinity &") || !strings.HasSuffix(got[2], `exec "$@"`) || got[3] != siblingArgv0 || !slices.Equal(got[4:], argv) {
+	// The script is pinned to the byte: appArgv recognises the units of
+	// this hotserve by it, so a reworded script would make every unit a
+	// previous binary started read back as the shell's argv in status
+	// and state.json after an upgrade, with this test still green if
+	// it only looked for the parts.
+	if got[0] != "/bin/sh" || got[1] != "-c" || got[2] != `unset PWD; /usr/bin/sleep infinity & exec "$@"` || got[3] != "hotserve-app" || !slices.Equal(got[4:], argv) {
 		t.Fatalf("withSibling = %q", got)
 	}
 	if !slices.Equal(appArgv(got), argv) {
@@ -477,6 +482,29 @@ func TestEveryUnitCarriesASibling(t *testing.T) {
 	}
 	if !slices.Equal(appArgv([]string{"/bin/sh", "-c", "echo", "x"}), []string{"/bin/sh", "-c", "echo", "x"}) {
 		t.Fatal("a shell command of the operator's own is not the sibling's and must not be stripped")
+	}
+}
+
+// TestPreflightRefusesAHostWithoutTheSiblingTools: a shell whose
+// `sleep … &` fails prints one line to the app's journal and execs the
+// app alone, the one-process race open and the unit green, so the two
+// tools are checked before a unit exists, and the refusal names them.
+func TestPreflightRefusesAHostWithoutTheSiblingTools(t *testing.T) {
+	if err := siblingToolsPresent(siblingShell, siblingSleep); err != nil {
+		t.Fatalf("this host has both tools, yet: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "sleep")
+	err := siblingToolsPresent(siblingShell, missing)
+	var pf *preflightError
+	if !errors.As(err, &pf) || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "#380") {
+		t.Fatalf("a missing sleep must be a pre-flight refusal naming it, got %v", err)
+	}
+	notExec := filepath.Join(t.TempDir(), "sh")
+	if err := os.WriteFile(notExec, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := siblingToolsPresent(notExec, siblingSleep); !errors.As(err, &pf) || !strings.Contains(err.Error(), notExec) {
+		t.Fatalf("a shell that is not executable must be a pre-flight refusal naming it, got %v", err)
 	}
 }
 
