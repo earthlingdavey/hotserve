@@ -34,12 +34,48 @@ each app's filesystem view contains only its own world, and siblings
 are not merely unreadable, they do not exist.
 
 What this stops: lateral movement from one compromised app (sibling
-files/env/releases, TLS keys, admin socket, sibling `/proc`, signals).
+files/env/releases, TLS keys, admin socket, sibling `/proc`, signals,
+sibling SysV IPC, message queues and `/dev/shm`).
 What this does NOT stop, stated honestly: theft of the compromised
 app's own secrets (its env is its env), network exfiltration (netns is
-shared by design), resource exhaustion (caps are unset until an app
-needs them — #71), and install-time supply-chain attacks (those run in
-CI, not on the box).
+shared by design), resource exhaustion (the per-app caps are the
+operator's to set, none by default — DESIGN-liveswap.md "Resource
+caps"; the sandbox only keeps a set cap from being rewritten),
+install-time supply-chain attacks (those run in
+CI, not on the box), a syscall filter the kernel refused on a host
+that already filters the user manager. Nor, on a box without
+docs/hardening.md step 5, the module-backed protocols under the
+admitted families (`sctp`, `l2tp_ip`, `l2tp_ip6`, `smc`), which an app
+opens and the kernel loads for it; nor, on any box, the kernel
+modules an app loads through the families it has: a netlink
+protocol's or generic-netlink family's module on a `socket()` or a
+`GETFAMILY`, which hands it a live netlink socket into that module's
+parsers, and any aliased family's module on a `socketpair()`, which
+hands it nothing, as any user; a compromised app reaches those
+modules' init and parsers, and the few requests they answer
+unprivileged (both accepted by decision, S3 × O3 × D5 = 45;
+"Module-backed protocols" below).
+
+The refused filter is the one route around the syscall filter that the
+capability probe cannot see. Each seccomp filter on a process counts
+against one kernel budget of 32768 instructions for the whole chain.
+On a host whose user manager already runs under a long outer chain (a
+container runtime's profile, say), the kernel can refuse the unit's
+`SystemCallFilter=`, which the manager loads after its other seccomp
+settings. The kernel refuses with `ENOMEM`; libseccomp 2.6 hands that
+back as `ECANCELED` unless a filter asks for raw errors
+(`sys_filter_load`, `SCMP_FLTATR_API_SYSRAWRC`), which systemd 257's
+do not; and systemd counts only `EPERM`, `EACCES`, `ENOMEM` and
+`EFAULT` as fatal (`ERRNO_IS_NEG_SECCOMP_FATAL`), so it logs the
+failure at debug level and starts the unit anyway, its other filters
+in force, without the allow list and the `io_uring_setup` deny. Such a
+unit reads `Seccomp: 2` and refuses `unshare -U` like any other, so
+nothing the probe reads tells it apart (S5 × O5 × D5 = 125: scores to
+fix; accepted by decision, user, 2026-10-19). A second probe unit
+could: one with every seccomp setting but `SystemCallFilter=`, whose
+`Seccomp_filters:` count the whole unit must exceed. That is not
+built (the same decision); it would be a second throwaway unit inside
+the start budget that `TimeoutStartSec=` is sized on.
 
 The mount namespace alone does not close the threat model: the
 attacker just described dumps `process.env` first, and a stolen ACME
@@ -54,13 +90,15 @@ below as a contract the sandbox path must keep.
   crash relaunch, boot recovery, reattach — gets the one sandbox, and
   there is no configuration surface that turns it off or widens it.
   The host MUST be probed by running a throwaway unit and checking the
-  namespaces from inside (the manager silently ignores `PrivatePIDs=`
-  on a kernel without PID namespaces, so accepting the property proves
-  nothing), and a host that cannot deliver the sandbox MUST fail the
-  start with the probe's reason — a weaker sandbox accepted silently is
-  the "looks configured, quietly weaker" trap, and no sandbox at all,
-  on a shared uid, hands one app every sibling's data and hotserve's
-  own keys. The runner MUST refuse a start spec with no sandbox
+  namespaces, seccomp and `/dev/shm` from inside (the manager silently
+  ignores `PrivatePIDs=` on a kernel without PID namespaces, runs the
+  unit in its own IPC namespace where it cannot make one, and skips
+  `SystemCallFilter=` where seccomp is unavailable, so accepting a
+  property proves nothing), and a host that cannot deliver the sandbox
+  MUST fail the start with the probe's reason — a weaker sandbox
+  accepted silently is the "looks configured, quietly weaker" trap, and
+  no sandbox at all, on a shared uid, hands one app every sibling's
+  data and hotserve's own keys. The runner MUST refuse a start spec with no sandbox
   (`TestUnitRefusesToRunWithoutASandbox`).
 - The sandboxed filesystem view MUST be **deny-by-default**: an empty
   read-only tmpfs replaces the whole filesystem
@@ -85,9 +123,14 @@ below as a contract the sandbox path must keep.
     and its other releases are simply never named, so they do not
     exist inside the unit;
   - a private `/tmp` and `/var/tmp` (`PrivateTmp=`), a minimal `/dev`
-    (`PrivateDevices=`) and the API VFS. `MountAPIVFS=` is NOT set:
-    `/proc`, `/sys` and `/dev` are mounted inside the tmpfs by
-    `PrivateDevices=` and `PrivatePIDs=`;
+    (`PrivateDevices=`) with a `/dev/shm` of the unit's own
+    (`TemporaryFileSystem=/dev/shm:mode=1777,size=50%` — the kernel's
+    default for the host's `/dev/shm`, where systemd's own for a
+    `TemporaryFileSystem=` is 10% of RAM; `memory_max` is the
+    practical cap — over the host's, which `PrivateDevices=` binds in;
+    #311) and the API VFS. `MountAPIVFS=` is NOT set: `/proc`, `/sys`
+    and `/dev` are mounted inside the tmpfs by `PrivateDevices=` and
+    `PrivatePIDs=`;
   - a **base view** of the OS, bound read-only, named entry by entry
     in `sandboxBaseView` (liveswap/sandbox.go): `/usr` and the usrmerge
     aliases (`/bin`, `/sbin`, `/lib*`), the TLS trust store
@@ -135,11 +178,12 @@ below as a contract the sandbox path must keep.
   the instance's `run/<nonce>/` — MUST resolve to the directories they name, and a launch whose bind
   source resolves anywhere else MUST be refused. The only permitted
   difference is one an alias on the liveswap root itself explains.
-  Resolution to a path outside the root is unsound: the app's own
-  directory is writable by the app, so a symlink placed there cannot
-  be distinguished from one the operator meant, and a sibling's
-  legitimate external data (`shop/shared -> /mnt/shop-data`) would be
-  an acceptable target for `blog` to aim at. **The supported way to
+  Resolution to a path outside the root is unsound: a symlink in the
+  app's own directory cannot be distinguished from one the operator
+  meant (no app can plant one from inside its sandbox, but nothing on
+  disk says who did), and a sibling's legitimate external data
+  (`shop/shared -> /mnt/shop-data`) would be an acceptable target for
+  `blog` to aim at. **The supported way to
   put an app's data on another disk is a bind mount at the same
   path**: a mount resolves to itself, so it never reaches the check,
   and an app cannot forge one.
@@ -152,8 +196,8 @@ below as a contract the sandbox path must keep.
   that under `shared/` it can rewrite the file and choose its own next
   launch's environment. Pinned by `TestEnvFileMayNotLandInAnotherAppsView`.
 - Nothing in `state.json` decides how much isolation a relaunch gets:
-  there is no recorded sandbox disposition, and a record written
-  before sandboxing existed relaunches sandboxed like everything else.
+  there is no recorded sandbox disposition, so a relaunch from the
+  record is sandboxed like a deploy.
   Pinned by `TestEveryLaunchIsSandboxed`.
 - A reattach MUST verify rather than trust: a recorded unit that is
   running without `PrivateUsers=`/`PrivatePIDs=` was not started by
@@ -170,10 +214,11 @@ below as a contract the sandbox path must keep.
   runtime installed outside `/usr` (`/opt/node/bin/node`, an nvm or
   asdf shim under a home directory) resolves for the supervisor and
   then does not exist inside the unit
-  (`TestUnitForRefusesCommandOutsideTheView`). The deploy asks the
-  same question first, at its pre-flight, and reports the refusal as
-  a 422 (`TestSystemdRunnerPreflight`); the launch's own check stays
-  as the last word.
+  (`TestUnitForRefusesCommandOutsideTheView`). A deploy and every
+  relaunch ask the same question first, at the pre-flight — a deploy
+  reports the refusal as a 422, a relaunch gives up on it
+  (`TestSystemdRunnerPreflight`); the launch's own check stays as the
+  last word.
 - `/run/systemd/resolve` MUST stay reachable (read-only) when it
   exists: on systemd-resolved hosts `/etc/resolv.conf` is a symlink
   into that directory, and since nothing else under `/run` is in the
@@ -214,8 +259,15 @@ below as a contract the sandbox path must keep.
   does. The app MUST additionally run inside a new PID namespace
   (`PrivatePIDs=yes`): the supervisor, the user manager and every
   sibling become invisible and unsignalable, and systemd's
-  in-namespace stub init reaps orphaned grandchildren. A manager that
-  cannot deliver it is refused at start.
+  in-namespace stub init reaps orphaned grandchildren. And inside a
+  new IPC namespace (`PrivateIPC=yes`): SysV objects, POSIX message
+  queues and `/dev/mqueue` are the unit's alone (#311). A unit
+  therefore has one `Exec*=` — no `ExecStopPost=` or other — so the
+  manager spawns one process per unit (the app's own children join its
+  namespaces as ever): on a user manager every process the manager
+  spawns gets a user namespace of its own, and a second one cannot
+  join the IPC namespace the first made. A manager that cannot deliver
+  any of the three is refused at start.
 - The unit's cgroup is the lifetime boundary (`KillMode=control-group`):
   nothing outlives the unit. A unit has no controlling terminal.
 - Privilege and system-call surface, every unit: `NoNewPrivileges=`,
@@ -224,11 +276,116 @@ below as a contract the sandbox path must keep.
   `RestrictSUIDSGID=`, `LockPersonality=`, `ProtectKernelTunables=`,
   `ProtectKernelModules=`, `ProtectKernelLogs=`,
   `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK`
-  (netlink read-only for `getifaddrs()`, which runtimes call at
-  startup), and `SystemCallFilter=@system-service` with
-  `SystemCallErrorNumber=EPERM` — systemd's curated allowlist, adopted
-  wholesale, which is the bar the non-goals below set for any seccomp
-  filter. Pinned by `TestSandboxPropertiesEveryUnit`.
+  (netlink for `getifaddrs()`, which runtimes call at startup; a
+  route, link or address change needs `CAP_NET_ADMIN`, which no unit
+  holds, and what a generic-netlink family admits unprivileged is that
+  family's own rule), `SystemCallFilter=@system-service` less `io_uring_setup`,
+  with `SystemCallErrorNumber=EPERM` — systemd's curated allowlist,
+  adopted wholesale, which is the bar the non-goals below set for any
+  seccomp filter, with one call taken out — and
+  `SystemCallArchitectures=native`. Pinned by
+  `TestSandboxPropertiesEveryUnit`.
+- `RestrictAddressFamilies=` filters `socket(2)` alone, so the other
+  routes to a socket of a family it leaves out MUST be closed too. Two
+  are. `@aio`, inside `@system-service`, admits `io_uring_setup`: a
+  ring's `IORING_OP_SOCKET` (kernel 5.19+; Debian 13 ships 6.12) opens
+  a socket of any family without that call, which would leave `AF_ALG`
+  and `AF_VSOCK` one ring away. So the filter takes `io_uring_setup`
+  back out (`SystemCallFilter=~io_uring_setup`, after the allow list:
+  the first entry sets the filter's mode), and with no ring
+  `io_uring_enter` and `io_uring_register` have nothing to act on. And
+  on amd64 the kernel also runs the x86-32 ABI, where `socket(2)` is
+  reached through `socketcall()` and systemd applies no address-family
+  filter at all, so `SystemCallArchitectures=native` takes that ABI
+  away. A 32-bit executable would die at its first system call, so the
+  pre-flight refuses one naming the setting (`checkMachine`,
+  liveswap/elf.go): a deploy as a 422, a relaunch for good. The third
+  call that makes a socket, `socketpair(2)`, the filter does not cover
+  either, and on Debian 13 it gives an app no socket outside
+  `AF_UNIX`: in 6.12 only `AF_UNIX` and `AF_TIPC` implement it (every
+  other family's `proto_ops` carries the stub, `EOPNOTSUPP` once the
+  family is registered; a family no module answers for is
+  `EAFNOSUPPORT`), and `tipc` has no autoload alias, so it loads only
+  by root's hand, which docs/hardening.md step 5 (next bullet) refuses
+  too where taken. What the call still does is load the module of any
+  family that has an alias, with no socket to show for it (next
+  bullet, the accepted part). Measured against the source 2026-10-22
+  (#315). Denying `socketpair` was never an option: Node's
+  `child_process` uses it.
+  Pinned by
+  `TestTwoRoutesAroundTheAddressFamilyFilterAreClosed` and
+  `TestCheckMachineRefusesA32BitExecutable`; the integration, e2e and
+  install-test lanes read the built filter and the architecture back
+  off a live unit. On a kernel without seccomp the manager skips
+  `SystemCallFilter=` and that read-back still passes, so the view
+  probe also shows from inside the unit that the filter is in force:
+  `Seccomp:` 2, and `io_uring_setup` refused with EPERM where the same
+  call, made by the lane as the same user outside the unit, reaches
+  the kernel. What it costs the runtimes, checked 2026-10-18:
+  Node's libuv sets up a ring for batching `epoll_ctl` at every loop
+  start and, refused, uses plain `epoll_ctl` (`uv__iou_init`, libuv
+  1.51), and the Node example starts in the e2e lane; Deno's event
+  loop is tokio's epoll, and the Deno example starts in the same lane;
+  Bun has no lane, and its event loop is usockets' epoll backend
+  (`packages/bun-usockets/src/eventing/` holds `epoll_kqueue.c` and,
+  for Windows, `libuv.c`), with no `io_uring` call in its runtime
+  (oven-sh/bun `ed58ba2`).
+- **Module-backed protocols.** The family list says nothing about the
+  protocol number, and the kernel loads a protocol's module on the
+  first `socket()` that names it, as any user (`inet_create`,
+  `net/ipv4/af_inet.c`; the same in `af_inet6.c`, and for netlink in
+  `af_netlink.c`). On Debian 13's 6.12 three protocols under `AF_INET`
+  and `AF_INET6` carry that alias and gate nothing at creation: `sctp`
+  (132), `l2tp_ip`/`l2tp_ip6` (115) and `smc` (256; `modules.alias` of
+  6.12.113, read 2026-10-22). A compromised app gets a live socket into
+  kernel code the sandbox meant to keep out (#315: S3 × O3 × D5 = 45).
+  `dccp` (`SOCK_DCCP`) would be a fourth, but Debian strips its
+  autoload aliases (its
+  `dccp-disable-auto-loading-as-mitigation-against-local-exploits`
+  patch; sibling patches strip `rds`'s, `af_802154`'s and the
+  ham-radio families'), so it loads only by root's hand, as `tipc`
+  does. hotserve closes none of this. systemd filters no
+  protocol argument, and the package carries no host policy: a
+  modprobe.d file is the box's setting, for every program on it, so it
+  is the operator's step, not the `.deb`'s (owner's decision,
+  2026-10-22, the line the `libatomic1` Recommends was declined on in
+  #279; the shipped file was built, reviewed and taken out again).
+  docs/hardening.md step 5 is that step: `install <module> /bin/false`
+  for `sctp`, `l2tp_ip`, `l2tp_ip6` and `smc`, and for `dccp`, `tipc`
+  and `rds`, which refuse the root-loaded case (a loaded `tipc` is
+  configurable by any netlink sender, its generic family carrying no
+  admin flag, with UDP media built in) and make the seven the set the
+  CIS Debian benchmark makes unavailable. The line stops the kernel's
+  autoload and a hand `modprobe` alike, a module depending on the
+  named one with them (measured: `modprobe dccp_ipv4` stops at
+  `dccp`'s line); a module already loaded stays until reboot. So the
+  route is **open by default**: on a box without the step a
+  compromised app opens those three protocols' sockets. Accepted by
+  decision with that score (rows in DESIGN-liveswap.md and
+  DESIGN-threat-model.md); no probe checks the step either way.
+  Pinned by `TestHardeningStepBlocksTheModuleBackedProtocols`, which
+  holds the page's one line to the test's own list, the one copy of
+  these seven outside this prose: a change to the list changes the
+  test, the page and this bullet together. What stays open on every
+  box, in the same accepted row, is the modules an app loads through
+  the families it has. A `socket(AF_NETLINK, SOCK_RAW, n)` loads the
+  module for netlink protocol `n` (`nfnetlink`, `xfrm_user`,
+  `crypto_user`, `ib_core`, `scsi_transport_iscsi` on Debian 13) and
+  hands the app a live netlink socket into it, and the generic-netlink
+  control family loads any module with a family alias on a
+  `GETFAMILY` by name, `smc` among them; `nfnetlink` and `xfrm_user`
+  refuse an unprivileged sender at their first check, `crypto_user`
+  answers a `GETALG` report (what `/proc/crypto` shows; CVE-2018-19854
+  was an info leak there) and `sock_diag` dumps the namespace's
+  sockets as `/proc/net` does. And `socketpair()` in any family with
+  an alias (`appletalk`, `atm`, `af_key`, `pppox`, `llc2`,
+  `mpls_router`, `can`, `bluetooth`, `rxrpc`, `phonet`, `af_alg`,
+  `nfc`, `hv_sock`, `kcm`, `qrtr`, `smc` on Debian 13) loads it and
+  runs its create path before the stub refuses the call, so the app
+  gets no socket from that one. systemd has
+  no filter for either; blocking `nfnetlink` breaks nftables. A longer
+  list in the hardening step, for the family modules and
+  `crypto_user`, is possible and not decided.
 - The network namespace MUST be shared: apps make outbound calls and
   reach a same-box database over loopback. The app itself listens on
   a per-instance unix socket in its own `run/<nonce>/` (`SOCKET`); nothing
@@ -281,9 +438,21 @@ spec without a sandbox.
 
 **The probe.** At `App.Start` — every config activation —
 `probeSandboxCapability` starts a throwaway unit with the same property
-set whose script reads `/proc/self/uid_map` and its own pid, and passes
-only if the uid range is not the host's and the pid is 1 — both
-namespaces engaged. One attempt, one retry on timeout only (the shape a
+set whose script reads `/proc/self/uid_map`, its own pid and the
+`Seccomp:` line of `/proc/self/status`, and tries `unshare -U true`. It
+passes only if the uid range is not the host's, the pid is 1, the mode
+is 2 and the unshare is refused with EPERM — both namespaces engaged
+and the unit's seccomp set in force. Where seccomp is unavailable to
+it (no seccomp in the kernel, `SYSTEMD_SECCOMP=0` in its environment,
+or an outer filter that refuses it one), the manager skips every
+seccomp-backed setting at once, with a debug line. The mode alone says
+neither whose filter is loaded (one the manager itself runs under
+reads 2 as well) nor which of the unit's several; the refused unshare
+is `RestrictNamespaces=`, skipped exactly when the whole set is. One
+case passes both checks: `SystemCallFilter=` alone not loading while
+the rest do ("What this does NOT stop").
+
+One attempt, one retry on timeout only (the shape a
 capable host under boot load produces; a refused start exits 1, which
 hotserve.service deliberately never retries, so without it one slow
 attempt keeps a capable box down until someone starts it by hand),
@@ -470,9 +639,11 @@ testing that `/etc/ssl/private` stays out of the view.
 
 ## Non-goals
 
-- Resource limits (`MemoryMax=`, `TasksMax=`, `CPUQuota=`) — real the
-  moment they are set, because `/sys/fs/cgroup` is read-only in the
-  unit; unset by design until an app needs bounding (#71).
+- Resource limits are liveswap's (`memory_max`, `tasks_max`,
+  `cpu_quota`; DESIGN-liveswap.md, "Resource caps"). The sandbox's part
+  is that `/sys/fs/cgroup` is read-only in the unit, which is what
+  keeps a cap the app's own uid owns the cgroup of from being
+  rewritten by the app.
 - Network egress control — kernel sandboxes cannot scope by hostname.
   The sandbox is the kernel-enforced ceiling; a runtime's own
   `--allow-*` flags are the app narrowing itself inside it, enforced
@@ -484,7 +655,8 @@ testing that `/etc/ssl/private` stays out of the view.
   file/process isolation without them.
 - Hand-rolled seccomp filtering — exactly the "looks configured,
   quietly weaker" trap. systemd's curated `@system-service` set is a
-  vetted filter adopted wholesale.
+  vetted filter adopted wholesale. Taking a call out of it, as
+  `io_uring_setup` above, narrows that set; it does not write a list.
 - Protecting an app from itself — its own env and its own database
   are legitimately reachable by definition.
 - macOS/Windows sandboxing — servers are Linux; elsewhere the probe
@@ -563,3 +735,50 @@ Dated one-liners; the full text of each is in git.
   the box's first config, so an older release installed and failed
   there. The probe still decides; the floor moves the commonest refusal
   to install.
+- 2026-10-18 (#298) — `io_uring_setup` taken out of `@system-service`
+  and `SystemCallArchitectures=native` added: an io_uring ring, and on
+  amd64 the x86-32 ABI's `socketcall()`, opened sockets of families
+  `RestrictAddressFamilies=` leaves out; `socketpair(2)` still can
+  (#315). 32-bit executables are refused at the deploy's pre-flight.
+  `PrivateIPC=` was measured breaking
+  `ExecStopPost=` on systemd 257's user manager and moved to #311.
+- 2026-10-22 (#315) — `socketpair(2)` measured to give no socket
+  outside `AF_UNIX` on Debian 13: only `AF_TIPC` implements it besides,
+  and `tipc` has no autoload alias. The route found instead, a
+  module-backed protocol over an admitted family (`sctp`, `l2tp_ip`,
+  `l2tp_ip6`, `smc`), is the operator's to close (docs/hardening.md
+  step 5, the seven CIS modules; a file shipped by the `.deb` was
+  built and declined): open by default, accepted by decision with the
+  modules a netlink socket or a `socketpair()` loads.
+- 2026-10-23 (#311) — Sibling IPC closed. `PrivateIPC=yes` gives each
+  unit its own SysV objects, POSIX message queues and `/dev/mqueue`;
+  `TemporaryFileSystem=/dev/shm:mode=1777` gives it its own POSIX
+  shared memory and named semaphores, over the host's `/dev/shm` that
+  `PrivateDevices=` binds in (systemd's `mount_private_dev`, measured:
+  a file written inside a unit was on the host and in the next unit).
+  `size=50%` because systemd gives every `TemporaryFileSystem=`
+  mount `size=10%,nr_inodes=400k` unless the unit's options say
+  otherwise (`NESTED_TMPFS_LIMITS`, namespace.c; measured: 1.2 GiB on
+  a 12 GiB host), and 50% is the kernel's own default for the host's
+  `/dev/shm`, so each app keeps the room the shared one gave it
+  (headless Chromium's known trap is Docker's 64 MiB; 10% of a 2 GiB
+  box is 204 MiB). cgroup v2 charges tmpfs pages to the cgroup that
+  wrote them (`memory.stat`'s `shmem`, Documentation/admin-guide/
+  cgroup-v2.rst), so `memory_max` (#345) is the practical cap; not
+  measured here, since the integration container delegates no memory
+  controller to its units. The price is one `Exec*=` per unit: on a
+  user manager every process the manager spawns gets a user namespace
+  of its own, so a second one cannot join the IPC namespace the first
+  made (`setns` needs CAP_SYS_ADMIN in its owning user namespace) and
+  fails 226/NAMESPACE on its `/dev/mqueue` mount. So the `ExecStopPost=` that
+  removed the instance's socket is gone (retiring the instance removes
+  the run dir; a confirmed sweep prunes leftovers; nothing routes to
+  one). Measured on systemd 257 under root's and an unprivileged user
+  manager: the `+` prefix fails the same way (no user namespace, so no
+  mount namespace, and `TemporaryFileSystem=` makes that fatal), and
+  no systemd through main (~v263) shares a unit's user namespace on an
+  unprivileged manager (`UserNamespacePath=`, v259, is refused there).
+  The probe now checks that `/dev/mqueue` is owned by its own uid (a
+  mqueuefs it mounted itself, in an IPC namespace its user namespace
+  owns) and that its IPC namespace is not hotserve's own, and that a
+  file written in its `/dev/shm` is not on the host.

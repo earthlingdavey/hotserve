@@ -43,7 +43,9 @@ type runner interface {
 	// resolves to a file the unit will see inside its sandbox view,
 	// and an executable built for another machine is refused with the
 	// fix named. A deploy runs it for the command and the pre_start,
-	// and reports a refusal as the deployer's error (422).
+	// and reports a refusal as the deployer's error (422); every
+	// relaunch runs it for the command (launchVersion), and gives up on
+	// a refusal.
 	Preflight(spec startSpec) error
 
 	// Start launches a long-running instance and returns immediately.
@@ -76,6 +78,11 @@ type runner interface {
 	// gone; any error means the caller must assume it may still run.
 	Stop(h handle, grace time.Duration) error
 
+	// SetCaps gives a running instance's unit the caps, replacing what
+	// it had: a cap now unset is lifted. nil once the manager has
+	// applied them, from when the handle's state reports them.
+	SetCaps(h handle, caps resourceCaps) error
+
 	// Reattach tries to re-adopt an instance from persisted state after
 	// a hotserve restart: the unit named in st is still running under
 	// the service manager. (nil, false, nil) means it was observed not
@@ -89,8 +96,30 @@ type runner interface {
 	// is running: callers sweep before trusting their own view of an
 	// app (recovery) and before deleting any release (GC). nil means
 	// keep is now the only unit of the app; any error means something
-	// may still be running and nothing may be deleted.
+	// may still be running and nothing may be deleted. A running
+	// pre_start is left to finish, never stopped: the sweep reports it
+	// (migrationRunningError) and is unconfirmed until it has ended.
 	Sweep(app string, keep handle) error
+
+	// StopAll stops every unit of app, a running pre_start included:
+	// the app is going (a reload removed it), so nothing will wait for
+	// the migration's end. nil means no unit of the app is left.
+	StopAll(app string) error
+}
+
+// migrationRunningError is a sweep that found a pre_start still
+// running — an earlier deploy's, since a deploy in flight holds the
+// lock every sweeping caller takes: one a hotserve stop cut short, or
+// one whose start and stop this hotserve could not observe. Stopping it would
+// half-apply a migration, so the sweep leaves it to end on its own
+// clock (TimeoutStartSec=) and reports itself unconfirmed, naming it.
+type migrationRunningError struct {
+	unit    string
+	version string
+}
+
+func (e *migrationRunningError) Error() string {
+	return "pre_start of " + e.version + " (" + e.unit + ") is still running from an earlier deploy; waiting for it to end"
 }
 
 // unitUnconfirmedError reports that a runner operation could not
@@ -119,11 +148,14 @@ type startSpec struct {
 	app     string        // app name (unit naming, journal identifier)
 	version string        // version tag (unit naming, description)
 	nonce   string        // instance id (newNonce): names the unit, and the socket the app binds
-	socket  string        // the socket the app binds; the unit removes it when it stops (empty for the probe)
 	command []string      // argv; command[0] looked up in PATH unless it contains a slash
 	dir     string        // working directory (the release dir)
 	env     []string      // complete environment, KEY=VALUE form
 	grace   time.Duration // SIGTERM→SIGKILL budget applied when the instance is stopped
+	// startTimeout bounds a pre_start on the unit itself
+	// (TimeoutStartSec=), so it still ends on time when the hotserve
+	// that started it has stopped; 0 sets none.
+	startTimeout time.Duration
 	// sandbox is the per-unit sandbox to apply. Every unit has one;
 	// the runner refuses a spec without it rather than running the
 	// command with the floor only (unitFor).
@@ -133,7 +165,46 @@ type startSpec struct {
 	// can mistake it for an app's unit — and so a configured app can
 	// never collide with it.
 	probe bool
+	// caps bounds the unit (resourceCaps); the zero value sets none.
+	caps resourceCaps
 }
+
+// resourceCaps is what an app's units are bounded to: the three cgroup
+// caps the Caddyfile sets per app (memory_max, tasks_max, cpu_quota),
+// zero meaning none. Every unit of the app gets them at its start —
+// the instance and the pre_start alike (capProperties,
+// systemd_dbus.go) — and a running instance gets a reload's changed
+// values through SetCaps rather than at its next launch. The sandbox's
+// read-only cgroupfs is what makes them the app's ceiling rather than
+// a suggestion: the user manager's subtree is owned by the app's own
+// uid, so without it an app could rewrite its own memory.max.
+//
+// Measured on Debian 13 (systemd 257), Ubuntu 24.04 (255) and 26.04
+// (259): the user manager is delegated exactly the cpu, memory and
+// pids controllers, so these three are the caps a user manager can
+// set, and each reads back from the kernel at the value given.
+type resourceCaps struct {
+	// memoryMax is the RAM the unit's whole tree may use, in bytes. At
+	// it the kernel kills the process that asked (the biggest, when it
+	// is the tree's), the unit fails with Result=oom-kill and the
+	// watchdog restarts the app. The unit gets no swap under it
+	// (MemorySwapMax=0): a cap an app could spill past into swap would
+	// bound nothing.
+	memoryMax uint64
+	// tasksMax is the threads and processes of the unit's whole tree.
+	// Past it a fork or thread creation fails with EAGAIN; a `sh -c`
+	// wrapped command dies on the first one (dash exits 2), which the
+	// watchdog reads as a crash. An unset value leaves the user
+	// manager's own default, 15% of the kernel's threads-max.
+	tasksMax int
+	// cpuQuota is CPU time in percent of one CPU: 200 is two CPUs'
+	// worth. Past it the unit waits for the next period; nothing is
+	// killed. Unset is no bound beyond the fair share every unit has.
+	cpuQuota int
+}
+
+// any reports whether one cap is set.
+func (c resourceCaps) any() bool { return c.memoryMax > 0 || c.tasksMax > 0 || c.cpuQuota > 0 }
 
 // handle identifies a running instance to its runner.
 type handle interface {
@@ -158,4 +229,18 @@ type handleState struct {
 	// Unit is the transient systemd unit running the instance; it is
 	// what Reattach looks up after a hotserve restart.
 	Unit string `json:"unit,omitempty"`
+	// Caps is what the unit is bounded to, as the manager last applied
+	// them: the start's, a SetCaps's, or the values read at reattach.
+	// Not persisted: the manager is the ledger, and status reads this.
+	Caps resourceCaps `json:"-"`
+	// CapsUnknown says Caps is the last known, not the applied: a
+	// SetCaps failed after the manager may have applied it and the
+	// unit could not be read back. A sync re-sends rather than trusts
+	// an equality, and status reports no caps as in effect.
+	CapsUnknown bool `json:"-"`
+	// CapsUnenforced names the caps in Caps whose controller does not
+	// reach the unit's cgroup (unenforcedCaps): the manager holds them,
+	// the kernel bounds nothing. Status lists them apart from the caps
+	// in effect.
+	CapsUnenforced []string `json:"-"`
 }

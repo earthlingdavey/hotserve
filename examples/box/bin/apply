@@ -112,12 +112,28 @@ mint() {
 
 # req <curl args...>: one request with a token. The status goes in
 # $code — 000 when no answer came, `mint` when no token could be had
-# and nothing was sent — and the body in $tmpd/resp.
+# and nothing was sent — and the body in $tmpd/resp. The box's 401 is
+# sent once more, 3s later (with a fresh token in Actions): the first
+# token under an issuer's new signing key is refused while the box
+# fetches that key, without waiting on the fetch (a wait would tell
+# anyone with a token what the box trusts), and the retry finds it.
+# That holds for a HOTSERVE_TOKEN too when it is an issuer's (a GitLab
+# id_token, say). The box refuses before it does anything else, so
+# sending again repeats nothing.
 req() {
-	: >"$tmpd/resp"
-	mint || { code=mint; return 0; }
-	code=$(curl -sS -o "$tmpd/resp" -w '%{http_code}' --max-time "$maxtime" \
-		-H "@$tmpd/auth" "$@") || code=000
+	# Not $try: mint's loop sets it.
+	for sent in 1 2; do
+		: >"$tmpd/resp"
+		mint || { code=mint; return 0; }
+		code=$(curl -sS -o "$tmpd/resp" -w '%{http_code}' --max-time "$maxtime" \
+			-H "@$tmpd/auth" "$@") || code=000
+		# The box's own 401, by its sentence: one from something in front
+		# of it is not about the token.
+		{ [ "$code" = 401 ] && [ "$sent" = 1 ] &&
+			case $(field error) in 'invalid or missing deploy token'*) true ;; *) false ;; esac; } || return 0
+		echo "apply: the box refused the token; sending it once more in 3s (a box refuses the first token under a new signing key while it fetches the key)"
+		sleep 3
+	done
 }
 
 # field <key>: a string field of the response, JSON's escapes undone.
@@ -225,9 +241,9 @@ refused401() {
 		echo "  the audience, subject or claim it pins, against what hotserve deploy-token was given"
 		echo "A box token must also name the commit: hotserve deploy-token --claims sha=$head."
 	fi
-	echo "Or the box could not consult the token's issuer (an outage there): its journal says so, and a"
-	echo "re-run once the issuer is back goes through. On the box, journalctl -u hotserve ('webhook auth"
-	echo "failed') names the check that refused it."
+	echo "Or the box could not consult the token's issuer (an outage there), or had fetched its keys in the"
+	echo "minute before the issuer changed them. On the box, journalctl -u hotserve ('webhook auth failed')"
+	echo "names the check that refused it, and for those two, when a re-run goes through."
 }
 
 # done_ok <phase>: a result the box answered green.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -34,6 +35,8 @@ import (
 //	/run/systemd/resolve reachable       TestSandboxPropertiesEveryUnit
 //	user + PID namespace, every unit     TestSandboxPropertiesEveryUnit
 //	                                     TestIntegrationSystemdSandboxProbe
+//	probe checks from inside             TestSandboxProbeCommand
+//	                                     TestIntegrationSandboxProbeRefusesAnUnfilteredUnit
 //	every launch is sandboxed            TestEveryLaunchIsSandboxed
 //	no unit without a sandbox            TestUnitRefusesToRunWithoutASandbox
 //	reattach refuses a bare unit         TestSystemdRunnerReattach
@@ -119,7 +122,7 @@ func TestNetworkNamespaceIsShared(t *testing.T) {
 		writable: []bindPath{{dest: "/var/lib/liveswap/blog/shared"}}}
 	got := propMap(unitSpec{ExecStart: []string{"/bin/true"}, Sandbox: spec})
 	for _, name := range []string{
-		"PrivateNetwork", "NetworkNamespacePath", "PrivateIPC", "IPCNamespacePath",
+		"PrivateNetwork", "NetworkNamespacePath",
 	} {
 		if v, present := got[name]; present {
 			t.Errorf("%s=%v is set: the app must share the network namespace for its outbound calls", name, v)
@@ -139,6 +142,154 @@ func TestNetworkNamespaceIsShared(t *testing.T) {
 		if !found {
 			t.Errorf("%s missing, the app cannot bind its socket or call out: %v", want, fam.Names)
 		}
+	}
+}
+
+// Promise: "IPC between siblings is closed: a unit's SysV objects and
+// POSIX message queues are in an IPC namespace of its own, and its
+// /dev/shm is a tmpfs of its own" (#311).
+//
+// Both halves are needed. PrivateIPC= covers SysV IPC and message
+// queues and nothing else; POSIX shared memory and named semaphores
+// are files in /dev/shm, which PrivateDevices= binds from the host
+// (measured 2026-10-23). The namespace holds only while the manager
+// spawns one process per unit (TestUnitHasOneExecCommand): on systemd
+// 257's user manager every process it spawns gets a user namespace of
+// its own, so a second one cannot join the IPC namespace the first
+// made and fails 226/NAMESPACE on its /dev/mqueue mount. And the
+// tmpfs says its size: systemd's own default for a TemporaryFileSystem=
+// is 10% of RAM (NESTED_TMPFS_LIMITS), where the host's /dev/shm,
+// which every app had until now, is the kernel's 50%; the unit keeps
+// that, memory_max being the practical cap (DESIGN-sandbox.md).
+func TestIPCAndSharedMemoryArePrivate(t *testing.T) {
+	got := propMap(unitSpec{ExecStart: []string{"/bin/true"}, Sandbox: probeSandboxSpec()})
+	if v, _ := got["PrivateIPC"].(bool); !v {
+		t.Errorf("PrivateIPC=%v: siblings would share SysV IPC and POSIX message queues", got["PrivateIPC"])
+	}
+	if v, present := got["IPCNamespacePath"]; present {
+		t.Errorf("IPCNamespacePath=%v: the namespace must be the unit's own, not a named one shared with others", v)
+	}
+	tmp, ok := got["TemporaryFileSystem"].([]tmpfsMount)
+	if !ok {
+		t.Fatalf("TemporaryFileSystem = %#v: the view's tmpfs list is missing, /dev/shm with it", got["TemporaryFileSystem"])
+	}
+	shm := false
+	for _, m := range tmp {
+		if m.Path == "/dev/shm" {
+			shm = true
+			if !strings.Contains(m.Options, "size=50%") {
+				t.Errorf("TemporaryFileSystem=/dev/shm:%s: without size=50%% systemd caps it at 10%% of RAM, less than the host's /dev/shm gave every app", m.Options)
+			}
+		}
+	}
+	if !shm {
+		t.Errorf("no TemporaryFileSystem=/dev/shm: the host's, bound by PrivateDevices=, is shared by every app")
+	}
+}
+
+// Promise: "`RestrictAddressFamilies=` filters `socket(2)` alone, so
+// the other routes to a socket of a family it leaves out MUST be
+// closed too." Two are, and this pins them:
+//
+//   - An io_uring ring's IORING_OP_SOCKET (kernel 5.19+; Debian 13
+//     ships 6.12) creates one without that call, so a family the list
+//     leaves out (AF_ALG, AF_VSOCK) would be one ring away.
+//     @system-service admits io_uring_setup through @aio, so a deny
+//     entry takes it back out, and with no ring the other two io_uring
+//     calls have nothing to act on.
+//   - On amd64 the kernel also runs the x86-32 ABI, where socket(2) is
+//     reached through socketcall(), and systemd applies no
+//     address-family filter to that ABI at all.
+//     SystemCallArchitectures=native takes the ABI away; a 32-bit
+//     executable is refused at the deploy's pre-flight instead
+//     (TestCheckMachineRefusesA32BitExecutable).
+//
+// The third call that makes a socket, socketpair(2), the filter does
+// not cover either, and on Debian 13 it gives an app no socket outside
+// AF_UNIX: only AF_TIPC implements it besides in 6.12, and tipc has
+// no autoload alias, so it loads only by root's hand, which
+// docs/hardening.md step 5 refuses too where taken
+// (TestHardeningStepBlocksTheModuleBackedProtocols, #315). It still loads
+// any aliased family's module, an accepted residual. Denying
+// socketpair was never an option: Node's child_process uses it.
+//
+// The filter's order is half the promise. The manager builds a unit's
+// filter in the mode of the first SystemCallFilter= it reads: the
+// allow list first, then a deny entry that removes a name from it.
+// Reversed, the first entry would make a deny list, and the allow list
+// after it would take names out of that list rather than restrict
+// anything.
+func TestTwoRoutesAroundTheAddressFamilyFilterAreClosed(t *testing.T) {
+	u := unitSpec{ExecStart: []string{"/bin/true"}, Sandbox: probeSandboxSpec()}
+	if a, _ := propMap(u)["SystemCallArchitectures"].([]string); !reflect.DeepEqual(a, []string{"native"}) {
+		t.Errorf("SystemCallArchitectures = %v, want [native]: on amd64 the x86-32 ABI's socketcall() opens any family", a)
+	}
+	var filters []allowList
+	for _, v := range propValues(u, "SystemCallFilter") {
+		f, ok := v.(allowList)
+		if !ok {
+			t.Fatalf("SystemCallFilter value is %T, want an allowList", v)
+		}
+		filters = append(filters, f)
+	}
+	if len(filters) == 0 || !filters[0].AllowList || !slices.Contains(filters[0].Names, "@system-service") {
+		t.Fatalf("the first SystemCallFilter must be the @system-service allow list, or the manager builds a deny list: %+v", filters)
+	}
+	denied := false
+	for _, f := range filters[1:] {
+		if f.AllowList {
+			t.Errorf("an allow list after the first adds back what a deny entry took out: %+v", filters)
+		}
+		if slices.Contains(f.Names, "io_uring_setup") {
+			denied = true
+		}
+	}
+	if !denied {
+		t.Errorf("io_uring_setup is still allowed: an io_uring ring opens sockets RestrictAddressFamilies= never sees: %+v", filters)
+	}
+}
+
+// Promise: the module-backed protocols an admitted family lets an app
+// name are "the operator's step, not the `.deb`'s", docs/hardening.md
+// step 5 (DESIGN-sandbox.md, "Module-backed protocols"). The family
+// list says nothing about the protocol number, and the kernel loads a
+// protocol's module on the first socket() that names it, as any user:
+// sctp, l2tp_ip, l2tp_ip6 and smc are modules on Debian 13, carry the
+// alias, and gate nothing at creation; dccp, tipc and rds load only by
+// root's hand and complete the CIS Debian set. hotserve ships nothing
+// for it, so the one thing to hold is the page: its one printf line
+// writes exactly this list, in order, to the file the page names, and
+// nothing else on the page writes that file. The list here is the one
+// copy outside the design's prose; a module added or taken changes
+// the test, the page and the design bullet in the same commit.
+func TestHardeningStepBlocksTheModuleBackedProtocols(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "docs", "hardening.md"))
+	if err != nil {
+		t.Fatalf("the hardening page: %v", err)
+	}
+	const form = `printf 'install %s /bin/false\n' `
+	const file = " > /etc/modprobe.d/hotserve-protocols.conf"
+	want := []string{"sctp", "l2tp_ip", "l2tp_ip6", "smc", "dccp", "tipc", "rds"}
+	var got []string
+	writes := 0
+	for n, line := range strings.Split(string(raw), "\n") {
+		j := strings.Index(line, file)
+		if j < 0 {
+			continue // not a write of the file; prose may name it
+		}
+		i := strings.Index(line, form)
+		if i < 0 || j < i {
+			t.Errorf("docs/hardening.md:%d writes the file outside the one printf form: %q", n+1, line)
+			continue
+		}
+		writes++
+		got = strings.Fields(line[i+len(form) : j])
+	}
+	if writes != 1 {
+		t.Fatalf("docs/hardening.md writes /etc/modprobe.d/hotserve-protocols.conf %d times, want once", writes)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the hardening step blocks %v, want %v (the design's list; change both together)", got, want)
 	}
 }
 
@@ -180,8 +331,8 @@ func TestSocketIsInsideTheViewAndUniquePerInstance(t *testing.T) {
 		if !writable || !pathWithin(socket, own) {
 			t.Errorf("socket %s is not under the instance's own writable run dir %s", socket, own)
 		}
-		if socket != rig.spec.dirs.socket(spec.nonce) || spec.socket != socket {
-			t.Errorf("socket %s is not the spec's own (nonce %q, spec.socket %q)", socket, spec.nonce, spec.socket)
+		if socket != rig.spec.dirs.socket(spec.nonce) {
+			t.Errorf("socket %s is not the instance's own (nonce %q)", socket, spec.nonce)
 		}
 		sockets[socket] = true
 	}
@@ -193,8 +344,8 @@ func TestSocketIsInsideTheViewAndUniquePerInstance(t *testing.T) {
 	// the new socket's name before hotserve pins it.
 	for i, spec := range specs {
 		other := specs[1-i]
-		if spec.sandbox.inView(other.socket) {
-			t.Errorf("instance %s can see instance %s's socket %s", spec.nonce, other.nonce, other.socket)
+		if theirs := rig.spec.dirs.socket(other.nonce); spec.sandbox.inView(theirs) {
+			t.Errorf("instance %s can see instance %s's socket %s", spec.nonce, other.nonce, theirs)
 		}
 	}
 }

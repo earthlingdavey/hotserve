@@ -135,14 +135,35 @@ var ownerLocks sync.Map // app name → *sync.Mutex; one per name ever seen
 
 // pruneSockets removes every instance's run/<nonce> dir and pinned
 // proxy/<nonce>.sock except the kept instances' — the one serving,
-// and the one being launched, whose run dir already exists. The unit
-// itself removes its socket when it stops (ExecStopPost=) and retire
-// removes the rest; this is the belt for anything left behind — an
+// and the one being launched, whose run dir already exists. retire
+// removes an instance's run dir and pin (the unit removes nothing
+// itself: it has one Exec*=, #311); this is the belt for anything left behind — an
 // instance that died while hotserve was down — run when the manager's
 // word is that nothing else is running. Best-effort: what cannot be
 // removed is logged, and the next launch's fresh nonce never collides
 // with it anyway.
+//
+// Nothing is pruned through a link. If the app dir, run/ or proxy/ is
+// one — `<root>/blog -> shop`, `blog/proxy -> ../shop/proxy` — what
+// is under it is not this app's to judge stale: blog's prune would
+// remove shop's live socket and pin. One warning names it and the
+// remedy, and the prune is skipped; so it is when one of them is not
+// a directory, or cannot be checked for a link (EIO), since the reads
+// after it may succeed through a link the check missed (linkAt).
+// Launch refuses a linked app dir or run/ for its own reason
+// (resolveBindSources); proxy/ is no bind source, so a linked proxy/
+// launches, and this check is what keeps its prune off the sibling's
+// pins. The check is on the pathname, so a link swapped in after it is
+// followed. Under a root only hotserve can write, only the hotserve
+// uid could swap one in, and it could remove the socket directly
+// anyway.
 func pruneSockets(d appDirs, keep []string, logger *zap.Logger) {
+	if p, why := d.linkAt(d.run, d.proxy); p != "" {
+		logger.Warn("not pruning instance sockets: the app dir, run/ or proxy/ is not the directory it names",
+			zap.String("app_dir", d.app), zap.String("path", p), zap.Error(why),
+			zap.String("fix", notOwnDirFix))
+		return
+	}
 	kept := map[string]bool{}
 	for _, n := range keep {
 		kept[n] = true

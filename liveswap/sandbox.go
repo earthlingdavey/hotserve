@@ -14,9 +14,10 @@ import (
 )
 
 // Per-app sandboxing (issue #35) is systemd's own per-unit sandboxing
-// on the user-manager runner: a user namespace (PrivateUsers=) plus a
-// PID namespace (PrivatePIDs=, systemd 257+) on top of the mount,
-// device, cgroup, seccomp and capability set.
+// on the user-manager runner: a user namespace (PrivateUsers=), a
+// PID namespace (PrivatePIDs=, systemd 257+) and an IPC namespace
+// (PrivateIPC=, with a /dev/shm of the unit's own; #311) on top of the
+// mount, device, cgroup, seccomp and capability set.
 //
 // The user namespace is what closes /proc/<pid>/{root,environ,cwd} of
 // every process outside it — commoncap refuses cross-user-namespace
@@ -61,9 +62,11 @@ import (
 // bindPath is one of the app's own directories bound back into its
 // view: dest is where the app sees it (and what WorkingDirectory,
 // HOME and the {release_dir}/{shared_dir} placeholders name), source
-// is what is mounted there. They differ only when the operator has
-// pointed one of those directories somewhere else with a symlink —
-// binding the resolved path at the resolved path would put the
+// is what is mounted there. They differ only when the path to the
+// liveswap root goes through a link (/srv/liveswap -> /mnt/liveswap);
+// a link anywhere below the root is refused at launch
+// (resolveBindSources). Binding the resolved path at the resolved
+// path would put the
 // directory somewhere the app has no reason to look, and its own
 // spelling would be gone with the tmpfs that masks the root.
 type bindPath struct {
@@ -170,21 +173,20 @@ type sandboxSpec struct {
 //
 // The mandatory binds need this, and are the easier target: `shared`
 // and the release dirs live under the shared hotserve UID, and
-// appDirs.ensure's MkdirAll succeeds on a symlink. Nothing runs bare
-// any more, but the app dir is writable by the app it belongs to, and
-// what a sandboxed app writes there it writes as the hotserve uid: it
-// could replace its own `shared` with a link to /run/user/<uid> and
-// have BindPaths= mount the user manager's private socket inside its
-// sandbox on the next launch.
+// appDirs.ensure's MkdirAll succeeds on a symlink. A `shared` that is
+// a link to /run/user/<uid> would have BindPaths= mount the user
+// manager's private socket inside the app's sandbox on the next
+// launch. No app can plant that link from inside its sandbox (see the
+// end of this comment), but nothing on disk says who did.
 //
 // A mandatory bind must therefore resolve to the directory it NAMES.
 // The only difference permitted is one an alias on the liveswap root
 // itself explains; anything else is refused, including targets that
 // look innocent. That is not conservatism, it is the only line that
-// can be drawn: the app's own directory is writable by the app, so a
-// symlink placed there cannot be distinguished from one the operator
-// meant. `shop/shared -> /mnt/shop-data` being a legitimate layout is
-// exactly what would make /mnt/shop-data an acceptable target for a
+// can be drawn: a symlink in the app's own directory cannot be
+// distinguished from one the operator meant. `shop/shared ->
+// /mnt/shop-data` being a legitimate layout is exactly what would
+// make /mnt/shop-data an acceptable target for a
 // `blog` to aim at, and no list of other apps' data and env_file
 // locations can close that — it would be incomplete by construction
 // and would go stale, which is the derived set this model deletes.
@@ -199,14 +201,13 @@ type sandboxSpec struct {
 //
 // This is a check on a pathname, and between it and the manager
 // following that pathname a process sharing the hotserve UID could
-// swap what it points at. No such process exists any more: every app
-// is sandboxed, and inside its view the app directory is a tmpfs
-// holding mount points it cannot unlink — the symlink would have to
-// be planted from outside every sandbox, by the hotserve uid, which
-// is hotserve itself. The check stays because it is what makes that
-// true (an app's own shared dir is the one path it can write, and a
-// link planted there before sandboxing existed is exactly what the
-// first sandboxed launch must not follow).
+// swap what it points at. No such process exists: every app is
+// sandboxed, and inside its view the app directory is a tmpfs holding
+// mount points it cannot unlink — the symlink would have to be
+// planted from outside every sandbox, by hotserve itself or by root.
+// That holds only while nothing else runs as the hotserve uid outside
+// a sandbox. The check is for root's links: an operator's symlink,
+// made to move a directory or by mistake, is what it refuses (above).
 func (s *sandboxSpec) resolveBindSources() error {
 	// Compare canonical against canonical: a resolved bind source is
 	// canonical, so a lexical root would miss a sibling reached through
@@ -394,20 +395,123 @@ func probeSandboxSpec() *sandboxSpec {
 }
 
 // sandboxProbeCommand is the command the capability probe runs inside
-// a unit built with probeSandboxSpec. It checks the namespaces are in
-// effect — not merely that the manager accepted the properties: the
-// manager ignores PrivatePIDs= on a kernel without PID namespaces, and
-// a user namespace the kernel or an LSM refuses fails the unit
-// outright. In a user namespace the process's own uid_map covers a
-// single id, not the 2^32-1 of the initial namespace; in a PID
-// namespace the executed process is PID 1.
-func sandboxProbeCommand() []string {
+// a unit built with probeSandboxSpec. It checks the namespaces and
+// seccomp are in effect — not merely that the manager accepted the
+// properties: the manager ignores PrivatePIDs= on a kernel without PID
+// namespaces, and where seccomp is unavailable to it (no seccomp in
+// the kernel, SYSTEMD_SECCOMP=0 in its environment, or an outer filter
+// that refuses to let it install one) skips every seccomp-backed
+// setting at once with a debug line, while a user namespace the kernel
+// or an LSM refuses fails the unit outright. In a user namespace the
+// process's own uid_map covers a single id, not the 2^32-1 of the
+// initial namespace; in a PID namespace the executed process is PID 1.
+//
+// Two checks cover seccomp. `Seccomp: 2` in the process's status says
+// some filter is loaded, but neither whose — one the manager itself
+// runs under reads 2 as well — nor which of the unit's several. So
+// the probe also tries `unshare -U`, which RestrictNamespaces= (the
+// empty set, sandboxProperties) refuses with EPERM: that setting is
+// skipped exactly when the whole set is, so a namespace the probe can
+// make means the unit's own filters are not there, whatever mode it
+// inherited. An outer filter cannot refuse that unshare for the unit
+// either: the manager makes the same unshare(CLONE_NEWUSER) call for
+// PrivateUsers=, so such a filter fails the unit first. What neither
+// check can see is SystemCallFilter= alone not loading while the rest
+// do (DESIGN-sandbox.md, "What this does NOT stop").
+//
+// Two more cover sibling IPC (#311). The IPC namespace must be the
+// unit's own: where the kernel refuses one the manager logs
+// "PrivateIPC=yes is configured, but IPC namespace setup failed,
+// ignoring" and goes on in its own, and PrivateIPC= then mounts a
+// fresh mqueuefs on /dev/mqueue, which the kernel allows only to a
+// process whose user namespace owns its IPC namespace — so the mount
+// fails the unit (226/NAMESPACE, measured) rather than letting it run
+// shared, and when it succeeds its root inode belongs to the mounter.
+// The probe checks both: /dev/mqueue is owned by its own uid (the
+// host's, bound in, reads as root or nobody), and its
+// /proc/self/ns/ipc is not the one hotserve passes in
+// (HOTSERVE_IPC_NS: hotserve's own, which is the manager's while
+// neither hotserve.service nor the user manager sets PrivateIPC=).
+// Two signals, since each alone can be made vacuous — the first by a
+// hotserve running as uid 0, the second by a drop-in on
+// hotserve.service. And /dev/shm must be the unit's own tmpfs: the
+// probe writes probeShmCanary there, which must then not be in
+// hotserve's /dev/shm, the host's (checkShmCanary) — a write that
+// fails is a failure of its own, named on the line.
+func sandboxProbeCommand(nonce string) []string {
 	// The echo lands in the journal under the probe unit's identifier
 	// (hotserve-sandbox-probe), so a refused host can be diagnosed
 	// from `journalctl -t hotserve-sandbox-probe`. The argv reaches the
 	// shell byte for byte, as every unit's command does (no-env-expand,
 	// see unitProperties), so the script is spelled as a shell reads it.
-	return []string{"/bin/sh", "-c", `read _ _ n < /proc/self/uid_map; echo "sandbox probe: uid_map range $n, pid $$"; [ "$n" != 4294967295 ] && [ "$$" = 1 ]`}
+	// /proc/self/status is read by the shell itself, so the mode is the
+	// probe process's own, and a status with no Seccomp: line (a kernel
+	// without seccomp) reads `absent`. unshare (util-linux, Essential on
+	// Debian) counts as refused only on EPERM's text, which LC_ALL=C
+	// (probeStartSpec) keeps in English: a missing binary or a namespace
+	// limit (ENOSPC) is a failure of its own, named on the journal line,
+	// not a pass.
+	return []string{"/bin/sh", "-c", `read _ _ n < /proc/self/uid_map; s=absent; while read -r k v; do [ "$k" = Seccomp: ] && s=$v; done < /proc/self/status; e=$(unshare -U true 2>&1); case $?:$e in 0:*) u=allowed ;; *"Operation not permitted"*) u=refused ;; *) u="failed: $e" ;; esac; i=$(readlink /proc/self/ns/ipc); m=$(stat -c %u /dev/mqueue 2>&1); if echo probe > ` + probeShmCanary(nonce) + `; then w=ok; else w=failed; fi; echo "sandbox probe: uid_map range $n, pid $$, seccomp $s, unshare $u, ipc $i (manager $HOTSERVE_IPC_NS), mqueue owner $m (self $(id -u)), shm write $w"; [ "$n" != 4294967295 ] && [ "$$" = 1 ] && [ "$s" = 2 ] && [ "$u" = refused ] && [ -n "$i" ] && [ "$i" != "$HOTSERVE_IPC_NS" ] && [ "$m" = "$(id -u)" ] && [ "$w" = ok ]`}
+}
+
+// probeShmCanary is the file the probe unit writes into its /dev/shm:
+// unique per probe, so a leftover of one run cannot answer for the
+// next.
+func probeShmCanary(nonce string) string { return "/dev/shm/hotserve-sandbox-probe-" + nonce }
+
+// ownIPCNamespace is the IPC namespace hotserve runs in, as the probe
+// compares it: the manager's, since hotserve.service and the hotserve
+// user's manager both sit in the initial one.
+func ownIPCNamespace() (string, error) {
+	ns, err := os.Readlink("/proc/self/ns/ipc")
+	if err != nil {
+		return "", fmt.Errorf("reading hotserve's own IPC namespace: %w", err)
+	}
+	return ns, nil
+}
+
+// checkShmCanary is the half of the /dev/shm check the probe cannot
+// make from inside its unit: the canary it wrote must not be in
+// hotserve's /dev/shm, which is the host's (hotserve.service sets no
+// PrivateDevices=, and PrivateDevices= binds the host's anyway).
+// Found, every app's /dev/shm is one directory. Removed either way.
+// A hotserve that cannot see /dev/shm at all (a drop-in hiding it)
+// cannot make the check, and says so rather than passing it.
+func checkShmCanary(nonce string) error {
+	if st, err := os.Stat("/dev/shm"); err != nil || !st.IsDir() {
+		return fmt.Errorf("hotserve cannot see /dev/shm, so it cannot check that the probe unit's is its own: %w", err)
+	}
+	p := probeShmCanary(nonce)
+	_, err := os.Lstat(p)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	_ = os.Remove(p)
+	if err != nil {
+		return fmt.Errorf("checking %s after the probe: %w", p, err)
+	}
+	return fmt.Errorf("the probe unit's /dev/shm is the host's: %s, written inside the unit, was visible outside it", p)
+}
+
+// probeStartSpec is one probe unit's spec. LC_ALL=C because the
+// script reads unshare's error text, and a unit's environment is the
+// manager's defaults under the one given here (runner_systemd.go,
+// invariant 8): a host whose locale translates strerror would
+// otherwise turn a refusal into a failure, on a capable box. ipcNS is
+// hotserve's own IPC namespace (ownIPCNamespace), which the probe's
+// must differ from.
+func probeStartSpec(nonce, ipcNS string) startSpec {
+	return startSpec{
+		app:     "sandbox-probe",
+		version: "probe",
+		nonce:   nonce,
+		command: sandboxProbeCommand(nonce),
+		dir:     "/",
+		env:     []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "HOTSERVE_IPC_NS=" + ipcNS},
+		grace:   5 * time.Second,
+		sandbox: probeSandboxSpec(),
+		probe:   true,
+	}
 }
 
 // sandboxProbeTimeout bounds one probe unit: a shell that exits at
@@ -448,19 +552,16 @@ func probeSandboxCapability(r runner) error {
 		if err != nil {
 			return err
 		}
+		ipcNS, err := ownIPCNamespace()
+		if err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
 		defer cancel()
-		return r.RunOnce(ctx, startSpec{
-			app:     "sandbox-probe",
-			version: "probe",
-			nonce:   nonce,
-			command: sandboxProbeCommand(),
-			dir:     "/",
-			env:     []string{"PATH=/usr/bin:/bin"},
-			grace:   5 * time.Second,
-			sandbox: probeSandboxSpec(),
-			probe:   true,
-		})
+		if err := r.RunOnce(ctx, probeStartSpec(nonce, ipcNS)); err != nil {
+			return err
+		}
+		return checkShmCanary(nonce)
 	}
 	err := attempt()
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -482,7 +583,7 @@ func probeSandboxCapability(r runner) error {
 		err = attempt()
 	}
 	if err != nil {
-		return fmt.Errorf("sandbox probe unit: %w — check `journalctl -t hotserve-sandbox-probe` for the probe's own output, if it got as far as running; the supported host is Debian 13: PrivatePIDs= needs systemd 257, and both namespaces need a kernel that permits them", err)
+		return fmt.Errorf("sandbox probe unit: %w — check `journalctl -t hotserve-sandbox-probe` for the probe's own output, if it got as far as running; the supported host is Debian 13: PrivatePIDs= needs systemd 257, both namespaces need a kernel that permits them, and the syscall filter needs seccomp the user manager can apply to the unit (the probe's line says which check failed: \"seccomp 0\" or \"unshare allowed\" means the manager skipped the unit's seccomp settings; an ipc equal to the manager's, or a mqueue owner other than self, means the unit has no IPC namespace of its own, and \"shm write failed\" that its /dev/shm is not writable)", err)
 	}
 	return nil
 }

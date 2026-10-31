@@ -48,6 +48,7 @@ type appSpec struct {
 	maxArtifactSize    int64
 	maxArtifactEntries int
 	deployLogLines     int // lines of the app's journal in a failed deploy's response; 0 = none
+	caps               resourceCaps
 	allowInsecure      bool
 	allowlist          []artifactAllowEntry
 	dirs               appDirs
@@ -280,8 +281,15 @@ type managedApp struct {
 	logger    *zap.Logger
 
 	// deployMu serializes deploys per app. TryLock (not a queue): a
-	// concurrent webhook gets an immediate 409 and CI can retry.
+	// concurrent webhook gets an immediate 409 and CI can retry. The
+	// one blocking Lock is Destruct's, on the app's removal, and it is
+	// never released. Every other holder but the watchdog lets go
+	// through unlockDeploy or endDeploy, which wake the watchdog.
 	deployMu sync.Mutex
+	// deploysEnded counts deploys that have let go of deployMu
+	// (endDeploy): what tells a restart waiting out its backoff that a
+	// deploy over its instance ended, from any other wake-up.
+	deploysEnded atomic.Uint64
 
 	// mu guards current, phase, phases and lastDeploy.
 	mu         sync.Mutex
@@ -329,6 +337,12 @@ type managedApp struct {
 	// secretsLoaded set means the spec has no env_file.
 	secretsFrom   string
 	secretsLoaded bool
+
+	// capsMu serializes syncCaps: its snapshot, compare and apply are
+	// one step, so a publication's sync and a reload's cannot
+	// interleave and leave the older spec's caps applied last. Taken
+	// before specMu and mu, never while either is held.
+	capsMu sync.Mutex
 }
 
 func newManagedApp(name string) *managedApp {
@@ -448,6 +462,19 @@ type appConfigState struct {
 // pooled app keeps the runner — and so the connection — it was first
 // started with across every later reload.
 func (ma *managedApp) configure(owner any, spec *appSpec, verifiers []deploytrust.Verifier, logger *zap.Logger, clients *fetchClients, manager systemdConn) {
+	ma.installSpec(owner, spec, verifiers, logger, clients, manager)
+	// The caps are the one part of a definition that reaches the
+	// instance already running, so they go with the install, after the
+	// lock: a reload's changed caps apply now rather than at the next
+	// launch. The first start has no instance yet; recovery syncs the
+	// one it reattaches (ensureRunning).
+	ma.syncCaps()
+}
+
+// installSpec is configure's locked half: the spec and its
+// collaborators are swapped under specMu, and nothing that reads them
+// back (syncCaps takes a snapshot) runs inside it.
+func (ma *managedApp) installSpec(owner any, spec *appSpec, verifiers []deploytrust.Verifier, logger *zap.Logger, clients *fetchClients, manager systemdConn) {
 	ma.specMu.Lock()
 	defer ma.specMu.Unlock()
 	changed := ma.spec != nil && !specEqual(ma.spec, spec)
@@ -471,7 +498,7 @@ func (ma *managedApp) configure(owner any, spec *appSpec, verifiers []deploytrus
 	}
 	ma.store = &fileStateStore{path: spec.dirs.state}
 	if changed {
-		logger.Info("app definition changed; it applies at the app's next launch (deploy, rollback, or relaunch after a crash, health failure or reboot)")
+		logger.Info("app definition changed; it applies at the app's next launch (deploy, rollback, or relaunch after a crash, health failure or reboot), except its resource caps, which reach the running instance now")
 	}
 	// Wake the watchdog so a reload's spec (watchdog off, new
 	// intervals) applies promptly even while the instance is healthy
@@ -641,14 +668,33 @@ func (ma *managedApp) Deploy(ctx context.Context, req deployRequest) error {
 	if !ma.deployMu.TryLock() {
 		return errDeployInProgress
 	}
-	defer ma.deployMu.Unlock()
+	defer ma.endDeploy()
 	c := ma.snapshot()
 	c.onPhase = req.onPhase
 	return ma.deployLocked(ctx, req, c)
 }
 
+// unlockDeploy lets go of deployMu for any holder but the watchdog, and
+// wakes the watchdog: a restart that found the lock held waits for
+// this, not for a timer (handleFailure). A poke where nothing changed
+// reads as a re-read, so one more is harmless.
+func (ma *managedApp) unlockDeploy() {
+	ma.deployMu.Unlock()
+	ma.pokeWatchdog()
+}
+
+// endDeploy is unlockDeploy at a deploy's end, whatever it came to,
+// counted first: a restart waiting out its backoff over an instance a
+// failed deploy left dead goes now rather than at the end of its step.
+// A promoted deploy has already woken the watchdog with its instance.
+func (ma *managedApp) endDeploy() {
+	ma.deploysEnded.Add(1)
+	ma.unlockDeploy()
+}
+
 // deployLocked runs the blue/green pipeline. The caller MUST already
-// hold deployMu: URL/rollback go through Deploy, while the push handler
+// hold deployMu, and let go of it with endDeploy: URL/rollback go
+// through Deploy, while the push handler
 // acquires the lock BEFORE staging the upload, so a concurrent push gets
 // an immediate 409 rather than streaming a whole tarball to disk only to
 // lose the lock (which would also make aggregate staging unbounded).
@@ -675,6 +721,19 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	launched := false        // a pre_start or Start was attempted: there are units to ask about
 	appExit := ""            // the app's exit, read before hotserve stops a failed instance
 	appPID := 0              // and its main process's pid (runner.Exit)
+	// marked: this deploy wrote the deploy marker (deploying.go).
+	// Declared before the record's defer, so it runs after it: the
+	// marker goes once the record is written, whatever the deploy came
+	// to.
+	marked := false
+	defer func() {
+		if !marked {
+			return
+		}
+		if err := clearDeployMarker(spec.dirs); err != nil {
+			logger.Warn("deploy marker not removed; the next start or deploy reads the record and clears it", zap.Error(err))
+		}
+	}()
 	defer func() {
 		finished := c.clock.Now()
 		result := deployResult{
@@ -730,6 +789,12 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		}
 	}()
 
+	// Before anything is read or written through the app's dirs: one
+	// that is not the directory it names would have this deploy write
+	// into whatever it points at (writeRefusal).
+	if err := spec.dirs.writeRefusal(); err != nil {
+		return err
+	}
 	old := ma.currentInstance()
 	if old != nil && old.version == req.version && c.runner.Alive(old.handle) {
 		// The version that is running, asked for again: relaunched from
@@ -747,6 +812,9 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		logger.Info("version is already running; relaunching it from its release on disk (same artifact)")
 	}
 	if err := spec.dirs.ensure(); err != nil {
+		return err
+	}
+	if err := ma.settleBeforeDeploy(c, old); err != nil {
 		return err
 	}
 	// Versions are immutable: a deploy (URL or push) never overwrites an
@@ -782,6 +850,14 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	// release is taken as it is — a stat, nothing written — so a
 	// relaunch is fetched as a rollback of the running version.
 	extracted := !req.rollback && !relaunch
+	if extracted {
+		// Before anything is extracted: a hotserve that stops from here
+		// on leaves the marker naming this release (deploying.go).
+		if err := saveDeployMarker(spec.dirs, deployMarker{Version: req.version, StartedAt: started}); err != nil {
+			return fmt.Errorf("writing the deploy marker: %w", err)
+		}
+		marked = true
+	}
 	fetchReq := req
 	fetchReq.rollback = !extracted
 	releaseDir, stats, err := c.fetch.fetch(ctx, spec, fetchReq, func(phase string) { ma.setPhase(c, phase) })
@@ -873,14 +949,18 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		return err
 	}
 	if len(spec.preStart) > 0 && extracted {
-		if err := preflightResult("pre-flight of pre_start", c.runner.Preflight(l.startSpec(spec, spec.preStart))); err != nil {
+		pre := l.startSpec(spec, spec.preStart)
+		// Bounded on the unit too: a hotserve that stops during it takes
+		// preCtx with it, and the migration runs on (DESIGN-liveswap.md).
+		pre.startTimeout = spec.deadline
+		if err := preflightResult("pre-flight of pre_start", c.runner.Preflight(pre)); err != nil {
 			return err
 		}
 		// A previous deploy's pre_start whose outcome could not be
 		// observed may still be running; settle the ledger before
 		// starting another migration beside it.
-		if !ma.sweep(c, old, l.nonce) {
-			return fmt.Errorf("%w; not running pre_start", errSweepUnconfirmed)
+		if err := ma.sweepOrWhy(c, old, l.nonce); err != nil {
+			return fmt.Errorf("%w; not running pre_start", err)
 		}
 		// Under deadline, not under the request: a client that hangs
 		// up (a cancelled CI job) must not stop a migration midway,
@@ -892,7 +972,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		// Under the same sandbox as the app it precedes: a migration
 		// that writes where the app cannot read fails here, not at 3am.
 		launched = true
-		err := c.runner.RunOnce(preCtx, l.startSpec(spec, spec.preStart))
+		err := c.runner.RunOnce(preCtx, pre)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("pre_start failed: %w", err)
@@ -903,8 +983,8 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	// No Start without a confirmed sweep (keeping the version that is
 	// serving): the new instance must not come up beside a unit the
 	// manager still holds for this app.
-	if !ma.sweep(c, old, l.nonce) {
-		return fmt.Errorf("%w; not starting", errSweepUnconfirmed)
+	if err := ma.sweepOrWhy(c, old, l.nonce); err != nil {
+		return fmt.Errorf("%w; not starting", err)
 	}
 	launched = true
 	newHandle, err = c.runner.Start(l.startSpec(spec, spec.command))
@@ -977,7 +1057,14 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		logger.Warn("skipping release GC for this deploy")
 		return nil
 	}
-	gcReleases(spec.dirs.releases, spec.keep, req.version, logger)
+	// The version old ran is the way back from this one: GC keeps it
+	// next to the new one, by what served rather than by its record,
+	// which a lost write could have left at an older deploy.
+	previous := ""
+	if old != nil {
+		previous = old.version
+	}
+	gcReleases(spec.dirs, spec.keep, req.version, previous, logger)
 	return nil
 }
 
@@ -1047,7 +1134,7 @@ func (ma *managedApp) ensureRunning() error {
 		// before publishing anything, so recovery must look again.
 		return &transientRecoveryError{errors.New("a deploy is in progress")}
 	}
-	defer ma.deployMu.Unlock()
+	defer ma.unlockDeploy()
 	// Recovery pins and adopts, or relaunches into, this app's socket
 	// dirs; the start-time sweep of unconfigured apps prunes such dirs.
 	// Holding the app's ownerLock across recovery is what keeps the two
@@ -1061,9 +1148,10 @@ func (ma *managedApp) ensureRunning() error {
 	if inst := ma.currentInstance(); inst != nil && c.runner.Alive(inst.handle) {
 		// Reload, or a retry after an earlier sweep could not confirm:
 		// the instance is fine; the ledger must still be settled.
-		if !ma.sweep(c, inst, "") {
-			return &transientRecoveryError{fmt.Errorf("instance %s running; %w", inst.version, errSweepUnconfirmed)}
+		if err := ma.sweepOrWhy(c, inst, ""); err != nil {
+			return &transientRecoveryError{fmt.Errorf("instance %s running; %w", inst.version, err)}
 		}
+		ma.settleAfterRecovery(c, inst.version)
 		return nil
 	}
 	st, ok, err := c.store.load()
@@ -1074,9 +1162,11 @@ func (ma *managedApp) ensureRunning() error {
 		// Nothing recorded — but a deploy whose state write failed may
 		// have left a unit behind; the manager's ledger decides, not
 		// the absence of a file.
-		if !ma.sweep(c, nil, "") {
-			return &transientRecoveryError{errSweepUnconfirmed}
+		if err := ma.sweepOrWhy(c, nil, ""); err != nil {
+			return &transientRecoveryError{err}
 		}
+		ma.settleAfterRecovery(c, "")
+		ma.wd.setLastFailure("") // nothing to recover is nothing failing: an earlier reason is over
 		return nil
 	}
 	// state.json is ours, but it is a file: the version it names
@@ -1159,13 +1249,16 @@ func (ma *managedApp) ensureRunning() error {
 		ma.current = inst
 		ma.mu.Unlock()
 		ma.activeSocket.Store(inst.sock)
+		ma.wd.setLastFailure("") // a recovery that gave up, or a refusal, is over
 		c.logger.Info("reattached to running instance", zap.String("version", st.CurrentVersion))
 		ma.pokeWatchdog()
-		if !ma.sweep(c, inst, "") {
+		ma.syncCaps() // the config may have changed its caps while hotserve was down
+		if err := ma.sweepOrWhy(c, inst, ""); err != nil {
 			// Serving, but the ledger is unsettled: recover() retries
 			// and the retry path above sweeps again.
-			return &transientRecoveryError{fmt.Errorf("reattached %s; %w", st.CurrentVersion, errSweepUnconfirmed)}
+			return &transientRecoveryError{fmt.Errorf("reattached %s; %w", st.CurrentVersion, err)}
 		}
+		ma.settleAfterRecovery(c, inst.version)
 		return nil
 	}
 
@@ -1173,10 +1266,10 @@ func (ma *managedApp) ensureRunning() error {
 	if err != nil {
 		// A preflight refusal is the release as shipped or the command
 		// as configured — a binary that is not there, not executable,
-		// or outside the sandbox view (the launch runs resolveInView;
-		// the architecture check is the deploy's Preflight, not run
-		// here). None of that appears by retrying; everything else
-		// here (sweep, manager, unit reconcile) can.
+		// outside the sandbox view, or built for another machine (the
+		// launch runs the deploy's Preflight). None of that appears by
+		// retrying; everything else here (sweep, manager, unit
+		// reconcile) can.
 		var pe *preflightError
 		if errors.As(err, &pe) {
 			return &permanentRecoveryError{fmt.Errorf("relaunching %s: %w", st.CurrentVersion, err)}
@@ -1186,9 +1279,11 @@ func (ma *managedApp) ensureRunning() error {
 	if err := ma.publishInstance(c, inst); err != nil {
 		c.logger.Warn("persisting recovered state", zap.Error(err))
 	}
+	ma.wd.setLastFailure("") // a recovery that gave up, or a refusal, is over
 	c.logger.Info("relaunched current version after restart",
 		zap.String("version", st.CurrentVersion), zap.String("socket", inst.socket))
 	ma.pokeWatchdog()
+	ma.settleAfterRecovery(c, inst.version) // launchVersion's sweep confirmed: inst is the app's one unit
 	return nil
 }
 
@@ -1241,6 +1336,9 @@ func (ma *managedApp) recover(ctx context.Context, logger *zap.Logger) {
 		}
 		if !transientRecovery(err) {
 			logger.Error("recovery failed", zap.Error(err))
+			// Nothing runs, and nothing will retry: status says why
+			// (watchdog.last_failure) until a launch replaces it.
+			ma.wd.setLastFailure(err.Error())
 			return
 		}
 		// Loud once, then a heartbeat: a manager that is down for an
@@ -1272,6 +1370,13 @@ func (ma *managedApp) recover(ctx context.Context, logger *zap.Logger) {
 // leftovers — except the one being launched right after, named by
 // launching, whose run dir is already prepared.
 func (ma *managedApp) sweep(c collaborators, keep *instance, launching string) bool {
+	return ma.sweepOrWhy(c, keep, launching) == nil
+}
+
+// sweepOrWhy is sweep for a caller that says why it stops:
+// errSweepUnconfirmed, carrying the migration it waits for when that
+// is the reason (a deploy refused beside one names it).
+func (ma *managedApp) sweepOrWhy(c collaborators, keep *instance, launching string) error {
 	var keepHandle handle
 	keepNonces := []string{launching}
 	if keep != nil {
@@ -1280,10 +1385,14 @@ func (ma *managedApp) sweep(c collaborators, keep *instance, launching string) b
 	}
 	if err := c.runner.Sweep(ma.name, keepHandle); err != nil {
 		c.logger.Error("sweeping stray instances", zap.Error(err))
-		return false
+		var mr *migrationRunningError
+		if errors.As(err, &mr) {
+			return fmt.Errorf("%w: %w", errSweepUnconfirmed, err)
+		}
+		return errSweepUnconfirmed
 	}
 	pruneSockets(c.spec.dirs, keepNonces, c.logger)
-	return true
+	return nil
 }
 
 // launchVersion starts an already-on-disk version on a fresh socket
@@ -1310,11 +1419,22 @@ func (ma *managedApp) launchVersion(c collaborators, version string) (*instance,
 	// runs for this app (a unit an earlier hotserve lost track of, a
 	// stop that could not be confirmed) is settled first, or nothing
 	// is launched beside it.
-	if !ma.sweep(c, nil, l.nonce) {
+	if err := ma.sweepOrWhy(c, nil, l.nonce); err != nil {
 		l.sock.retire()
-		return nil, fmt.Errorf("%w; not launching", errSweepUnconfirmed)
+		return nil, fmt.Errorf("%w; not launching", err)
 	}
-	h, err := c.runner.Start(l.startSpec(spec, spec.command))
+	// The deploy's pre-flight, on the spec about to start: a release
+	// that cannot run on this box — built for another machine, its
+	// command gone from the view — is refused here as a preflightError,
+	// which every caller treats as permanent, rather than started to die
+	// 203/EXEC and be restarted for ever. After the sweep, so a refusal
+	// still leaves the ledger settled.
+	ss := l.startSpec(spec, spec.command)
+	if err := c.runner.Preflight(ss); err != nil {
+		l.sock.retire()
+		return nil, err
+	}
+	h, err := c.runner.Start(ss)
 	if err != nil {
 		if !unitUnconfirmed(err) { // an ambiguous start may be live: the next confirmed sweep prunes
 			l.sock.retire()
@@ -1376,13 +1496,46 @@ func (l launch) startSpec(spec *appSpec, command []string) startSpec {
 		app:     spec.name,
 		version: l.version,
 		nonce:   l.nonce,
-		socket:  l.socket,
 		command: expandArgs(command, spec, l.version, l.socket, l.releaseDir),
 		dir:     l.releaseDir,
 		env:     l.env,
 		grace:   spec.grace,
 		sandbox: spec.sandboxSpecFor(l.releaseDir, l.nonce),
+		caps:    spec.caps,
 	}
+}
+
+// syncCaps gives the running instance the caps the spec has now, when
+// its unit carries others: a reload's changed memory_max, tasks_max or
+// cpu_quota applies to the running app rather than waiting for its
+// next launch, and a cap a reload removed is lifted. A unit reattached
+// after a hotserve restart carries whatever it was started with, which
+// this brings up to date too. A failure is a warning, not an error:
+// the caps apply at the next launch regardless (startSpec).
+//
+// Serialized per app (capsMu): every install of a spec is followed by
+// a sync, and a sync that waits behind another snapshots the spec
+// after it, so whichever order a publication's and a reload's syncs
+// start in, the last to apply carries the latest spec.
+func (ma *managedApp) syncCaps() {
+	ma.capsMu.Lock()
+	defer ma.capsMu.Unlock()
+	c := ma.snapshot()
+	inst := ma.currentInstance()
+	if c.spec == nil || c.runner == nil || inst == nil || !c.runner.Alive(inst.handle) {
+		return
+	}
+	want := c.spec.caps
+	if hs := inst.handle.state(); !hs.CapsUnknown && hs.Caps == want {
+		return
+	}
+	fields := []zap.Field{zap.String("version", inst.version),
+		zap.Uint64("memory_max", want.memoryMax), zap.Int("tasks_max", want.tasksMax), zap.Int("cpu_quota", want.cpuQuota)}
+	if err := c.runner.SetCaps(inst.handle, want); err != nil {
+		c.logger.Warn("resource caps not applied to the running instance; they apply at its next launch", append(fields, zap.Error(err))...)
+		return
+	}
+	c.logger.Info("resource caps applied to the running instance", fields...)
 }
 
 func (l launch) instance(h handle) *instance {
@@ -1402,7 +1555,18 @@ func (ma *managedApp) publishInstance(c collaborators, inst *instance) error {
 	ma.current = inst
 	ma.mu.Unlock()
 	ma.activeSocket.Store(inst.sock)
-	return ma.persistState(c, inst)
+	// Persisted before the caps are reconciled: the record is what a
+	// restart recovers, and a sync that waits on the manager must not
+	// hold it back from naming the instance that is already serving.
+	err := ma.persistState(c, inst)
+	// The instance was started from the spec its launch snapshotted;
+	// a reload in between (a deploy's fetch and soak are long) changed
+	// the caps on the instance it was replacing, not on this one.
+	// Reconciled here, against the spec as it is now, so the serving
+	// instance carries the accepted configuration's caps whichever
+	// path published it.
+	ma.syncCaps()
+	return err
 }
 
 // unrouteIf clears activeSocket only while inst is still current, under
@@ -1415,6 +1579,21 @@ func (ma *managedApp) unrouteIf(inst *instance) {
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
 	if ma.current == inst {
+		ma.activeSocket.Store(nil)
+		inst.sock.retire()
+	}
+}
+
+// dropIf is unrouteIf that also forgets inst as the current instance:
+// a relaunch of it was refused for good (the watchdog), so nothing
+// runs, and nothing is supervised, until a deploy or a reload's
+// recovery launches the app again. state.json keeps the version, so a
+// restart's recovery meets the same refusal.
+func (ma *managedApp) dropIf(inst *instance) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	if ma.current == inst {
+		ma.current = nil
 		ma.activeSocket.Store(nil)
 		inst.sock.retire()
 	}
@@ -1465,6 +1644,17 @@ type statusSnapshot struct {
 	// journalctl for the app's own output.
 	Unit    string `json:"unit,omitempty"`
 	Running bool   `json:"running"`
+	// Caps is what the running unit is bounded to, as the manager last
+	// applied them: set at the unit's start, changed live by a reload
+	// (syncCaps), or read back at reattach. Absent when none is set,
+	// and without any cap the host does not enforce.
+	Caps *capsSnapshot `json:"caps,omitempty"`
+	// CapsUnenforced names the configured caps the host does not
+	// enforce: the user manager does not delegate their controller to
+	// the unit's cgroup, so the manager holds the value and the kernel
+	// bounds nothing (not the case on Debian 13). Absent when every
+	// cap is enforced.
+	CapsUnenforced []string `json:"caps_unenforced,omitempty"`
 	// Deploys is the outcome of the latest deploy of each version a
 	// record is kept for (deploys.go), newest first; the whole record
 	// is GET /<app>?deploy=<version>. Serialized before last_deploy:
@@ -1475,35 +1665,85 @@ type statusSnapshot struct {
 	Deploys    []deploySummary   `json:"deploys,omitempty"`
 	LastDeploy *deployResult     `json:"last_deploy,omitempty"`
 	Watchdog   *watchdogSnapshot `json:"watchdog,omitempty"`
-	// AvailableVersions lists the on-disk releases, newest-first — the
-	// versions `?rollback=<version>` can relaunch. Always serialized (a
-	// healthy app with no releases reports []), so an empty set is
+	// AvailableVersions lists the on-disk releases, the running version
+	// first, then most recently deployed first (state.go, "Release
+	// order") — the versions
+	// `?rollback=<version>` can relaunch. Always serialized (a healthy
+	// app with no releases reports []), so an empty set is
 	// distinguishable from a server that doesn't report the field.
 	AvailableVersions []string `json:"available_versions"`
+	// OrderedByMtime names the entries of AvailableVersions placed by
+	// their release dir's mtime, which the app can set: those with no
+	// deploy record (deployed before records, a record write that
+	// failed, or a first deploy still in flight) and those whose record
+	// is there but cannot be read. Each comes after every recorded
+	// release unless it is the running version, which the list puts
+	// first; absent when there are none.
+	OrderedByMtime []string `json:"ordered_by_mtime,omitempty"`
+}
+
+// capsSnapshot is resourceCaps on the wire, in the directives' own
+// names and units (bytes, a count, a percentage of one CPU).
+type capsSnapshot struct {
+	MemoryMax uint64 `json:"memory_max,omitempty"`
+	TasksMax  int    `json:"tasks_max,omitempty"`
+	CPUQuota  int    `json:"cpu_quota,omitempty"`
+}
+
+// capsForStatus splits the unit's caps into the ones in effect and the
+// ones the host does not enforce (named, not valued: a value the
+// kernel ignores is not a cap). nil caps when nothing is in effect.
+func capsForStatus(caps resourceCaps, unenforced []string) *capsSnapshot {
+	off := map[string]bool{}
+	for _, name := range unenforced {
+		off[name] = true
+	}
+	s := &capsSnapshot{}
+	if !off["memory_max"] {
+		s.MemoryMax = caps.memoryMax
+	}
+	if !off["tasks_max"] {
+		s.TasksMax = caps.tasksMax
+	}
+	if !off["cpu_quota"] {
+		s.CPUQuota = caps.cpuQuota
+	}
+	if *s == (capsSnapshot{}) {
+		s = nil
+	}
+	return s
 }
 
 func (ma *managedApp) status() statusSnapshot {
 	c := ma.snapshot()
 	var deploys []deploySummary
 	available := []string{} // always an array in the JSON, never null
+	var byMtime []string
 	if c.spec != nil {
 		// Read releases outside ma.mu — it is disk I/O, and status is polled.
-		if rels := listReleases(c.spec.dirs.releases); rels != nil {
-			available = rels
+		if rels, mtimes := listReleases(c.spec.dirs); rels != nil {
+			available, byMtime = rels, mtimes
 		}
 		deploys = listDeploySummaries(c.spec.dirs)
 	}
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
-	s := statusSnapshot{App: ma.name, Phase: ma.phase, LastDeploy: ma.lastDeploy, AvailableVersions: available, Deploys: deploys}
+	s := statusSnapshot{App: ma.name, Phase: ma.phase, LastDeploy: ma.lastDeploy, AvailableVersions: available, OrderedByMtime: byMtime, Deploys: deploys}
 	if ma.current != nil {
 		s.CurrentVersion = ma.current.version
+		// Under the lock current_version comes from, so a cutover
+		// since the disk read cannot leave the two disagreeing.
+		s.AvailableVersions = runningFirst(s.AvailableVersions, s.CurrentVersion)
+		s.OrderedByMtime = runningFirst(s.OrderedByMtime, s.CurrentVersion)
 		s.Socket = ma.current.socket
 		hs := ma.current.handle.state()
 		s.PID = hs.PID
 		s.Command = hs.Command
 		s.Unit = hs.Unit
 		s.Running = c.runner.Alive(ma.current.handle)
+		if hs.Caps.any() && !hs.CapsUnknown {
+			s.Caps, s.CapsUnenforced = capsForStatus(hs.Caps, hs.CapsUnenforced), hs.CapsUnenforced
+		}
 	}
 	// After current: the watchdog records a restart before it installs
 	// the new instance, so a status that shows the instance shows why
@@ -1518,6 +1758,17 @@ func (ma *managedApp) status() statusSnapshot {
 // still the one installed (a later config's stays). Used when a
 // candidate is cleaned up while another config still holds the app.
 func (ma *managedApp) rollbackConfig(owner any) bool {
+	if !ma.restoreSpec(owner) {
+		return false
+	}
+	// The candidate's caps reached the instance with its install
+	// (configure): give it the serving definition's back.
+	ma.syncCaps()
+	return true
+}
+
+// restoreSpec is rollbackConfig's locked half.
+func (ma *managedApp) restoreSpec(owner any) bool {
 	ma.specMu.Lock()
 	defer ma.specMu.Unlock()
 	if ma.configuredBy != owner || ma.prev == nil {
@@ -1559,7 +1810,6 @@ func (ma *managedApp) rollbackConfig(owner any) bool {
 func (ma *managedApp) Destruct() error {
 	ma.stopWatchdog()
 	c := ma.snapshot()
-	inst := ma.currentInstance()
 	if c.runner == nil {
 		return nil // pooled but never configured (a Start that failed before ours ran)
 	}
@@ -1569,14 +1819,30 @@ func (ma *managedApp) Destruct() error {
 		// units belong to whoever is or will be serving them. Leave
 		// them; the next start's sweep settles any that are truly
 		// orphaned.
-		if inst != nil {
+		if inst := ma.currentInstance(); inst != nil {
 			c.logger.Info("app keeps running for reattach", zap.String("version", inst.version), zap.String("unit", inst.handle.state().Unit))
 		}
 		return nil
 	}
 	// Removed by a reload that is now serving: no unit may outlive
-	// the definition. (The removing config's Cleanup has already
-	// joined its recovery, so nothing can launch after this sweep.)
+	// the definition. A deploy of the app may still be in flight — a
+	// reload stops the old config's servers without waiting for their
+	// requests — and past the sweep below it would start a unit nothing
+	// supervises, routes or stops. So the lock is taken, blocking: the
+	// deploy ends first, within its own bounds (DESIGN-liveswap.md,
+	// "Concurrency model"), and the reload's cleanup waits for it. It
+	// is never released: a removed app takes no further deploy, and a
+	// request the old config still serves gets a 409. The watchdog is
+	// stopped above and the removing config's Cleanup has joined its
+	// recovery, so nothing else can launch after this sweep either.
+	// A wait is named: it holds the reload, and every config change
+	// after it, for as long as the deploy runs.
+	if !ma.deployMu.TryLock() {
+		c.logger.Warn("app removed while a deploy of it is in flight; waiting for the deploy to end before stopping its units, and the reload completes then")
+		ma.deployMu.Lock()
+	}
+	// Read under the lock: a deploy that just promoted left its own.
+	inst := ma.currentInstance()
 	// Stop what we track (if anything), then everything else the
 	// manager holds for this app: a removed app must leave no unit
 	// behind, tracked or not — an ambiguous start may have left one
@@ -1587,7 +1853,7 @@ func (ma *managedApp) Destruct() error {
 		stopErr = c.runner.Stop(inst.handle, c.spec.grace)
 		inst.sock.retire()
 	}
-	sweepErr := c.runner.Sweep(ma.name, nil)
+	sweepErr := c.runner.StopAll(ma.name)
 	if sweepErr == nil {
 		pruneSockets(c.spec.dirs, nil, c.logger)
 	}

@@ -2,6 +2,8 @@ package deploytrust
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -18,10 +20,32 @@ import (
 	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
 )
 
-// clocked is an OIDC source for iss whose key set's refetch interval
-// runs on c.
+// clocked is an OIDC source for iss whose refetch interval runs on c.
 func clocked(iss *trusttest.Issuer, c Clock) *oidcVerifier {
 	return &oidcVerifier{issuer: iss.URL, audience: "hotserve", claims: map[string]string{"sub": "ci"}, client: iss.Client, clock: c}
+}
+
+// settled is Prime on vs, as a start or a reload does it: it begins
+// each OIDC source's discovery and key fetch, and returns once they
+// have ended.
+func settled(t *testing.T, vs ...Verifier) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := Prime(ctx, vs); err != nil {
+		t.Fatalf("priming: %v", err)
+	}
+}
+
+// waited returns once the discovery and key fetch under way for each
+// of vs, a token's, have ended; it begins neither.
+func waited(t *testing.T, vs ...Verifier) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitFor(ctx, vs); err != nil {
+		t.Fatalf("waiting on the fetches under way: %v", err)
+	}
 }
 
 // ciToken is a valid token from iss for a clocked source, under the
@@ -59,33 +83,62 @@ func TestKeySetNeverFetchesForAKidItHolds(t *testing.T) {
 	c := trusttest.NewClock()
 	v := clocked(iss, c)
 	ctx := context.Background()
+	settled(t, v)
 	if _, err := v.verify(ctx, ciToken(t, iss)); err != nil {
 		t.Fatalf("valid token refused: %v", err)
 	}
-	fetches(t, iss, 1, "first token")
+	fetches(t, iss, 1, "primed")
 	forger, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {
-		c.Advance(KeyRefetchInterval)
+		c.Advance(RefetchInterval)
 		_, err := v.verify(ctx, iss.Mint(t, forger, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute)))
 		refusedPlainly(t, err, "bad signature under a held kid")
-		if want := `signature does not match the key held for kid "` + iss.KID + `"; if the issuer replaced that key, systemctl reload hotserve`; !strings.Contains(err.Error(), want) {
+		if want := `signature does not match the key held for kid "` + iss.KID + `": the token is another issuer's, or, if the issuer replaced that key, systemctl reload hotserve`; !strings.Contains(err.Error(), want) {
 			t.Fatalf("bad signature under a held kid: reason = %q, want %q", err, want)
 		}
 	}
 	fetches(t, iss, 1, "bad signatures under a held kid")
 }
 
-// A token whose kid the key set holds no key for fetches, but at most
-// once per KeyRefetchInterval: the second within it is refused against
-// what the first fetched.
+// A kid may name keys of other types, or for encryption, beside the
+// signing key (RFC 7517 §4.5): a token under it verifies whichever
+// order the set lists them in, as go-oidc matches keys.
+func TestKeySetPicksTheKeyThatFitsUnderASharedKid(t *testing.T) {
+	ec, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, first := range []bool{true, false} {
+		iss := trusttest.NewIssuer(t)
+		iss.Publish(jose.JSONWebKey{Key: ec.Public(), KeyID: iss.KID}, first)
+		iss.Publish(jose.JSONWebKey{Key: enc.Public(), KeyID: iss.KID, Use: "enc"}, first)
+		v := clocked(iss, trusttest.NewClock())
+		settled(t, v)
+		if _, err := v.verify(context.Background(), ciToken(t, iss)); err != nil {
+			t.Fatalf("other keys under the kid listed first=%v: refused: %v", first, err)
+		}
+	}
+}
+
+// A token whose kid the key set holds no key for begins a fetch, but
+// at most once per RefetchInterval, and is refused without waiting on
+// it: within the interval it is refused against what the last fetch
+// left; past it, refused saying a fetch is under way, so a retry once
+// that ends may go through.
 func TestKeySetFetchesForAnUnknownKidOncePerInterval(t *testing.T) {
 	iss := trusttest.NewIssuer(t)
 	c := trusttest.NewClock()
 	v := clocked(iss, c)
 	ctx := context.Background()
+	settled(t, v)
+	fetches(t, iss, 1, "primed")
 	forger, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -94,29 +147,38 @@ func TestKeySetFetchesForAnUnknownKidOncePerInterval(t *testing.T) {
 		_, err := v.verify(ctx, iss.MintKID(t, forger, kid, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute)))
 		return err
 	}
-	refusedPlainly(t, forged("forged-1"), "first unknown kid")
-	fetches(t, iss, 1, "first unknown kid")
-	refusedPlainly(t, forged("forged-2"), "second unknown kid, same instant")
-	c.Advance(KeyRefetchInterval - time.Second)
-	refusedPlainly(t, forged("forged-3"), "unknown kid a second before the interval")
+	refusedPlainly(t, forged("forged-1"), "unknown kid at the instant of the last fetch")
+	c.Advance(RefetchInterval - time.Second)
+	err = forged("forged-2")
+	refusedPlainly(t, err, "unknown kid a second before the interval")
+	// Within the interval the refusal names why no fetch began, when one
+	// may, and the reload that fetches now: a rotation in that minute is
+	// not read as a trust mismatch.
+	next := c.Now().Add(time.Second).UTC().Format(time.RFC3339)
+	if want := `kid "forged-2"): the token is another issuer's, or is under a new key they were fetched too soon for; a token from ` + next + ` on fetches them again, as does systemctl reload hotserve now`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("unknown kid within the interval: reason = %q, want %q", err, want)
+	}
 	fetches(t, iss, 1, "unknown kids within the interval")
 	c.Advance(time.Second)
-	err = forged("forged-4")
+	err = forged("forged-3")
 	refusedPlainly(t, err, "unknown kid at the interval")
-	if !strings.Contains(err.Error(), `kid "forged-4"`) {
-		t.Fatalf("unknown kid: reason = %q, want it to name the kid", err)
+	if want := `kid "forged-3"): the token is another issuer's, or is under a new key, which they are being fetched for, so a retry once that ends may go through`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("unknown kid at the interval: reason = %q, want %q", err, want)
 	}
+	waited(t, v)
 	fetches(t, iss, 2, "unknown kid at the interval")
 }
 
-// A key rotation is picked up by the first token under the new key
-// that arrives KeyRefetchInterval after the last fetch; one sooner is
-// refused, and its retry deploys.
+// A key rotation is refused for the first token under the new key: one
+// within RefetchInterval of the last fetch begins none, and one past
+// it begins the fetch without waiting on it. The retry once that fetch
+// has ended deploys.
 func TestKeySetPicksUpARotation(t *testing.T) {
 	iss := trusttest.NewIssuer(t)
 	c := trusttest.NewClock()
 	v := clocked(iss, c)
 	ctx := context.Background()
+	settled(t, v)
 	if _, err := v.verify(ctx, ciToken(t, iss)); err != nil {
 		t.Fatalf("valid token refused: %v", err)
 	}
@@ -125,11 +187,62 @@ func TestKeySetPicksUpARotation(t *testing.T) {
 	_, err := v.verify(ctx, rotated)
 	refusedPlainly(t, err, "new key within the interval")
 	fetches(t, iss, 1, "new key within the interval")
-	c.Advance(KeyRefetchInterval)
-	if _, err := v.verify(ctx, rotated); err != nil {
-		t.Fatalf("new key past the interval: refused: %v", err)
-	}
+	c.Advance(RefetchInterval)
+	_, err = v.verify(ctx, rotated)
+	refusedPlainly(t, err, "new key past the interval, beginning the fetch")
+	waited(t, v)
 	fetches(t, iss, 2, "new key past the interval")
+	if _, err := v.verify(ctx, rotated); err != nil {
+		t.Fatalf("new key after the fetch it began: refused: %v", err)
+	}
+	fetches(t, iss, 2, "new key after the fetch it began")
+}
+
+// Every source that trusts an issuer shares its discovery and keys,
+// across reloads (#306): a source built after another has fetched —
+// another app's, or the next config's — judges its first token at
+// once, with no fetch of its own. A reload (Warm) fetches the keys
+// again whatever RefetchInterval says, so a rotation reaches the box
+// with no refusal at all; and a reload whose fetch fails keeps the
+// keys it had in use.
+func TestIssuerStateIsSharedAcrossSourcesAndReloads(t *testing.T) {
+	iss := trusttest.NewIssuer(t)
+	c := trusttest.NewClock()
+	ctx := context.Background()
+	first := clocked(iss, c)
+	settled(t, first)
+	fetches(t, iss, 1, "the first source primed")
+	other := &oidcVerifier{issuer: iss.URL, audience: "other", claims: map[string]string{"sub": "ci"}, client: iss.Client, clock: c}
+	tok := iss.Mint(t, iss.Priv, "other", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+	if _, err := other.verify(ctx, tok); err != nil {
+		t.Fatalf("a second source's first token: refused: %v", err)
+	}
+	fetches(t, iss, 1, "a second source")
+
+	iss.Rotate(t)
+	settled(t, first) // a reload, well within the interval
+	fetches(t, iss, 2, "a reload")
+	if _, err := first.verify(ctx, ciToken(t, iss)); err != nil {
+		t.Fatalf("the new key after a reload: refused: %v", err)
+	}
+
+	iss.JWKSDown.Store(true)
+	settled(t, first) // a reload whose fetch fails
+	if _, err := first.verify(ctx, ciToken(t, iss)); err != nil {
+		t.Fatalf("a held key after a reload whose fetch failed: refused: %v", err)
+	}
+	// So does one whose discovery names a moved jwks_uri: the keys held
+	// stay in use until the new endpoint's first fetch replaces them.
+	iss.JWKSMoved.Store(true)
+	settled(t, first)
+	if _, err := first.verify(ctx, ciToken(t, iss)); err != nil {
+		t.Fatalf("a held key after a reload that moved the jwks_uri, its fetch failed: refused: %v", err)
+	}
+	iss.JWKSDown.Store(false)
+	settled(t, first)
+	if _, err := first.verify(ctx, ciToken(t, iss)); err != nil {
+		t.Fatalf("after the moved endpoint's fetch: refused: %v", err)
+	}
 }
 
 // heldTransport holds every request until hold is closed, counting
@@ -146,13 +259,15 @@ func (h *heldTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return h.base.RoundTrip(r)
 }
 
-// Callers that need a fetch while one is under way wait on it: many
-// at once make one fetch, and every one of them gets its outcome. One
-// that goes away while waiting gets its own error, and the fetch goes
-// on for the rest.
-func TestKeySetOneFetchForConcurrentCallers(t *testing.T) {
+// No caller waits on a fetch (#306), the first included: with the
+// issuer's answer held, many callers at once are each refused at once,
+// saying a fetch is under way, and make one fetch between them. Once
+// it has ended, the token verifies.
+func TestKeySetNoCallerWaitsOnAFetch(t *testing.T) {
 	iss := trusttest.NewIssuer(t)
 	held := &heldTransport{base: iss.Client.Transport, hold: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(held.hold) })
+	defer release()
 	ks := &keySet{url: iss.URL + "/jwks", client: &http.Client{Transport: held}, clock: trusttest.NewClock()}
 	tok := ciToken(t, iss)
 
@@ -165,28 +280,37 @@ func TestKeySetOneFetchForConcurrentCallers(t *testing.T) {
 			errs <- err
 		})
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for held.n.Load() == 0 {
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callers waited on the held fetch")
+	}
+	close(errs)
+	for err := range errs {
+		if err == nil || !strings.Contains(err.Error(), "which they are being fetched for") {
+			t.Fatalf("a caller under the held fetch: err = %v, want a refusal naming the fetch under way", err)
+		}
+	}
+	// The callers can all return before the fetch they began reaches the
+	// transport.
+	for deadline := time.Now().Add(5 * time.Second); held.n.Load() == 0; {
 		if time.Now().After(deadline) {
-			t.Fatal("no fetch began")
+			t.Fatal("no fetch reached the transport")
 		}
 		time.Sleep(time.Millisecond)
 	}
-	gone, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := ks.VerifySignature(gone, tok); !errors.Is(err, context.Canceled) {
-		t.Fatalf("a caller gone while the fetch is under way: err = %v, want its own context's", err)
-	}
-	close(held.hold)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("a caller waiting on the fetch was refused: %v", err)
-		}
-	}
 	if n := held.n.Load(); n != 1 {
 		t.Fatalf("%d concurrent callers made %d fetches, want one", callers, n)
+	}
+	done := ks.underway()
+	release()
+	if done != nil {
+		<-done
+	}
+	if _, err := ks.VerifySignature(context.Background(), tok); err != nil {
+		t.Fatalf("after the fetch: refused: %v", err)
 	}
 }
 

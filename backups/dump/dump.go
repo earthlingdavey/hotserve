@@ -273,7 +273,7 @@ func execute(ctx context.Context, appears string, commands ...string) (stdout, s
 				return o.String(), e.String(), err
 			}
 			_ = cmd.Process.Kill() // blocked in open(2), which a signal interrupts
-			<-done
+			<-done                 //nolint:errcheck // killed: the exit is ours, and errNeverOpened says why
 			return o.String(), e.String(), errNeverOpened
 		}
 	}

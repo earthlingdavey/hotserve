@@ -238,9 +238,9 @@ from an `http.Server` listening on the socket.
 hotserve's health probe arrives as `GET <health_path>` with
 `Host: localhost`; an app that allowlists hosts (Django's
 `ALLOWED_HOSTS`, Rails' `config.hosts`) must accept it. To poke a
-running app yourself, run as the hotserve user — `run/` is
-`0750 hotserve:hotserve` — and send the same request:
-`sudo -u hotserve curl --unix-socket "$SOCKET" http://localhost/health`
+running app yourself, send the same request from a root shell, as the
+hotserve user (`run/` is `0750 hotserve:hotserve`):
+`runuser -u hotserve -- curl --unix-socket "$SOCKET" http://localhost/health`
 (the path is `.socket` in the status JSON).
 
 Bind the socket **once** per instance. At the first successful
@@ -251,8 +251,9 @@ an app that unlinks and re-binds its path is, as far as hotserve is
 concerned, gone: its health probes fail and the watchdog restarts it.
 (With `health_path off` the watchdog only watches the process, so a
 re-bound app stays up and unroutable — another reason not to
-re-bind.) A stale socket file is never your problem either: the unit
-removes its socket when it stops, and every launch gets a fresh path.
+re-bind.) A stale socket file is never your problem either: hotserve removes
+it with the instance's run dir once the instance is retired, and
+every launch gets a fresh path.
 
 ### Placeholders
 
@@ -275,7 +276,7 @@ resolved at config load.
 | `env`, `env_file` | — | Extra environment |
 | `health_path` | `/health` | 2xx = healthy; `off` = process-liveness only |
 | `health_interval` / `health_timeout` | `5s` / `2s` | Probe cadence |
-| `soak` | `15s` | Continuous health required before cutover. `0` is no soak: traffic moves on the first healthy probe. Refused with `health_path off`, where nothing is probed and the gate would look once, straight after the process starts (#305 tracks allowing it once the gate checks the socket) |
+| `soak` | `15s` | Continuous health required before cutover. `0` is no soak: traffic moves on the first healthy probe. Refused with `health_path off`, where nothing is probed and the gate would look once, straight after the process starts: set a `health_path`, or a `soak` above 0 |
 | `deadline` | `5m` | Bound on pre_start and, separately, on the health gate (soak included, so `soak` cannot exceed it). The gate is judged once per `health_interval`, so it can run over by one interval plus two `health_timeout`s (the probe before the last tick and the one on it); a soak that falls due on that first tick past the deadline still passes |
 | `drain` | `5s` | In-flight grace after cutover, before SIGTERM |
 | `grace` | `10s` | SIGTERM → SIGKILL window |
@@ -284,11 +285,14 @@ resolved at config load.
 | `watchdog_grace` | `30s` | After every (re)start, probe failures don't count until this elapses; a crash always counts |
 | `watchdog_restarts` | `5` | Restart budget within `watchdog_window`; crash and health restarts share it |
 | `watchdog_window` | `10m` | Sliding window for the restart budget |
-| `keep` | `5` | Release dirs retained (GC after success). The running version is always kept, so this can be `keep+1` after rolling back to an old release |
+| `keep` | `5` | Release dirs retained (GC after success): the `keep` most recently deployed, a rollback counting as a deploy of its version. The version the deploy promoted is always one of them, and the version it replaced is the next |
 | `deploy_log_lines` | `40` | How many of the app's last journal lines a failed deploy's response carries (see [Webhook API](#webhook-api)); `0` keeps the app's output on the box (no tail, and no health probe body). At most 1000, and 8 KiB whatever the count |
 | `max_artifact_size` | `100MB` | Download cap; decompressed cap is 10× |
 | `max_artifact_entries` | `100000` | Cap on the files, directories and links one artifact creates (implied parent directories included). The byte cap does not bound what extraction *consumes* — every object costs an inode and most a disk block — so this is what keeps one hostile artifact from filling the disk for everything else on the box. A CI-built artifact is thousands; a Next.js standalone output is ~5–20k |
 | `backup { … }` | — | Declares what under the app's `shared/` is worth backing up: `sqlite` names database files, `files` names files and directories (`.` is all of `shared/`). See [Declaring backups](#declaring-backups) |
+| `memory_max` | none | RAM for every unit of the app, e.g. `512MB` (at least `1MB`); at it the kernel kills the process that asked, the unit fails and the watchdog restarts the app. No swap under it. See [Resource caps](#resource-caps) |
+| `tasks_max` | none (the user manager's own default, 15% of threads-max) | Threads and processes of every unit of the app; past it a fork or thread fails with EAGAIN. Removing it on a reload puts the running unit back on the manager's default, where that default can be read; otherwise the unit keeps the cap until its next launch, and the journal says so |
+| `cpu_quota` | none | CPU time for every unit of the app, in percent of one CPU: `200%` is two CPUs' worth, at most `100000%`; past it the app waits, nothing is killed |
 
 Every duration, count and size above must be more than `0`, except `soak`
 and `deploy_log_lines`, where `0` is a setting. A `0` elsewhere is
@@ -390,6 +394,67 @@ started in. It does not load `--envfile` first, as Caddy's own
 path, is judged here as unset. The packaged service passes no
 `--envfile`, and `hotserve-backup` refuses an import whose path depends
 on a variable.
+### Resource caps
+
+`memory_max`, `tasks_max` and `cpu_quota` bound every unit of the app —
+the instance and its `pre_start` alike — as the unit's own
+`MemoryMax=`, `TasksMax=` and `CPUQuota=`, which the sandbox's
+read-only cgroupfs keeps the app from rewriting. None is set unless
+you set it. What each one does when it is hit:
+
+| Cap hit | What happens | What you see |
+|---|---|---|
+| `memory_max` | The kernel kills the process that asked for the memory — under a `sh -c` or `npm start` command that is a child — and the manager then stops the unit (`Result=oom-kill`); the watchdog restarts the app, on its budget. A `pre_start` that hits it fails the deploy | `journalctl -k` shows the kill — the kernel's line names the unit's cgroup and the process; the app's own journal (`journalctl -t hotserve-<app>`) shows nothing, a killed process prints no last line; the deploy's response or `watchdog.last_restart_cause` says `crash`, and the exit the runner records ends `; the kernel's OOM killer took a process of the unit (its memory_max, or the box's memory), and the unit was stopped for it` |
+| `tasks_max` | A `fork` or thread creation fails with `EAGAIN`. A runtime limps on; a `sh -c` wrapped `command` dies on the first refused fork (dash exits 2), which the watchdog reads as a crash | the app's own error, in its journal |
+| `cpu_quota` | The unit waits for the next 100 ms period. Nothing is killed | latency; `cpu.stat`'s `nr_throttled` in the unit's cgroup |
+
+Sizing, measured 2026-10-22: an idle Node server has 7 threads (11 under
+ten concurrent file reads, more with `UV_THREADPOOL_SIZE`), an idle
+Deno server 8, so a `tasks_max` under a few dozen breaks a runtime
+before it breaks a fork bomb. Without `tasks_max` a unit is already
+bounded at the user manager's default, 15% of the kernel's
+`threads-max` (2273 on a 2 GB box), and a fork bomb at that bound left
+the box operable: hotserve answered, a deploy started within 2 s,
+stopping the unit took 5 s. What it did do was stall the app's
+**siblings** — a second app's requests ran to 10 s — because every
+app's unit has the same CPU weight; `cpu_quota` on each app is what
+bounds that. Caddy itself is not starved: `system.slice` and
+`user.slice` split CPU 50/50 at the root. A leak without `memory_max`
+is killed by the kernel's global OOM killer, the app first — a
+user-manager unit runs at `oom_score_adj` 200 and hotserve.service at
+0, which is systemd's default for user managers and their units, not
+a setting of hotserve's — after the box has spent its free memory on
+it.
+
+A reload that changes a cap sets it on the running instance at once,
+through the manager — no restart; `GET /<app>` shows the values in
+effect as `caps` (`memory_max` in bytes, `tasks_max`, `cpu_quota` in
+percent). A reload that removes one lifts it the same way. A
+`memory_max` set below what the instance already holds is enforced
+the same way too: the kernel reclaims what it can and kills the rest
+(the row above), and the watchdog relaunches the app under the new
+cap, so lower it to what the app is using, not to what it should be
+using. Should the manager refuse the change, the journal says so and
+the caps apply at the app's next launch.
+
+A cap is only as real as the controller behind it: on a host whose
+user manager does not delegate the memory, pids or cpu controller to
+its units (some containers), systemd accepts and reports the cap and
+the kernel bounds nothing. hotserve reads the unit's own
+`cgroup.controllers` when it starts or reattaches, warns in the
+journal, and lists such caps in status as `caps_unenforced` instead of
+under `caps`. Debian 13 delegates all three (measured, as do Ubuntu
+24.04/26.04 and Fedora 43), so on a supported box the field never
+appears.
+
+To bound every app at once — the whole `hotserve` user against Caddy —
+set the caps on the user's slice instead, from the console:
+`systemctl set-property user-$(id -u hotserve).slice MemoryMax=2G CPUQuota=300%`
+applies at once and persists; a drop-in file plus `daemon-reload` is
+**not** re-applied to the live slice on Debian 13's systemd 257
+(measured; 255 and 259 do). It is the box's setting, not hotserve's,
+so the package does not write it — see
+[hardening step 6](../docs/hardening.md#6-a-ceiling-for-all-the-apps-together-if-you-want-one).
 
 ## Watchdog
 
@@ -407,7 +472,7 @@ only after the app has been continuously healthy for
 `max(30s, watchdog_grace)`. Every restart re-arms `watchdog_grace`, so
 a slow-booting app is not probed into a kill loop.
 
-The watchdog **never gives up**. The restart budget is a rate
+The watchdog **never gives up** on a failure a retry can fix. The restart budget is a rate
 limiter, not a give-up point: after `watchdog_restarts` restarts
 inside `watchdog_window` it *throttles* — logs an error, reports
 `"state":"throttled"` in the status JSON, unroutes a dead instance so
@@ -422,16 +487,36 @@ also the bound on anyone who can make your health endpoint fail. A
 successful deploy is the fast path out of a throttle wait: it resets
 the budget and backoff immediately. A long-running throttle loop means
 the release itself is broken — watch `restarts_in_window` in the
-status JSON (loop alerting is on the roadmap). Health probes never
+status JSON (loop alerting is on the roadmap). A deploy running over
+a dead instance holds the restart until it ends (the state stays
+`backoff` meanwhile): one that promotes replaces the instance, and
+after one that fails the restart goes within about a second, without
+waiting out the rest of its backoff — though a throttle still waits
+for its budget.
+Health probes never
 follow redirects: a 3xx answer is simply "not 2xx".
+
+A relaunch runs the deploy's pre-flight first, and a release it
+refuses is not retried: one built for another machine (a backup
+restored onto a box of the other architecture), or whose command is
+no longer there or outside the sandbox view, would only die as
+`203/EXEC` on every attempt. The watchdog then drops the instance —
+nothing current, the proxy answers 5xx — logs the refusal once, parks
+in `idle`, and status names it in `last_failure`; boot recovery
+refuses such a release the same way, in the same field. A deploy of
+another version (or a rollback to one), or a reload once the cause is
+fixed, launches the app again; the refused version itself is still
+on disk, so deploying it again is refused as already existing.
 
 The status JSON's `watchdog` object reports `state`
 (`grace|watching|backoff|throttled|disabled|idle`),
 `consecutive_failures`, `restarts_in_window`, `last_restart_at`,
-`last_restart_cause` (`crash|health`) and `last_failure`.
+`last_restart_cause` (`crash|health`) and `last_failure` (the last
+failed probe, or why nothing runs: a relaunch refused, a boot
+recovery that gave up).
 `restarts_in_window` is what the budget counts: it includes a restart
-still waiting out its `backoff` (dropped again if that restart is
-called off), and a relaunch that failed to start, while
+still waiting out its `backoff` or a deploy's end (dropped again if
+that restart is called off), and a relaunch that failed to start, while
 `last_restart_at` and `last_restart_cause` describe the last restart
 that started an instance.
 
@@ -453,7 +538,7 @@ either delivers it or hotserve does not start with an app configured:
 | PID namespace (`PrivatePIDs=`) — supervisor, user manager and siblings **invisible and unsignalable** |
 | Deny-by-default filesystem: the whole host filesystem replaced by an empty read-only tmpfs, only named paths bound back |
 | hotserve's keys and sockets, other apps, and every path nothing named — **absent**, not merely unreadable |
-| Private `/tmp`, minimal `/dev`, read-only cgroupfs, no capabilities, `@system-service` syscall filter, `AF_INET`/`AF_INET6`/`AF_UNIX`/`AF_NETLINK` only, no nested namespaces |
+| Private `/tmp`, minimal `/dev`, read-only cgroupfs, no capabilities, `@system-service` syscall filter less `io_uring_setup`, the native syscall ABI only, `AF_INET`/`AF_INET6`/`AF_UNIX`/`AF_NETLINK` only for `socket()` — the protocol modules under them (`sctp`, `l2tp_ip`, `l2tp_ip6`, `smc`) load for any program unless [hardening step 5](../docs/hardening.md#5-kernel-modules-no-app-needs-if-you-want-them) refuses them (#315) — no nested namespaces |
 
 `PrivatePIDs=` needs systemd 257, which Debian 13 — the supported
 host — ships, and the `.deb` refuses to install on anything older.
@@ -525,10 +610,15 @@ view is refused before the unit is even created — at the deploy's
 pre-flight, as a 422 — with a message that says where the runtime has
 to live, rather than failing as a bare `203/EXEC`. The same pre-flight
 refuses an executable built for another machine (an x86-64 tarball
-pushed to an arm64 box) naming the `runs-on` to build on.
+pushed to an arm64 box) naming the `runs-on` to build on, and a 32-bit
+executable, which a unit cannot run: units allow the box's native
+system-call ABI only (`SystemCallArchitectures=native`). Every
+relaunch — boot recovery, a watchdog restart, a rollback — runs it
+too, and stops at a refusal rather than retrying it (see
+[Watchdog](#watchdog)).
 
 **The host is measured at start.** Capability is probed by running a
-throwaway unit and checking the namespaces from inside
+throwaway unit and checking the namespaces and seccomp from inside
 (`journalctl -t hotserve-sandbox-probe` shows what it saw). A host
 that cannot deliver the sandbox fails the start — admin socket and
 proxy included — with the probe's reason. That measurement is cached
@@ -598,17 +688,14 @@ still runs, and a mode changed between loads is not what takes an app
 down on a relaunch. The owner and group are not checked; the
 `install` line above sets them.
 
-**The sandbox is not containment for what an app did before it had
-one.** It restricts what an app can *reach*; it cannot un-copy. An
-app's `shared/` survives every deploy and is bound writable into every
-sandbox, so anything an instance put there before sandboxing existed
-(a hotserve older than this, where every app ran as the shared user
-with the whole host in reach) is inside the view afterwards. A
-hardlink is worse than a copy: it stays a live view of the file, so
-rotating a secret by editing it in place republishes it. If an app may
-have been compromised on such a hotserve, clear its `shared/` and
-rotate anything it could read — the sandbox does not undo access it
-already had.
+**The sandbox does not undo what an app already did.** It restricts
+what an app can *reach*; it cannot un-copy. An app's `shared/`
+survives every deploy and is bound writable into every new sandbox,
+so whatever a compromised instance left there — a copied secret, a
+payload the next version reads — is inside the view of every version
+after it. If an app may have been compromised, deploying a fixed
+version is not enough: clear its `shared/` and rotate anything it
+could read.
 
 **When an app breaks under the sandbox** the symptom is usually an
 `ENOENT` for something that exists on the host: a database's unix
@@ -642,13 +729,27 @@ Practical consequences worth planning around:
 An app's own `releases/<version>`, `shared/` and `run/<nonce>/` must
 **be** the directories they name. hotserve resolves them immediately
 before the unit is created and refuses to launch if any points
-somewhere else,
-because the app dir is writable by the app: a symlink placed there
-cannot be told from one you meant. To put an app's data on another
-disk, bind-mount it at the same path (`mount --bind /mnt/blog-data
-/var/lib/liveswap/blog/shared`, or the equivalent fstab entry) — a
-mount resolves to itself, so it is invisible to that check, and an app
-cannot forge one.
+somewhere else, because a symlink there cannot be told from one you
+meant. No app can plant one: inside its unit it writes only those
+three. A link in the app dir was put there from outside every
+sandbox, and hotserve refuses it rather than guess. To put an app's
+data on another disk, bind-mount it at the same path (`mount --bind
+/mnt/blog-data /var/lib/liveswap/blog/shared`, or the equivalent
+fstab entry) — a mount resolves to itself, so it is invisible to that
+check, and an app cannot forge one. Being invisible, its source is not
+checked either: mount only this app's own data there. A source that
+is, contains or sits inside one another app uses (another app's
+directory, one disk path mounted for two apps, a whole app dir mounted
+at another's) gives both apps the same files, writable, and hotserve
+does not refuse it (#308).
+
+The app's directory itself, and the directories hotserve keeps in it
+(`releases/`, `shared/`, `tmp/`, `run/`, `proxy/`, `deploys/`), must
+not be links either, wherever hotserve writes or deletes there:
+through a link (`blog -> shop`) they would be another app's. A deploy
+into such a directory is refused (500, naming the path and the
+remedy), and a socket prune, release GC or deploy record write logs
+it and goes no further.
 
 **Workloads the sandbox cannot host are not supported.** Anything
 that creates its own namespaces (Chromium's sandbox under Puppeteer,
@@ -663,10 +764,20 @@ host and why the package ships no LSM policy of its own. Some kernels
 refuse them — an LSM restriction on unprivileged user namespaces, or a
 container or LXC host with them off entirely. hotserve does not work around
 that: it probes, and a host that cannot deliver the namespaces refuses
-to start rather than running apps bare. `journalctl -t
-hotserve-sandbox-probe` says why it refused. The fix is the host's:
-permit unprivileged user namespaces for hotserve's user manager, or
-move to Debian 13. There is no way to run there without the sandbox.
+to start rather than running apps bare. So does a host where systemd
+skips the units' seccomp settings: a kernel without seccomp,
+`SYSTEMD_SECCOMP=0` in the user manager's environment, or a container
+whose own filter stops systemd installing one. The probe reads the
+seccomp mode inside its unit and checks that `RestrictNamespaces=`
+refuses it a user namespace. `journalctl -t hotserve-sandbox-probe`
+says why it refused (`seccomp 0`, `unshare allowed`). The fix is the
+host's: permit unprivileged user namespaces and seccomp for hotserve's
+user manager, or move to Debian 13. There is no way to run there
+without the sandbox. One case the probe cannot see: a container host
+whose existing seccomp rules leave the kernel no room for the units'
+system-call filter, which then does not load while the rest of the
+sandbox does ([DESIGN-sandbox.md](DESIGN-sandbox.md), "What this does
+NOT stop").
 
 ## Runtime permissions (Deno, Node)
 
@@ -786,6 +897,10 @@ Presets:
 - `deploy_trust local { public_key <path>; audience <a> }` — a key you
   control, for non-CI deploys. Generate it with `hotserve
   deploy-keygen`, mint tokens with `hotserve deploy-token`.
+
+[docs/outside-github.md](../docs/outside-github.md) walks through the
+`gitlab`, `oidc` and `local` presets end to end: a key's two halves,
+a job on another CI, and the token's format for minting it elsewhere.
 
 Sub-directives: `audience` (required for OIDC — never trust an
 unaudienced token; for `local`, the name of this box, see below),
@@ -908,21 +1023,52 @@ the identity the token presented:
 ```
 
 A request with no bearer token says so instead, as does an app with
-no source at all. The box failing to consult the issuer — OIDC
-discovery on first use, or fetching its signing keys — lands here as
-well: still a 401 to the caller, with the network error in the
-journal. An OIDC source fetches the issuer's keys only for a token
-signed under a key it does not hold yet, and at most once a minute:
-within a minute of its last fetch such a token is refused, with that
-fetch's error if it failed. So the first deploy after the issuer
-rotates its key, or comes back from an outage, can be refused for up
-to a minute; its retry goes through. A forged token under a key the
+no source at all. The box failing to consult the issuer — its OIDC
+discovery, or fetching its signing keys — lands here as well: still a
+401 to the caller, with the network error in the journal. hotserve
+holds one copy of each issuer's discovery and keys for every source
+that trusts it — every app's, the global ones, the box's — per
+`allow_insecure_http` setting (the box always fetches over https, so
+with that option set on liveswap an issuer is held twice), and no
+token waits on fetching them. When hotserve starts or reloads it runs
+each issuer's discovery and fetches its keys again in the background;
+on a reload the keys it already holds stay in use meanwhile, so a
+reload refuses no token it would have accepted before, unless it adds
+an issuer or changes liveswap's `allow_insecure_http` (a copy hotserve
+holds nothing for yet). A token that arrives before an issuer's first
+discovery and fetch have ended — at start, or after such a reload —
+is refused with `oidc discovery for <issuer>: under way,
+so a retry once that ends may go through` (or the key set's `which
+they are being fetched for`) in `refused`. A discovery that failed is tried again by the
+next reload, or by a token at most once a minute. After that the keys
+are fetched only for a token signed under a key hotserve does not
+hold yet, at most once a minute per copy, and that token is refused
+at once rather than wait: with `the token is another issuer's, or is
+under a new key, which they are being fetched for, so a retry once
+that ends may go through` when it began a fetch, and with the last
+fetch's error if that failed. (A token from an issuer the source does
+not trust gets the same text: the signature is checked before the
+issuer, so check the source's `issuer` first if a retry is refused
+too.) So the first deploy after the issuer rotates its key is
+refused, and its retry a few seconds later goes through — unless the
+keys were fetched in the minute before, when the retry is refused too,
+with `… fetched too soon for; a token from <time> on fetches them
+again, as does systemctl reload hotserve now` in `refused`; after an
+outage,
+the first token past the minute is refused with the outage's error and
+the next goes through. The templates' scripts (`scripts/deploy.sh`,
+and the box repository's `bin/apply`) send a token the box refused
+once more, 3 seconds later, so a rotation usually costs a run
+three seconds, not a re-run. A bearer token longer than 8 KiB is
+refused unread (`bearer token is <n> bytes, longer than 8192` in
+`refused`); a GitHub or GitLab token is 1–2 KiB. A forged token under a key the
 box does hold costs it no request to the issuer, which is also why an
 issuer that replaces a key but keeps its kid is not picked up: tokens
 under the new key are refused, with `signature does not match the key
-held for kid "<kid>"; if the issuer replaced that key, systemctl
-reload hotserve` in `refused`, until the source fetches for another
-kid or that reload starts every source with an empty key set. Each
+held for kid "<kid>": the token is another issuer's, or, if the issuer
+replaced that key, systemctl reload hotserve` in `refused`, until a
+fetch for another kid or that
+reload fetches the issuer's keys again. Each
 entry's reason
 is one line, cut at 300 bytes plus an ellipsis — an issuer's error
 quotes what the token carried, and a presented identity can be
@@ -1003,18 +1149,34 @@ curl --fail-with-body -X POST -H "Authorization: Bearer $JWT" \
 Rollback runs the same blue/green pipeline (start, health-gate, cut
 over), so it is zero-downtime too. A `422` is returned if that version
 is no longer on disk. To see what you can roll back to, `GET /<app>`
-returns `available_versions` — the on-disk releases, newest-first
-(`keep` of them, plus the running version when it is older than those —
-see the `keep` note above, so the list can briefly hold `keep+1`) —
-and `deploys`, what each recorded version's latest deploy came to
-(see [Deploy records](#deploy-records)).
+returns `available_versions` — the on-disk releases, the running
+version first, then most recently deployed first: the order the next
+deploy's release GC keeps them in (`keep` of them after a successful
+deploy) — and `deploys`, what each recorded version's latest deploy
+came to (see [Deploy records](#deploy-records)). A version's deploy
+time is its record's: the latest deploy or rollback of it. One whose
+latest deploy failed (a rollback to it that failed) comes after every
+one whose latest succeeded: it never served from that deploy, and
+takes no place from a version that did. A release with no record —
+deployed by a hotserve older than records, or its record could not
+be written — sorts after every recorded one, ordered among those by
+its directory's modification time (which the app running from it can
+change), and `ordered_by_mtime` names it: it is the first release GC
+prunes after the running one and the one before it, and a rollback
+target while it is on disk. A release whose record is there but cannot be read is
+listed the same way, and release GC holds it (neither deletes it nor
+counts it toward `keep`) and says so in the journal until the record
+can be read. During a version's first deploy, the version being
+promoted has no record yet: until the deploy returns, the status lists
+it first, as the running version, and names it in `ordered_by_mtime`.
 
 **Versions are immutable.** A deploy (URL or push) never overwrites an
 existing on-disk release, so a version you can roll back to can't be
 silently replaced — re-deploying an existing version with other bytes
 is a `422`. Use a new version, or roll back to relaunch an existing
 one. (A deploy that *fails* before cutover is cleaned up, so that
-version stays retriable.) The running version is the one exception,
+version stays retriable — one a hotserve restart cuts short too, at
+the next start.) The running version is the one exception,
 relaunched rather than refused when the artifact is the same — see
 [Relaunching the running version](#relaunching-the-running-version).
 
@@ -1029,7 +1191,7 @@ The response is synchronous:
 | 405 | A method other than `GET` or `POST` |
 | 409 | A deploy is already running for this app (retry) |
 | 413 | Pushed upload exceeded `max_artifact_size`, or a JSON body exceeded 64 KiB |
-| 422 | Bad request — missing/invalid version, the running version asked for again without a matching digest (see [Relaunching the running version](#relaunching-the-running-version)), **version already exists** (versions are immutable — deploy a new version or roll back to relaunch it), a rollback target no longer on disk, a pre-flight refusal (the command or `pre_start` does not resolve inside the sandbox view, or is an executable built for another machine — the body names the box's architecture and the `runs-on` to build on), or (URL path) an artifact url refused by `artifact_allowlist` (host, path, port, or an undeclared query parameter; the body names exactly what tripped and how the entry would declare it) |
+| 422 | Bad request — missing/invalid version, the running version asked for again without a matching digest (see [Relaunching the running version](#relaunching-the-running-version)), **version already exists** (versions are immutable — deploy a new version or roll back to relaunch it), a rollback target no longer on disk, a pre-flight refusal (the command or `pre_start` does not resolve inside the sandbox view, or is an executable built for another machine — the body names the box's architecture and the `runs-on` to build on — or a 32-bit one, which names the architecture to build for), or (URL path) an artifact url refused by `artifact_allowlist` (host, path, port, or an undeclared query parameter; the body names exactly what tripped and how the entry would declare it) |
 | 5xx | Deploy failed — **the old version, if there was one, is still serving**; body says why. An artifact over `max_artifact_entries` or the decompressed byte cap fails here, before anything is written |
 
 Because the response is synchronous through the whole pipeline, the
@@ -1048,10 +1210,20 @@ half-changed, so it runs to its end, still bounded by `deadline`, and
 the deploy then fails before any traffic moves. Until then a retry,
 a rollback included, gets the 409. To end a migration that hangs
 sooner than its `deadline`, stop its unit yourself; it is named
-`hotserve-<app>.<version>.<nonce>.prestart.service`. For example:
-`sudo -u hotserve XDG_RUNTIME_DIR=/run/user/$(id -u hotserve)
-systemctl --user stop 'hotserve-blog.*.prestart.service'`. The deploy
+`hotserve-<app>.<version>.<nonce>.prestart.service`. For example, as root:
+`runuser -u hotserve -- env XDG_RUNTIME_DIR=/run/user/$(id -u hotserve) systemctl --user stop 'hotserve-blog.*.prestart.service'`. The deploy
 then fails as a failed `pre_start`.
+
+A hotserve stop or restart (a crash, `systemctl restart hotserve`, an
+upgrade) does not stop a running `pre_start` either: the manager runs
+it on, bounded by `deadline` on its unit, and the hotserve that comes
+back leaves it to finish. Until it has, that app takes no deploy (the
+refusal names the migration) and no relaunch; the running version
+serves on. The deploy itself ends with the hotserve that ran it (its
+client sees the connection drop): the next start, or the next deploy,
+removes the release it extracted and records it failed — `the deploy
+was cut short: hotserve stopped or restarted during it` — so the same
+version can be deployed again. Re-run the job.
 
 **A failed deploy says why, from the app's side.** The 5xx body's
 `status.last_deploy` carries the phase it stopped in, `phases` — each
@@ -1114,7 +1286,9 @@ the `sha256` it was pinned to, and the artifact's `artifact_entries` /
 `artifact_bytes` against the caps),
 the watchdog's state (restart counts, last restart cause), and
 `available_versions` — the on-disk releases you can roll back to,
-newest-first.
+the running version first, then most recently deployed first;
+`ordered_by_mtime` names any placed by their directory's mtime
+instead (see **3. Roll back** above).
 
 The tarball's contents must sit at the archive root (`tar -czf
 app.tar.gz -C dist .`), with versions matching `[A-Za-z0-9._-]{1,64}` and not starting with a dot.
@@ -1211,11 +1385,13 @@ records none. It is never a hash the box took of an unpinned
 download. Records are kept for every version still on disk plus the
 newest `keep` others (failed deploys, whose release is removed at
 once, and versions release GC has pruned), so the set is bounded by
-about twice `keep`. They are written as the response filter left them
+about twice `keep`. When a record was written is its version's deploy
+time: the order of `available_versions` and of release GC. They are
+written as the response filter left them
 — a secret rotated later is not in an old record — and pass it again
 when read, like every body. One consequence: a version name equal to
 an `env_file` value is that value wherever it appears —
-`current_version`, `available_versions`, `last_deploy`, `deploys`, a
+`current_version`, `available_versions`, `ordered_by_mtime`, `last_deploy`, `deploys`, a
 record — and shows as `[redacted:KEY]`, and such a version's record
 is only the envelope (version, outcome, times, the pin, and why); so do not
 name versions (or apps) after `env_file` values; a release identifier
@@ -1397,7 +1573,7 @@ on disk` (the failed instance could not be confirmed stopped, so the
 dir is kept rather than pulled from under a process that may still
 run) or `cleanup of failed release` (removing it failed). Either way
 that version stays a 422 until release GC — which runs after a
-*successful* deploy and keeps the newest `keep` dirs — drops it; use
+*successful* deploy and keeps the `keep` most recently deployed — drops it; use
 a new version.
 
 ### GitLab CI
@@ -1427,6 +1603,9 @@ deploy:
         https://deploy.example.com/blog
 ```
 
+The same job with the template's `scripts/deploy.sh` pushing the
+tarball in the request, no registry and no read token, is in
+[docs/outside-github.md](../docs/outside-github.md#3-an-apps-deploy-from-another-runner).
 On gitlab.com that URL needs `artifact_allowlist
 gitlab.com/api/v4/projects/<project id>/` on the box. `SHA256` is the
 tarball's digest from the job's own copy, which the box holds the
@@ -1466,6 +1645,7 @@ gives up after the cutover turns red a deploy the box completed.
   current -> releases/v1.4.2   (convenience symlink; state.json is truth)
   shared/                 persistent data, survives deploys (the app's HOME)
   state.json              current version, nonce and unit name
+  deploying.json          a URL or push deploy in flight; gone when it ends
   deploys/v1.4.2.json     each version's latest deploy outcome (see Deploy records)
   tmp/                    download staging
 ```
@@ -1498,11 +1678,12 @@ its socket (see [Sandbox](#sandbox)).
   that crashes is started again by systemd a second later and
   reattaches the same way (a start it refuses is not retried); removing
   the package stops them. Removing an app (or the whole `liveswap` block)
-  via a **reload** stops its units; if you instead edit the file and
+  via a **reload** stops its units, once any deploy of it already in
+  flight has finished (the reload waits for it); if you instead edit the file and
   *restart* hotserve with the whole block gone, nothing is left to
   judge the old units and they keep running — decommission them
-  explicitly: `sudo -u hotserve XDG_RUNTIME_DIR=/run/user/$(id -u
-  hotserve) systemctl --user stop 'hotserve-*'`. Units are created with `Restart=no` — the
+  explicitly, as root:
+  `runuser -u hotserve -- env XDG_RUNTIME_DIR=/run/user/$(id -u hotserve) systemctl --user stop 'hotserve-*'`. Units are created with `Restart=no` — the
   watchdog is the only restarter of apps — and stopping a version kills its
   whole cgroup, so worker trees never outlive it.
 - **Changed app definitions apply at the app's next launch** — a

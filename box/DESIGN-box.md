@@ -999,6 +999,7 @@ can do both by other means.
 | A `timeouts` read setting past its floor is refused though, on v2.11.7, the server's own idle reader (on by default) re-arms the connection's deadline after the handler's on every read, so the directive's deadline cuts a push only where the server's `read_idle_timeout` is negative (the push's own 120 s bound on the body, Caps, stands whatever the directive says) | Reachability, the handler table | 2 | 5 | 1 | 10; red and named, the remedy is the setting at its floor, or dropped; the floor is asked of the file's words, since the handler's contract is to bound the route and a Caddy patch that lets it would reopen the strand (S4) with no one re-reading the source; gating the row on the server's `read_idle_timeout` threads that setting into the walk (size 2) for a line a box site has no reason to carry |
 | A `request_body` with a `set` or a low `max_size`, or a `timeouts` with a read setting past its floor, under a matcher that admits only the `GET` (`method GET`) is refused, though neither the status nor the poll reads a body, so those requests would work | Reachability, the handler table | 2 | 5 | 1 | 10; red and named, the remedy is a path or the default order; a `request_header` under the same matcher is refused the same way, and weighing the body's settings for the `POST` alone is a branch on the method in the walk (size 2) |
 | A run whose job summary passes GitHub's 1 MiB a step shows none of it: `bin/apply` writes every box in one step, so the boxes share the limit, and GitHub drops the whole step's summary, every box's lines (failed and superseded included), with an error annotation. One box reaches it alone with thousands of secrets' names near the 128-byte cap: 32 apps of 256 added is just over 1 MiB, and a push that removes them all and adds as many others names 16,384, about 2.1 MiB | examples/box/bin/apply | 2 | 5 | 1 | 10; named by GitHub's annotation; the job's status is unchanged, each failure's own `::error` annotation and the red job still show, and the log keeps every line; a cap would be a new branch |
+| A push against an installed file the walk refuses for any reason but an empty signer list (a console edit that imports, say) answers 500 (`could not check the push: the Caddyfile this box runs <reason>; nothing changed`), and root records `failed` for one the handler admitted before the edit, where `GET /` answers 409 for the same file | Handler contract; Message catalogue | 2 | 5 | 1 | 10; red and named; the workflow posts only after `GET /` answered 200, so it meets the 409 first unless the console edit lands mid-run. Root's `failed` is the States table's checking → failed, as designed: it writes only `out/<id>.json`, with no `txn.json`, and leaves `applied.json` as it was. A typed refusal of the running file through `check`, the push and the applier's phase is a branch in each (size 2, risk 1) |
 
 **Owed** (over the bar, not yet fixed):
 
@@ -1220,7 +1221,7 @@ Every numeric bound, in one place, with its reason.
 | handler wait for the first result | 30 s | long enough that a push is usually answered `verified`, or its final result, by the POST itself (a legitimate chain is seconds); short enough to sit well inside common proxy timeouts (Cloudflare's is 100 s); past it, 504 and the poll |
 | pending (admission) | 30 minutes from the marker's `posted` | the workflow's own poll bound; past it a marker no longer blocks a push (see "Admission") |
 | request id | 32 lowercase hex, random for each push | 128 bits: two honest runs never collide; one spelling, so one id names one push |
-| validate children (`hotserve validate`, `hotserve-backup validate`) | 120 s each and a 1 s `WaitDelay`; output kept: the last 4 KiB, of which the refusal quotes the `Error:` line (else the last line), redacted, then bounded as quoted input | validate provisions every module; a legitimate run is about a second, and a loaded box or a slow issuer discovery must not refuse a good push |
+| validate children (`hotserve validate`, `hotserve-backup validate`) | 120 s each and a 1 s `WaitDelay`; output kept: the last 4 KiB, of which the refusal quotes the command's error line (the last line that is either an `Error:` line or a JSON line Caddy's root logger writes at level `error`, whose `msg` is taken; else the last line), redacted, then bounded as quoted input by the end that says why: `hotserve validate`'s adapter errors (`adapting config using …`: why first, then where, and an import chain) and every `hotserve-backup validate` line by the head; `hotserve validate`'s load errors by the tail, since Caddy's module chain comes first and outruns the bound before the reason (#324) | validate provisions every module; a legitimate run is about a second, and a loaded box or a slow issuer discovery must not refuse a good push |
 | the adapt child (`hotserve adapt`) | 120 s and a 1 s `WaitDelay`, as validate's; run after `hotserve validate` passed, so a non-zero exit is the box's error (500), never a refusal | the adapter validate just ran; a loaded box must not refuse a good push |
 | the adaptation | 16 MiB of stdout kept, bytes past it counted and dropped (never an error to the pipe: a child blocked on a full pipe would run to its deadline), stderr discarded; past the cap the push is refused `the new Caddyfile's adaptation is larger than 16 MiB`; the JSON reaches nothing but the reachability walk, since it holds every expanded `{$VAR}`; the walk decodes it once (one value, numbers kept as written, so an integer at int64's edge reads as Caddy reads it) and converts it in one pass, then encodes the box server's connection settings again into their shapes: linear in its size however deep its routes nest | a 1 MiB Caddyfile adapts to a few MiB; the bundle's own figure |
 | handler poll interval for the first result | 1 s | how long a result root has written can wait before the handler reads it and answers the POST: `verified`, or a final result if root was that quick ("Why 202 and a poll") |
@@ -1233,7 +1234,7 @@ Every numeric bound, in one place, with its reason.
 | `txn.json` read back | 4 MiB today; 16 MiB with secrets | the largest record root can write: `prev`'s 1 MiB is 1.4 MiB of base64; the diff's 64 KiB at most 384 KiB of JSON escapes; `apps`, names from a 1 MiB file, under 1 MiB; the env files' previous bytes — a set holds at most 64 (32 apps written, 32 the previous push listed removed), each at most 65 KiB as root reads it — 5.5 MiB of base64; the `secrets_*` names, 16384 at most (8192 removed and 8192 added) of some 200 bytes, 3.2 MiB; the digests and framing, kilobytes. About 11.5 MiB in all, so every record root writes reads back; only root writes it, so this is a bound, not a defence |
 | diff handed to the redactor | 256 KiB (four times the diff's cap), cut at a line end | the cut after redaction never lands inside a token the redactor saw only half of |
 | line diff's edit distance | 512 | its memory is quadratic in the distance; past it the changed middle is one hunk, still a correct diff |
-| quoted input in a refusal | 300 bytes, quote-to-ASCII then rune-boundary cut | liveswap's `boundRefusal`, in that order; applies to every input-derived value without exception |
+| quoted input in a refusal | 300 bytes, quote-to-ASCII then rune-boundary cut (of the tail for `hotserve validate`'s load error, which says why last) | liveswap's `boundRefusal`, in that order; applies to every input-derived value without exception |
 | child processes | a deadline and a `WaitDelay`, always | |
 | path-unit trigger limit | 20 in 10 s | the invariants keep the count at one per late arrival; the service has no start limit of its own (`StartLimitIntervalSec=0`), since the manager's default, 5 starts in 10 s, is lower and would end a failing loop first, as `unit-start-limit-hit`; nor has the path unit ("The applier unit") |
 
@@ -1577,7 +1578,7 @@ residuals).
 | Request | Authorised by | Answer |
 |---|---|---|
 | `POST /` with a bundle and `X-Box-Request-Id` | `deploy_trust` (step 1) | per step 8: 202 `{id, commit, phase: verified}` / 200 with a `no_change` or `applied` result / 422 with a `refused`, `failed`, `rolled_back` or `unknown` result / 504 `{id}`; 400, 409, 413, 415 from admission; 500 when the box cannot check the push |
-| `GET /` | `deploy_trust` | `{"commit", "box_webhook", "sha256", "recipient"}`: `commit` is `applied.json`'s `sha`; `box_webhook` and `sha256` are the installed file's walked host and its digest as read now — the digest step 4's fast path compares, so a console edit since the last apply shows; `recipient` is `/etc/hotserve/age.pub`'s one line, omitted when that file is absent (a box that has not run `hotserve box key`), unreadable, or not exactly one X25519 recipient — the last two journaled as `box webhook could not read its state` with `reading` — so a damaged key file never blocks a push of the Caddyfile, and the workflow reads the omission as "this box has no key" (`hotserve box key` rewrites `age.pub` from the identity). The workflow reads `commit` to bundle `rev-list --first-parent <commit>..HEAD`, and `recipient` to compare with `recipients` ("The box's key"). 409 before `init` (no `applied.json`); 500 when `applied.json` or the installed file cannot be read, or the installed file does not walk |
+| `GET /` | `deploy_trust` | `{"commit", "box_webhook", "sha256", "recipient"}`: `commit` is `applied.json`'s `sha`; `box_webhook` and `sha256` are the installed file's walked host and its digest as read now — the digest step 4's fast path compares, so a console edit since the last apply shows; `recipient` is `/etc/hotserve/age.pub`'s one line, omitted when that file is absent (a box that has not run `hotserve box key`), unreadable, or not exactly one X25519 recipient — the last two journaled as `box webhook could not read its state` with `reading` — so a damaged key file never blocks a push of the Caddyfile, and the workflow reads the omission as "this box has no key" (`hotserve box key` rewrites `age.pub` from the identity). The workflow reads `commit` to bundle `rev-list --first-parent <commit>..HEAD`, and `recipient` to compare with `recipients` ("The box's key"). 409 before `init` (no `applied.json`), and when the installed file does not walk (a console edit that imports, say), which is the operator's to mend, not the box failing; 500 when `applied.json` or the installed file cannot be read |
 | `GET /?result=<id>` | `deploy_trust`, as every request on `/`: the workflow mints a fresh token for each poll | the query must be exactly one `result=<id>`, `<id>` in the id grammar (400). The result, with step 8's status for its phase: `verified` 202; `no_change`, `applied` 200; `refused`, `failed`, `rolled_back`, `unknown` 422. 202 `{"phase":"admitted"}` while a marker exists, or the push's bundle is still in `in/` (its marker never written), and no result does — admitted, no result yet, whatever the marker's age, since only root can tell a push it holds from one it lost, and its next run settles a lost one as `failed` (Retention); 404 when neither exists (swept, never admitted, or answered by the fast path); 500 when a file cannot be read |
 | another method on `/` | — | 405 |
 | another path | — | not this handler's; passed on |
@@ -1613,8 +1614,9 @@ says. The workflow's action is in the last column.
 | 400 | — | `could not read the bundle: <error>` | handler | the connection broke during the upload; retry |
 | 409 | — | `duplicate request id: poll /?result=<id>` | handler | poll instead of retrying the POST |
 | 409 | — | `this box has no baseline; hotserve init <sha>, as root inside the box's directory, sets one` | handler (`GET /`, `POST /`); `hotserve box baseline` prints it too | fail; run `init` on the box |
+| 409 | — | `the Caddyfile this box runs <reason>` (a walk refusal's reason; for an empty signer list, `… lists no signer; hotserve init is the way back`) | handler (`GET /`) | fail; mend the file at the console ("At 3am") |
 | 404 | — | `no result and no marker for <id>: swept, or never admitted` | handler | after a POST answered 202 or 504, or not answered at all: not yet — keep polling to the 30-minute bound, then red naming `journalctl -u hotserve -u hotserve-box-apply`; otherwise fail |
-| 500 | — | `the Caddyfile this box runs <reason>` (a walk refusal's reason) / `could not read <what>: <error>` / `could not check the push: <error>; nothing changed` | handler | fail; `journalctl -u hotserve` on the box |
+| 500 | — | `could not read <what>: <error>` / `could not check the push: <error>; nothing changed` | handler | fail; `journalctl -u hotserve` on the box |
 | 405 / 415 / 413 | — | `method not allowed` / `the bundle is a gzip tarball` / `the bundle is larger than 16 MiB` | handler | fail |
 | 409 | — | `a push is being admitted; retry in a moment` | handler | retry |
 | 409 | — | `a push is pending: <id>, <age> old` | handler | retry; after 30 min, `journalctl -u hotserve-box-apply -u hotserve-box-apply.path`, and if the path unit is `failed`, `systemctl restart hotserve-box-apply.path` once the journal's cause is cleared, again ten seconds later if that fails |
@@ -1641,7 +1643,7 @@ says. The workflow's action is in the last column.
 | 422 | `refused` | `hotserve is not running; nothing applied` / `hotserve is still starting after 300 s; nothing applied` | applier | fail |
 | 422 | `refused` | `<path> is not encrypted to this box's key (<recipient>): put that key first in <host>/secrets/recipients and run make rekey` / `<path> does not decrypt: <reason>` (one of the four reasons in "Values and the env file") / `<app>/<VAR>: the value has a line break` / `<app>/<VAR>: the value has a NUL byte` / `<app>/<VAR>: the value is not UTF-8` / `app <app>'s env file would be <n> bytes; the cap is 65536` (step 15a) | applier | fail |
 | 422 / poll | `failed` | `this box has no key for secrets (/etc/hotserve/age/identity): hotserve box key, as root, makes one; then make rekey BOX_KEY=<the key it prints> in the repository, and push; nothing changed` / `/etc/hotserve/secrets is not the setgid root:hotserve directory tmpfiles.d makes: systemd-tmpfiles --create hotserve-box.conf, as root, puts it back; nothing changed` / `/etc/hotserve/secrets/<app>.env is larger than 66560 bytes, which no push writes: move it aside, as root, and push again; nothing changed` / `/etc/hotserve/secrets/<app>.env is not a regular file, which no push writes: move it aside, as root, and push again; nothing changed` (a directory, a FIFO or a socket, which no rename replaces) (step 15a) | applier | red |
-| 422 | `refused` | `the Caddyfile this box runs lists no signer; hotserve init is the way back` | applier | fail |
+| 422 | `refused` | `the Caddyfile this box runs lists no signer; hotserve init is the way back` | both | fail |
 | 200 / poll | `no_change` | `the box already runs this Caddyfile` | applier | green |
 | 202 | `verified` | `verified; installing` | applier | poll, 30 min bound; then red naming `journalctl -u hotserve-box-apply` |
 | 200 / poll | `applied` | `loaded; running apps are not restarted` / `secrets updated; the Caddyfile is unchanged, nothing reloaded` (a set of env files alone) | applier | green |
@@ -1711,9 +1713,10 @@ Journal lines: the preamble's (`webhook auth failed`, `webhook auth
 could not consult a trust source`) carry `box_request` — `status`,
 `result` or `push` — where liveswap's carry `app` (not `box`, which is
 the host). A state file the handler cannot read — the baseline, the
-installed Caddyfile (unreadable, or not a box's) — is `box webhook
-could not read its state` with `reading` and `error`; only an
-authenticated request reaches one. The handler's refusals of a push
+installed Caddyfile — is `box webhook could not read its state` with
+`reading` and `error`; an installed Caddyfile that reads but is not a
+box's is a warning, `box webhook runs a Caddyfile it cannot speak
+for`, with `error`; only an authenticated request reaches either. The handler's refusals of a push
 (`box push refused`) carry `id`, `refused` and `remote`, as liveswap's
 refusal line does, and the attribution in `via`, liveswap's field for
 it; a push the handler could not check (`box push failed`) the same
@@ -1777,7 +1780,7 @@ have printed success and left the box down once the person had logged
 off. What that costs: a bad file is swapped, fails its reload and is
 rolled back, the old configuration serving throughout, and the message
 is the rollback's, which names `journalctl -u hotserve -n 50`, not
-Caddy's `Error:` line; and `init` does not run `hotserve-backup
+Caddy's error line; and `init` does not run `hotserve-backup
 validate` (the merge of backups into main decides how backup
 configuration is checked on every path).
 
@@ -1910,8 +1913,10 @@ table and holds both shipped files to it, line for line, and the
 | `.service` | `[Service]` | `ProtectControlGroups=yes` | the same for the cgroup tree, which `ProtectKernelTunables=` leaves writable. Measured without it: the unit opened `/sys/fs/cgroup/cgroup.procs` for writing; with it, "read-only file system" |
 | `.service` | `[Service]` | `PrivateTmp=yes` | the verifier's files for its 65534 child, in a `/tmp` of the unit's own |
 | `.service` | `[Service]` | `NoNewPrivileges=yes` | |
-| `.service` | `[Service]` | `RestrictAddressFamilies=AF_UNIX` | the manager's socket (`systemctl reload`, `is-active`); no network |
+| `.service` | `[Service]` | `RestrictAddressFamilies=AF_UNIX` | the manager's socket (`systemctl reload`, `is-active`); no network. It filters `socket(2)` alone: the table's last two rows close two routes around it, and the third, `socketpair(2)`, gives no socket outside `AF_UNIX` (only `AF_TIPC` implements it besides, and `tipc` loads only by root's hand, which docs/hardening.md step 5 refuses where taken) but still loads any aliased family's module, as in app units, where it is an accepted residual (liveswap/DESIGN-sandbox.md, "Module-backed protocols"; #315). `AF_UNIX` admits no protocol module |
 | `.service` | `[Service]` | `SystemCallFilter=@system-service` | |
+| `.service` | `[Service]` | `SystemCallFilter=~io_uring_setup` | less `io_uring_setup`, which `@system-service` admits through `@aio`: a ring's `IORING_OP_SOCKET` (kernel 5.19+) opens a socket of any family without `socket(2)`, the one call `RestrictAddressFamilies=` filters. A deny line after the allow list takes the name out of it. Nothing the applier runs sets up a ring |
+| `.service` | `[Service]` | `SystemCallArchitectures=native` | on amd64 the x86-32 ABI reaches `socket(2)` through `socketcall()`, and systemd does not apply `RestrictAddressFamilies=` to that ABI. Nothing the applier runs is 32-bit: hotserve, and Debian's own `ssh-keygen` and `systemctl` |
 
 Not in them, on purpose: `User=` (root writes root's file and asks the
 manager for the reload); `Restart=` (the path unit starts it again
@@ -2558,3 +2563,10 @@ Dated one-liners; the full text of each is in git.
 - 2026-10-17, last — The secrets caps are confirmed by the owner (#234,
   "Decisions made during the build"), so the Caps table no longer marks
   them proposed: the figures are unchanged.
+- 2026-10-18 (#313) — The applier unit takes `io_uring_setup` out of
+  `@system-service` and runs the native syscall ABI only, as app units
+  do since #298, closing two routes around
+  `RestrictAddressFamilies=AF_UNIX`; `socketpair(2)` is the one left
+  (#315). The sandbox's purpose is unchanged: a guard against the
+  applier's mistakes, not a boundary against a compromised applier,
+  which can still start any unit through the manager.

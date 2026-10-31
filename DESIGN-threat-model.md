@@ -84,21 +84,32 @@ verified JWT in `Authorization: Bearer` (see "Reducing the asset"):
 against public material, then a claim allowlist. Auth happens **before**
 existence is revealed: an unknown app name is verified against the
 *global* trust sources, so its refusal is the same 401 as a known
-app's (`Handler.ServeHTTP`, liveswap/handler.go). The time to that 401
-need not be, and that is the **residual** (S3 × O5 × D5 = 75, as #296
-scored it; owed: #306). A token is checked against each source a name
-resolves to in turn, the signature before the issuer, so an OIDC
-source refuses a forged token after a local signature check when it
-holds the token's kid, and, when it does not, after a fetch of its
-issuer's keys that it makes at most once a minute (`keySet`,
-liveswap/deploytrust/jwks.go), whatever issuer the token names. A name
-that does not exist goes to the global sources: it is refused at once
-when they hold no OIDC source, and otherwise pays the same on their own
-key sets. The fetch window is per app, not shared across apps that
-trust the same issuer: each app's sources keep their own key set, so
-one unknown-kid token per app per minute can wait on an issuer round
-trip that one to a missing name, sent just before, did not, and an app
-name can be confirmed by timing. Config load refuses an app
+app's (`Handler.ServeHTTP`, liveswap/handler.go). No token waits on
+an issuer for it (#306): a token is checked against each source a
+name resolves to in turn — an OIDC source checks its signature, then
+its issuer, audience and expiry (go-oidc's order), then the claim
+allowlist — and every check is local. Each issuer's discovery and keys
+are held once for the process per `allow_insecure_http` setting (so at
+most twice, when liveswap's differs from the box's https-only one),
+shared by every source that trusts it over that client
+(`issuerState`, liveswap/deploytrust/deploytrust.go), and fetched in
+the background — at start and at each reload (`Warm`), then for a
+token under a kid none is held for, at most once a minute per held
+state, which that token does not wait on (`keySet`,
+liveswap/deploytrust/jwks.go). The time to the 401 can still differ
+by that local work, and that is the **residual**, accepted by the
+owner's decision (S3 × O5 × D5 = 75, #306, 2026-10-20): each source a
+name resolves to parses the token and checks its signature against a
+key it holds under the token's kid (or each key it holds, for a token
+naming none), whatever issuer and audience the token claims, where a
+name with no source does neither. A token longer than `MaxTokenLen` (8 KiB) is refused before
+any source parses it, which bounds the difference: measured on an
+arm64 machine (2026-10-20), an OIDC source refuses a 2 KiB token
+(about a real GitHub one) in 0.11 ms and a 16 KiB one in 0.33 ms,
+where a 1 MiB one, which the header limit allows, took 16 ms. A
+fraction of a millisecond per source is under network jitter for a
+few samples, not for many; the asset is whether an app name exists,
+which a domain or repository name often says anyway. Config load refuses an app
 that resolves to zero trust sources (`App.Validate`,
 liveswap/liveswap.go). Bearer is the only transport, which Caddy
 redacts from access logs.
@@ -226,16 +237,15 @@ Properties that matter to the model:
   deploy-denial primitive for whoever shares it. Verification cost is
   therefore not bounded by the throttle. Against a local key it is one
   signature check, comparable to the TLS handshake the request already
-  paid; against an OIDC source it is the same for a token under a kid
-  the source holds a key for, and, for one under a kid it does not, a
-  fetch of the issuer's keys that each source makes at most once a
-  minute, every other such token meanwhile waiting on that fetch or
-  answered from its outcome (`keySet`, liveswap/deploytrust/jwks.go;
-  the wait is owed: #306). So the throttle is not what bounds CPU, and
-  once a source's discovery has succeeded, traffic does not set how
-  often the box fetches its issuer's keys; while discovery fails, each
-  verification tries it again (`oidcVerifier.ensure`,
-  liveswap/deploytrust/deploytrust.go), one at a time per source.
+  paid; against an OIDC source it is the same, or none for a token
+  under a kid the process holds no key for, which begins a fetch of
+  the issuer's keys in the background, at most once a minute per
+  issuer, and is refused without waiting on it (`keySet`,
+  liveswap/deploytrust/jwks.go). A token longer than `MaxTokenLen` is
+  refused before any parse. So the throttle is not what bounds CPU, and traffic does not set how often the box
+  asks an issuer anything: a token makes it try an issuer's discovery,
+  while that fails, and fetch its keys, each at most once a minute and
+  one at a time (`issuerState`, liveswap/deploytrust/deploytrust.go).
   One limiter for the process, not per handler, so a
   reload hands out no fresh budget and a second mount does not double
   it. Body is capped at 64 KiB → 413
@@ -923,8 +933,10 @@ the mechanism:
    unit is a limit the app can rewrite in `/sys/fs/cgroup` (or escape
    by migrating its PIDs) unless that tree is read-only in its view.
    Runtimes only ever *read* it. `ProtectControlGroups=` is set on
-   every unit, so caps are real the moment they are set; none is set
-   today — the trigger is an app that needs bounding (#71).
+   every unit, so the caps an operator sets (`memory_max`, `tasks_max`,
+   `cpu_quota`, per app; DESIGN-liveswap.md "Resource caps") hold:
+   measured from inside the unit, the value reads back and the write
+   is EROFS.
 
 ## The shipped mechanism
 
@@ -949,12 +961,19 @@ grant.
 lifecycle properties and appends `sandboxProperties` for the rest, and
 `userManagerClient.StartTransientUnit` adds `LimitNOFILE=`
 (liveswap/systemd_dbus.go). The capability probe's unit (below) is a
-`oneshot` run from `/`, with no `BindPaths=` and no `ExecStopPost=`:
-it binds nothing of an app's and has no socket.
+`oneshot` run from `/`, with no `BindPaths=`: it binds nothing of an
+app's. No unit carries an `ExecStopPost=` or any other `Exec*=`
+beside its `ExecStartEx`: the manager spawns one process per unit
+(#311; "Lifecycle" below).
 
 - Namespaces: `PrivateUsers=yes`, `PrivatePIDs=yes`, `PrivateTmp=yes`,
-  `PrivateDevices=yes`; `RestrictNamespaces=` (empty set — an app
-  cannot create further namespaces).
+  `PrivateDevices=yes`, `PrivateIPC=yes` (its own SysV IPC, POSIX
+  message queues and `/dev/mqueue`); `RestrictNamespaces=` (empty set
+  — an app cannot create further namespaces). `/dev/shm`, which
+  `PrivateDevices=` binds from the host and no IPC namespace covers,
+  is a tmpfs of the unit's own (`TemporaryFileSystem=`, `size=50%` as
+  the kernel gives the host's; `memory_max` is the practical cap;
+  #311).
 - View: `TemporaryFileSystem=/:ro` replaces the whole filesystem with
   an empty read-only tmpfs; `BindReadOnlyPaths=` puts back a named OS
   base view and `BindPaths=` the release being started, the app's
@@ -970,17 +989,35 @@ it binds nothing of an app's and has no socket.
   `ProtectKernelTunables=`, `ProtectKernelModules=`,
   `ProtectKernelLogs=`, `RestrictRealtime=`, `RestrictSUIDSGID=`,
   `LockPersonality=`, `NoNewPrivileges=`, `CapabilityBoundingSet=`
-  (empty), `SystemCallFilter=@system-service` with
-  `SystemCallErrorNumber=EPERM`, `RestrictAddressFamilies=AF_INET
-  AF_INET6 AF_UNIX AF_NETLINK` (netlink for `getifaddrs()`, which Node
-  and Go frameworks call at startup; the socket itself is not
-  read-only, but changing a link, an address or a route needs
-  `CAP_NET_ADMIN`, which nothing in the unit holds).
+  (empty), `SystemCallFilter=@system-service` less `io_uring_setup`,
+  with `SystemCallErrorNumber=EPERM`, `SystemCallArchitectures=native`,
+  `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK`
+  (netlink for `getifaddrs()`, which Node and Go frameworks call at
+  startup; the socket itself is not read-only, but changing a link, an
+  address or a route needs `CAP_NET_ADMIN`, which nothing in the unit
+  holds). The family list filters `socket(2)` alone. Two routes around
+  it are closed: an io_uring ring's `IORING_OP_SOCKET` (kernel 5.19+)
+  opens a socket of any family without that call, so no unit can set
+  up a ring; and on amd64 the x86-32 ABI's `socketcall()` is not
+  filtered at all, so no unit runs that ABI (the pre-flight refuses a
+  32-bit executable). `socketpair(2)` gives no socket outside
+  `AF_UNIX`: only `AF_TIPC` implements it besides in 6.12, and `tipc`
+  has no autoload alias, so it loads only by root's hand, which
+  docs/hardening.md step 5 refuses as well where taken. The list
+  filters no protocol number, and the kernel loads a protocol's module
+  on the first `socket()` naming it, so `sctp`, `l2tp_ip`, `l2tp_ip6`
+  and `smc` are an app's to open unless the operator took that step,
+  which makes them unavailable to every program on the box (with
+  `dccp`, `tipc` and `rds` against a root-loaded module); hotserve
+  ships no host policy. Open by default; the modules a netlink socket
+  or a `socketpair()` loads are in Residual risks (#315).
 - Lifecycle: `Restart=no` (the liveswap watchdog is the sole
   restarter of apps; hotserve.service itself is restarted by systemd
   after a crash, never after a refused start), `KillMode=control-group`,
-  `TimeoutStopSec=` (the app's `grace`), `ExecStopPost=` (removes the
-  instance's socket once the unit stops, however it stopped),
+  `TimeoutStopSec=` (the app's `grace`), no `ExecStopPost=` (the
+  instance's socket goes with its run dir when hotserve retires it,
+  `socketRef.retire`; on a user manager a second process of a unit
+  cannot join its IPC namespace, #311),
   `LimitCORE=0` on both limits (no core dump of an app; "Where
   `env_file` values sit", above), `LimitNOFILE=` on both limits at the
   user manager's `DefaultLimitNOFILE` when the manager reports one (the
@@ -993,7 +1030,9 @@ it binds nothing of an app's and has no socket.
 
 **The probe stays.** At `App.Start` — every config activation —
 hotserve starts a real transient unit with this property set and reads
-back from inside it that both namespaces engaged. The verdict is
+back from inside it that both namespaces engaged and that the unit's
+own seccomp set is in force (`Seccomp: 2`, and a user namespace
+`RestrictNamespaces=` refuses it). The verdict is
 cached against the manager connection's generation
 (`userManagerClient.cachedSandboxCapability`): later activations on
 the same connection read the cache, and a redial (a manager restart,
@@ -1013,8 +1052,9 @@ between such a host and a silent loss of isolation. Deleting it would
 turn a measurement into a claim.
 
 **What it does not do**, by design: the network namespace is shared
-(egress open); there are no per-app UIDs; resource caps are unset.
-Each is in "Residual risks".
+(egress open); there are no per-app UIDs; resource caps are the
+operator's to set (`memory_max`, `tasks_max`, `cpu_quota` per app;
+none by default). Each is in "Residual risks".
 
 ## Reducing the asset (deploy auth)
 
@@ -1132,6 +1172,38 @@ does not isolate the runtime.
   outside the view like the rest of the sibling.
   What remains is an app that opens a loopback listener of its own
   accord: that port is reachable by siblings, by the app's own choice.
+- **Kernel modules an app can load** — open, accepted by decision
+  (owner, 2026-10-22; S3 × O3 × D5 = 45; liveswap/DESIGN-sandbox.md,
+  "Module-backed protocols"). Two halves. On a box without
+  docs/hardening.md step 5, a `socket()` under `AF_INET`/`AF_INET6`
+  with protocol 132, 115 or 256 loads `sctp`, `l2tp_ip`/`l2tp_ip6` or
+  `smc` and gives the app a live socket into it: the step is the
+  operator's, because a modprobe.d file is the whole box's setting and
+  hotserve's package carries no host policy. On every box, the modules
+  an app loads through the families it has. `AF_NETLINK`
+  is admitted for `getifaddrs()`, and a `socket(AF_NETLINK, SOCK_RAW,
+  n)` loads the module for protocol `n` as any user and hands the app
+  a live netlink socket into it (`nfnetlink`,
+  `xfrm_user`, `crypto_user`, `ib_core`, `scsi_transport_iscsi` on
+  Debian 13), as a generic-netlink `GETFAMILY` by name loads any
+  module with a family alias; `socketpair()` loads any aliased
+  family's module and runs its create path, then fails with no socket.
+  A compromised app reaches those modules' init and request parsers
+  and the few requests they answer unprivileged: `crypto_user`'s
+  `GETALG` report, `sock_diag`'s socket dumps; `nfnetlink` and
+  `xfrm_user` refuse it at their first check. systemd has no filter
+  for a protocol argument; blocking `nfnetlink` breaks nftables; a
+  longer list in the hardening step (the family modules,
+  `crypto_user`) is possible and not decided.
+- **A syscall filter the kernel refused** — accepted by decision (user,
+  2026-10-19; S5 × O5 × D5 = 125, scores to fix). On a host whose user
+  manager already runs under a long outer seccomp chain, the kernel can
+  refuse the unit's `SystemCallFilter=` over its 32768-instruction
+  budget, and systemd starts the unit without it, with a debug line.
+  The unit's other filters still load, so the capability probe's
+  checks pass. The app then has its namespaces, view and empty
+  capability set, but not the allow list or the `io_uring_setup` deny
+  (liveswap/DESIGN-sandbox.md, "What this does NOT stop").
 - **The socket name is app-writable, and `connect(2)` follows
   symlinks.** The instance's `run/<nonce>/` is bound writable, so an
   app can replace its socket with a symlink to a socket outside its
@@ -1172,10 +1244,20 @@ does not isolate the runtime.
   namespaces, so the contract already allows it — as a per-app opt-in
   when an app that wants no network exists (it would also cut the app
   off from any database): #57.
-- **Resource exhaustion** — a runaway app can starve its siblings and
-  Caddy (fork bomb, memory leak). `ProtectControlGroups=` makes
-  `MemoryMax=`/`TasksMax=`/`CPUQuota=` real the moment they are set;
-  nothing sets them until an app needs bounding (#71).
+- **Resource exhaustion** — a runaway app stalls its *siblings*: under
+  a fork bomb a second app's requests ran to 10 s while hotserve, in
+  `system.slice`, kept a 5–9 ms median (the root splits CPU evenly
+  between the two slices), a leak is taken by the global OOM killer
+  (the app first: user-manager units run at `oom_score_adj` 200 and
+  hotserve.service at 0 — systemd's defaults, which hotserve does not
+  set and no test holds) and forks
+  are bounded by the user manager's default `TasksMax=` (measured;
+  DESIGN-liveswap.md "Resource caps"). Per-app `memory_max`,
+  `tasks_max` and `cpu_quota` bound an app the operator sets them on,
+  and `ProtectControlGroups=` keeps the app from rewriting them; none
+  is set by default, so an unbounded app is still the default, and a
+  ceiling for the apps as a whole is the operator's slice setting
+  (docs/hardening.md step 6).
 - **`state.json` must stay outside any writable sandbox view**
   (liveswap/state.go is read on relaunch for the version and the
   unit, and checked before either is used: a version that is not one,
@@ -1205,12 +1287,18 @@ does not isolate the runtime.
   filter to miss. Anything read back is text
   from disk: served only through the filter, trusted for nothing
   else unless it proves itself a record (a regular file, a valid
-  version name, an object naming that version). Nothing from disk
+  version name, an object naming that version). One that does orders
+  the releases: its write time is its version's deploy time, which
+  release GC and `available_versions` follow, since a release dir's
+  own mtime is the running app's to set (liveswap/state.go, "Release
+  order"); a release with no record sorts after every recorded one,
+  by that mtime among its kind, and is named in the status
+  (`ordered_by_mtime`). Nothing from disk
   reaches a response except through the filter as body text; a name
   read off disk — a release directory's, a record's, `state.json`'s —
   is a safe string like any other and, like any other, never one
-  equal to a known value (the app dir was writable by the app before
-  sandboxing existed); and nothing is appended to a body after the
+  equal to a known value (nothing on disk says who chose a name);
+  and nothing is appended to a body after the
   filter's final pass but what the filter's own second rule names.
   Nothing there
   follows a link, ancestors included, and the store never blocks a
@@ -1308,3 +1396,24 @@ Dated one-liners; the full text of each is in git.
   under a file `core_pattern` (Debian's default), by the collector's
   own limit check under a piped one. No app can write a core dump for
   debugging.
+- 2026-10-18 (#298) — The syscall filter takes `io_uring_setup` out of
+  `@system-service` and app units run the native ABI only, closing two
+  routes to a socket of a family `RestrictAddressFamilies=` leaves out;
+  `socketpair(2)` is the one left (#315). Sibling IPC joined the
+  residual risks (#311).
+- 2026-10-22 (#315) — `socketpair(2)` gives no socket outside `AF_UNIX`
+  on Debian 13 (`tipc`, the one other family implementing it, has no
+  autoload alias). The module-backed protocols under
+  `AF_INET`/`AF_INET6` (`sctp`, `l2tp_ip`, `l2tp_ip6`, `smc`) are the
+  operator's to make unavailable (docs/hardening.md step 5; a file
+  shipped by the `.deb` was built and declined), open by default; they
+  and the modules a netlink socket or a `socketpair()` loads joined the
+  residual risks, accepted by decision.
+- 2026-10-23 (#311) — Sibling IPC closed: `PrivateIPC=yes` and a
+  `/dev/shm` tmpfs of each unit's own, at the host's 50%
+  (liveswap/DESIGN-sandbox.md, 2026-10-23). The Sibling IPC residual
+  row is gone. Every unit now has one `Exec*=`: the `ExecStopPost=`
+  that removed the instance's socket is gone, since on a user manager
+  a second process the manager spawns cannot join the unit's IPC
+  namespace; the probe checks the IPC namespace and `/dev/shm` from
+  inside the unit, as it does the other namespaces.

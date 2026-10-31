@@ -4,15 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	sddbus "github.com/coreos/go-systemd/v22/dbus"
 	"go.uber.org/zap"
 )
 
@@ -96,6 +99,14 @@ type systemdConn interface {
 	ResetFailedUnit(ctx context.Context, name string) error
 	// ListUnits returns the loaded units whose names match the glob.
 	ListUnits(ctx context.Context, pattern string) ([]unitStatus, error)
+	// SetUnitProperties sets runtime properties on a loaded unit — the
+	// cgroup caps, which the manager applies to a running unit at once.
+	SetUnitProperties(ctx context.Context, name string, props []sddbus.Property) error
+	// DefaultTasksMax is the manager's own DefaultTasksMax=, resolved to
+	// a number (or infinity, where the manager was configured so):
+	// what a unit with no TasksMax= of its own is bounded to, and what
+	// the manager reports as such a unit's TasksMax. 0 = unreadable.
+	DefaultTasksMax(ctx context.Context) (uint64, error)
 }
 
 // unitSpec is a transient service unit as the runner wants it. The
@@ -113,8 +124,9 @@ type unitSpec struct {
 	Environment      []string
 	Oneshot          bool // Type=oneshot (pre_start) instead of simple
 	StopTimeout      time.Duration
+	StartTimeout     time.Duration // TimeoutStartSec=; 0 sets none
 	Sandbox          *sandboxSpec
-	Socket           string // the app's socket, removed by the unit when it stops
+	Caps             resourceCaps
 }
 
 // unitStatus is a snapshot of one unit as the manager reports it.
@@ -146,6 +158,12 @@ type unitStatus struct {
 	// such a unit was started by something else, and adopting it would
 	// serve an app with no sandbox and no signal.
 	Sandboxed bool
+	// Caps is what the unit is bounded to as the manager holds it
+	// (MemoryMax=, TasksMax=, CPUQuota=); "infinity" reads as unset.
+	Caps resourceCaps
+	// ControlGroup is the unit's cgroup path under /sys/fs/cgroup, as
+	// the manager reports it; where the caps are, or are not, enforced.
+	ControlGroup string
 }
 
 // stopBudget is how long a stop of this unit can take before the
@@ -184,16 +202,29 @@ func (s unitStatus) running() bool {
 func (s unitStatus) exitString() string {
 	switch s.ExecMainCode {
 	case 1: // CLD_EXITED
-		return fmt.Sprintf("exit status %d", s.ExecMainStatus)
+		return s.oomSuffix(fmt.Sprintf("exit status %d", s.ExecMainStatus))
 	case 2, 3: // CLD_KILLED, CLD_DUMPED
 		sig := syscall.Signal(s.ExecMainStatus)
-		return fmt.Sprintf("killed by signal %d (%s)", s.ExecMainStatus, sig)
+		return s.oomSuffix(fmt.Sprintf("killed by signal %d (%s)", s.ExecMainStatus, sig))
 	default:
 		if s.Result != "" && s.Result != "success" {
 			return "no process exit recorded (result " + s.Result + ")"
 		}
 		return "no process exit recorded"
 	}
+}
+
+// oomSuffix names the OOM kill the manager recorded for the unit
+// (Result=oom-kill), whatever the main process's own end looked like:
+// the kernel takes the process that asked for the memory, which under
+// a `sh -c` or `npm start` command is a child, and the manager then
+// stops the unit (OOMPolicy=stop) — so the main process reads as an
+// exit code or as the stop's SIGTERM, and only the Result says why.
+func (s unitStatus) oomSuffix(exit string) string {
+	if s.Result != "oom-kill" {
+		return exit
+	}
+	return exit + "; the kernel's OOM killer took a process of the unit (its memory_max, or the box's memory), and the unit was stopped for it"
 }
 
 const (
@@ -241,8 +272,29 @@ type systemdHandle struct {
 	// leaves pid unread) and the watcher repairs both — so it is
 	// atomic like pid, not plain like unit and startedAt.
 	argv atomic.Pointer[[]string]
-	done chan struct{}
-	exit atomic.Pointer[unitStatus] // final status, set before done closes
+	// caps is what the unit is bounded to as the manager last applied
+	// it: the start spec's, the values read at reattach, or the last
+	// SetCaps. Atomic for the same reason as argv: status reads it
+	// while a reload's SetCaps writes it.
+	caps atomic.Pointer[resourceCaps]
+	// capsUnknown is set when a SetCaps failed ambiguously and the
+	// unit could not be read back (readBackCaps): caps is then the
+	// last known, not the applied, and no sync may take it as such.
+	capsUnknown atomic.Bool
+	// cgroup is the unit's cgroup path as read at adopt, at reattach or
+	// by the watcher's backfill; controllers the set that reached it at
+	// the last reading of its cgroup.controllers (nil = never read); and
+	// unenforced the directives whose controller is not in that set
+	// (missingCaps). Written only by setCapsState, under capsLock, so
+	// the list is always the one computed from the caps beside it;
+	// state takes the same lock to read them together, so a status
+	// never pairs new caps with the list computed for the old ones.
+	cgroup      atomic.Pointer[string]
+	controllers atomic.Pointer[[]string]
+	unenforced  atomic.Pointer[[]string]
+	capsLock    sync.Mutex
+	done        chan struct{}
+	exit        atomic.Pointer[unitStatus] // final status, set before done closes
 }
 
 func (h *systemdHandle) state() handleState {
@@ -250,7 +302,119 @@ func (h *systemdHandle) state() handleState {
 	if argv := h.argv.Load(); argv != nil {
 		st.Command = *argv
 	}
+	h.capsLock.Lock()
+	st.CapsUnknown = h.capsUnknown.Load()
+	if caps := h.caps.Load(); caps != nil {
+		st.Caps = *caps
+	}
+	if u := h.unenforced.Load(); u != nil {
+		st.CapsUnenforced = *u
+	}
+	h.capsLock.Unlock()
 	return st
+}
+
+// cgroupRoot is where the kernel's cgroup tree is mounted; a variable
+// for the unit tests, which point it at a directory of their own.
+var cgroupRoot = "/sys/fs/cgroup"
+
+// readControllers reads the controllers that reach the unit's cgroup
+// (its cgroup.controllers). No cgroup path, or an unreadable file, is
+// no reading (ok false), never an empty set: "unreadable" must not be
+// taken for "no controller present", nor for "every controller
+// present".
+func readControllers(root, cg string) (have []string, ok bool) {
+	if cg == "" {
+		return nil, false
+	}
+	// cg is the manager's own report of the unit's cgroup path, under
+	// the cgroup root; nothing of an app's or a request's reaches it.
+	b, err := os.ReadFile(filepath.Join(root, cg, "cgroup.controllers")) //nolint:gosec // path from the manager, under the cgroup root
+	if err != nil {
+		return nil, false
+	}
+	return strings.Fields(string(b)), true
+}
+
+// missingCaps names the caps among caps whose controller is not in
+// have: the manager accepts and reports MemoryMax= on a host whose
+// user@.service does not delegate the memory controller (a container,
+// say), and the kernel then bounds nothing. Debian 13, Ubuntu 24.04
+// and 26.04 and Fedora 43 delegate cpu, memory and pids (measured), so
+// on a supported host this is empty.
+func missingCaps(have []string, caps resourceCaps) []string {
+	var missing []string
+	if caps.memoryMax > 0 && !slices.Contains(have, "memory") {
+		missing = append(missing, "memory_max")
+	}
+	if caps.tasksMax > 0 && !slices.Contains(have, "pids") {
+		missing = append(missing, "tasks_max")
+	}
+	if caps.cpuQuota > 0 && !slices.Contains(have, "cpu") {
+		missing = append(missing, "cpu_quota")
+	}
+	return missing
+}
+
+// setCapsState is the one writer of a handle's caps, cgroup path,
+// controllers, unenforced list and unknown flag. Under the handle's
+// lock, so the watcher's backfill of the cgroup path and a reload's
+// SetCaps cannot leave the list computed from the other's caps
+// (whichever writes last recomputes from both as they then are), and
+// a status read (state) sees the caps and the flag that settles them
+// together, never new caps under a stale "unknown". A nil caps, cgroup
+// or unknown leaves that field as it is. The controllers are read
+// afresh each time; a reading that fails leaves the last one standing,
+// and the list is computed from that one for the caps as they now are
+// (a cap added or removed meanwhile is classified either way), and
+// with no reading ever made nothing is claimed either way (the
+// watcher keeps trying, DESIGN-liveswap.md "Resource caps"). A cap
+// that reads as set and bounds nothing is the "looks configured,
+// quietly weaker" shape this code refuses to present as effective: it
+// is said in the journal when it first appears in the list, and status
+// lists such caps apart.
+func (r *systemdRunner) setCapsState(h *systemdHandle, caps *resourceCaps, cgroup *string, unknown *bool) {
+	h.capsLock.Lock()
+	if caps != nil {
+		h.caps.Store(caps)
+	}
+	if unknown != nil {
+		h.capsUnknown.Store(*unknown)
+	}
+	if cgroup != nil && *cgroup != "" {
+		h.cgroup.Store(cgroup)
+	}
+	var cur resourceCaps
+	if c := h.caps.Load(); c != nil {
+		cur = *c
+	}
+	cg := ""
+	if p := h.cgroup.Load(); p != nil {
+		cg = *p
+	}
+	if have, ok := readControllers(cgroupRoot, cg); ok {
+		h.controllers.Store(&have)
+	}
+	var missing []string
+	if have := h.controllers.Load(); have != nil {
+		missing = missingCaps(*have, cur)
+	}
+	prev := h.unenforced.Swap(&missing)
+	h.capsLock.Unlock()
+	// Said after the unlock: a status read waits on the lock, and a
+	// journal that stalls this write must not stall status with it.
+	// Said for a cap new to the list: a list that only shrank is not
+	// news, and may rest on a reading that was not made this time.
+	var fresh []string
+	for _, name := range missing {
+		if prev == nil || !slices.Contains(*prev, name) {
+			fresh = append(fresh, name)
+		}
+	}
+	if len(fresh) > 0 {
+		r.log().Warn("resource caps the host does not enforce: the user manager does not delegate their controller to the unit's cgroup, so the kernel bounds nothing; status lists them as caps_unenforced",
+			zap.String("unit", h.unit), zap.Strings("caps", missing), zap.String("cgroup", cg))
+	}
 }
 
 // setArgv records the command the manager reports, if it is not
@@ -325,6 +489,16 @@ func unitApp(name string) (string, bool) {
 	return m[1], true
 }
 
+// unitPreStart reports whether name is one of our pre_start units,
+// and the version it prepares.
+func unitPreStart(name string) (string, bool) {
+	m := unitNameRe.FindStringSubmatch(name)
+	if m == nil || m[4] == "" {
+		return "", false
+	}
+	return m[2], true
+}
+
 // unitNonce extracts the instance nonce from one of our unit names.
 func unitNonce(name string) (string, bool) {
 	m := unitNameRe.FindStringSubmatch(name)
@@ -350,8 +524,8 @@ func resolveCommand(cmd, dir string) (string, error) {
 // resolveInView is the part of a launch that can be checked before a
 // unit exists: command[0] as the absolute path the unit will exec,
 // and the file that path finally names, inside the sandbox view. Both
-// Preflight and unitFor run it — the deploy to refuse early with a
-// 422, the launch as the last word before the manager acts.
+// Preflight and unitFor run it — a deploy or a relaunch to refuse
+// early, the launch as the last word before the manager acts.
 func resolveInView(spec startSpec) (argv0, target string, err error) {
 	if len(spec.command) == 0 {
 		return "", "", errors.New("empty command")
@@ -398,8 +572,9 @@ func resolveInView(spec startSpec) (argv0, target string, err error) {
 	return argv0, target, nil
 }
 
-// Preflight is the deploy's early word: the command resolves inside
-// the view, and the file it names was built for this machine.
+// Preflight is a launch's early word, a deploy's and a relaunch's: the
+// command resolves inside the view, and the file it names was built
+// for this machine.
 func (r *systemdRunner) Preflight(spec startSpec) error {
 	_, target, err := resolveInView(spec)
 	if err != nil {
@@ -459,8 +634,9 @@ func (r *systemdRunner) unitFor(spec startSpec, oneshot bool) (unitSpec, error) 
 		Environment:      env,
 		Oneshot:          oneshot,
 		StopTimeout:      grace,
+		StartTimeout:     spec.startTimeout,
 		Sandbox:          spec.sandbox,
-		Socket:           spec.socket,
+		Caps:             spec.caps,
 	}, nil
 }
 
@@ -495,15 +671,110 @@ func (r *systemdRunner) Start(spec startSpec) (handle, error) {
 		st := r.reapFailed(readCtx, u.Name)
 		return nil, startExit(st.exitString(), u.Name, res, st.ExecMainPID)
 	}
-	return r.adopt(readCtx, u.Name, time.Now(), u.StopTimeout), nil
+	return r.adopt(readCtx, u.Name, time.Now(), u.StopTimeout, u.Caps), nil
+}
+
+// SetCaps sets the unit's caps as runtime properties — the manager
+// applies cgroup properties to a running unit at once (measured on
+// systemd 255, 257 and 259: the kernel's memory.max, pids.max and
+// cpu.max change with the process untouched). Every cap is sent, so a
+// cap a reload removed is lifted: memory and CPU to infinity, which is
+// their default, and tasks to the manager's DefaultTasksMax, which is
+// what an unset TasksMax= means (infinity only where that is the
+// manager's default: otherwise it would lift the manager's own bound,
+// 15% of threads-max, from the unit). A unit the handle knows carries
+// no tasks cap gets no TasksMax= written: there is nothing to lift.
+// A lift writes the default's number into the unit, which is also
+// what the kernel holds for an untouched unit until its next launch:
+// a later change of DefaultTasksMax= reaches neither running unit
+// (measured, DESIGN-liveswap.md "Resource caps"). With the handle's
+// caps unknown the lift is written whatever the unit may carry. With
+// the default unreadable the unit keeps its tasks cap, and the handle
+// says so.
+func (r *systemdRunner) SetCaps(h handle, caps resourceCaps) error {
+	sh, ok := h.(*systemdHandle)
+	if !ok {
+		return errors.New("not a systemd handle")
+	}
+	ctx, cancel := context.WithTimeout(r.ctx, pollTimeout)
+	defer cancel()
+	lift := uint64(0)
+	applied := caps
+	have := sh.caps.Load()
+	if caps.tasksMax == 0 && (sh.capsUnknown.Load() || have == nil || have.tasksMax > 0) {
+		def, err := r.conn.DefaultTasksMax(ctx)
+		if err != nil || def == 0 {
+			r.log().Warn("the manager's DefaultTasksMax could not be read; the unit keeps its tasks cap until its next launch", zap.String("unit", sh.unit), zap.Error(err))
+			if have != nil {
+				applied.tasksMax = have.tasksMax
+			}
+		} else {
+			lift = def
+		}
+	}
+	if err := r.conn.SetUnitProperties(ctx, sh.unit, capProperties(caps, true, lift)); err != nil {
+		// Ambiguous (invariant 5): the manager may have applied the
+		// properties before the transport failed, and the handle's
+		// caps would then be stale — a later sync back to them would
+		// find them "already applied" and send nothing. Read the unit
+		// back on a context of its own; with no answer the caps are
+		// marked unknown, which no sync takes as applied.
+		r.readBackCaps(sh)
+		return fmt.Errorf("setting the caps of unit %s: %w", sh.unit, err)
+	}
+	// Settled only for what was written: a tasks cap left as it was
+	// (no default to lift to) stays as uncertain as it was.
+	var settled *bool
+	if caps.tasksMax > 0 || lift > 0 {
+		settled = new(bool)
+	}
+	r.setCapsState(sh, &applied, nil, settled)
+	return nil
+}
+
+// readBackCaps replaces the handle's caps with what the manager holds
+// for the unit, or marks them unknown when the manager cannot be
+// asked: the ledger is the manager's, and a handle that cannot read
+// it must not claim to know.
+func (r *systemdRunner) readBackCaps(sh *systemdHandle) {
+	ctx, cancel := context.WithTimeout(r.ctx, pollTimeout)
+	defer cancel()
+	us, err := r.conn.UnitStatus(ctx, sh.unit)
+	if err != nil || !us.loaded() {
+		unknown := true
+		r.setCapsState(sh, nil, nil, &unknown)
+		return
+	}
+	caps := r.unitCaps(ctx, us)
+	// The cgroup path with it, and the enforcement recomputed from
+	// what the manager says the unit now carries: a cap the failed
+	// write did apply is listed as the host enforces it, or not.
+	r.setCapsState(sh, &caps, &us.ControlGroup, new(bool))
+}
+
+// unitCaps is what the manager's report of a unit means as caps: a
+// TasksMax equal to the manager's default is no cap of the operator's
+// (the manager resolves an unset TasksMax= to its default and reports
+// the number, never "infinity"), so it reads as unset. With the
+// default unreadable the number stands, and a sync re-sends it.
+func (r *systemdRunner) unitCaps(ctx context.Context, us unitStatus) resourceCaps {
+	caps := us.Caps
+	if caps.tasksMax > 0 {
+		if def, err := r.conn.DefaultTasksMax(ctx); err == nil && uint64(caps.tasksMax) == def {
+			caps.tasksMax = 0
+		}
+	}
+	return caps
 }
 
 // adopt builds a watched handle for a unit known to be running.
-func (r *systemdRunner) adopt(ctx context.Context, unit string, startedAt time.Time, stopTimeout time.Duration) *systemdHandle {
+func (r *systemdRunner) adopt(ctx context.Context, unit string, startedAt time.Time, stopTimeout time.Duration, caps resourceCaps) *systemdHandle {
 	h := &systemdHandle{unit: unit, startedAt: startedAt, stopTimeout: stopTimeout, done: make(chan struct{})}
+	h.caps.Store(&caps)
 	if st, err := r.conn.UnitStatus(ctx, unit); err == nil {
 		h.pid.Store(int64(st.MainPID))
 		h.setArgv(st.ExecStart)
+		r.setCapsState(h, nil, &st.ControlGroup, nil)
 		// Spelled as sandboxProperties spells it (systemd_dbus.go):
 		// every unit gets PrivatePIDs=, so every unit has the
 		// intermediate PID to settle past.
@@ -597,7 +868,7 @@ func (r *systemdRunner) reconcileStart(u unitSpec, cause error) (handle, error) 
 		r.log().Warn("start reported an error but the unit is running; adopting it", zap.String("unit", unit), zap.Error(cause))
 		ctx, cancel := context.WithTimeout(r.ctx, pollTimeout)
 		defer cancel()
-		return r.adopt(ctx, unit, time.Now(), u.StopTimeout), nil
+		return r.adopt(ctx, unit, time.Now(), u.StopTimeout, u.Caps), nil
 	case err == nil:
 		if st.loaded() {
 			ctx, cancel := context.WithTimeout(r.ctx, pollTimeout)
@@ -818,6 +1089,11 @@ func (r *systemdRunner) Reattach(st handleState) (handle, bool, error) {
 		h := &systemdHandle{unit: st.Unit, startedAt: st.StartedAt, stopTimeout: us.StopTimeout, done: make(chan struct{})}
 		h.pid.Store(int64(us.MainPID))
 		h.setArgv(us.ExecStart)
+		// The caps the unit was started with, which a config changed
+		// while hotserve was down may no longer be: syncCaps (app.go)
+		// compares them with the spec's once the instance is current.
+		caps := r.unitCaps(ctx, us)
+		r.setCapsState(h, &caps, &us.ControlGroup, nil)
 		go r.watch(h)
 		return h, true, nil
 	}
@@ -834,7 +1110,12 @@ func (r *systemdRunner) Reattach(st handleState) (handle, bool, error) {
 // leftovers are reset; running ones are stopped and confirmed gone.
 // nil only when, afterwards, keep is the only loaded unit of app.
 func (r *systemdRunner) Sweep(app string, keep handle) error {
-	return r.sweep(r.ctx, app, keep, nil)
+	return r.sweep(r.ctx, app, keep, nil, true)
+}
+
+// StopAll is a sweep that keeps nothing and spares nothing.
+func (r *systemdRunner) StopAll(app string) error {
+	return r.sweep(r.ctx, app, nil, nil, false)
 }
 
 // sweep is Sweep under a parent context. Listing and each reset are
@@ -843,8 +1124,9 @@ func (r *systemdRunner) Sweep(app string, keep handle) error {
 // longest stray's TimeoutStopSec — never the sum, and never a flat cap
 // that would report a slow-draining unit unconfirmed. still, when
 // given, is consulted immediately before each stop; a false answer
-// means someone now owns the app and that stray is left alone.
-func (r *systemdRunner) sweep(parent context.Context, app string, keep handle, still func() bool) error {
+// means someone now owns the app and that stray is left alone. spare
+// leaves a running pre_start to finish and reports it (Sweep).
+func (r *systemdRunner) sweep(parent context.Context, app string, keep handle, still func() bool, spare bool) error {
 	keepUnit := ""
 	if kh, ok := keep.(*systemdHandle); ok {
 		keepUnit = kh.unit
@@ -904,6 +1186,11 @@ func (r *systemdRunner) sweep(parent context.Context, app string, keep handle, s
 				}
 				return
 			}
+			if version, ok := unitPreStart(u.Name); ok && spare {
+				r.log().Warn("leaving a running pre_start of an earlier deploy to end on its own", zap.String("unit", u.Name), zap.Int("pid", u.MainPID))
+				record(&migrationRunningError{unit: u.Name, version: version})
+				return
+			}
 			budget := u.stopBudget(0)
 			if still != nil && !still() {
 				r.log().Info("stray unit adopted by a config meanwhile; leaving it", zap.String("unit", u.Name))
@@ -958,6 +1245,18 @@ func (r *systemdRunner) watch(h *systemdHandle) {
 		// that crashes before the first good poll would otherwise take
 		// its command to the grave. A terminal snapshot still has it.
 		h.setArgv(st.ExecStart)
+		// The cgroup path too, for the same reason: a start whose status
+		// read failed has none, and without it no later SetCaps can tell
+		// which of its caps the host enforces. And the controllers, until
+		// one reading of them has succeeded (a path whose file could not
+		// be read leaves the handle claiming nothing) and while any cap
+		// is listed as unenforced (a reading that failed right after the
+		// write that enabled a controller would otherwise stand until
+		// the next write): tried again each poll, a file read.
+		listed := h.unenforced.Load()
+		if (h.cgroup.Load() == nil || h.controllers.Load() == nil || listed != nil && len(*listed) > 0) && st.ControlGroup != "" {
+			r.setCapsState(h, nil, &st.ControlGroup, nil)
+		}
 		if st.running() {
 			// The handle follows the unit's MainPID: a read that failed
 			// right after start is repaired here, and so is the pid of a

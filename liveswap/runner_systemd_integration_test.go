@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	sddbus "github.com/coreos/go-systemd/v22/dbus"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
 // These run against a real systemd user manager (make test-integration
@@ -231,52 +233,36 @@ exit 3
 	}
 }
 
-// The unit owns its socket file: ExecStopPost= removes it after the
-// service stops, however it stopped, with no supervisor-side cleanup
-// — which is what tidies up while hotserve is down. The socket is
-// bound from outside at the path the unit sees (its dir is a writable
-// bind at the same real path), and neither Stop nor a crash calls
-// socketRef.retire here.
-func TestIntegrationSystemdUnitRemovesItsSocketWhenItStops(t *testing.T) {
+// Promise: a unit's IPC namespace and /dev/shm are its own (#311). The
+// script reports its IPC namespace and writes a file into /dev/shm:
+// the namespace is not this process's — the manager's, which every
+// app would otherwise share — and the file is not in the host's
+// /dev/shm, which PrivateDevices= alone would bind into the unit.
+func TestIntegrationSystemdUnitIPCAndShmArePrivate(t *testing.T) {
 	r := integrationRunner(t)
-	for _, tc := range []struct {
-		name   string
-		script string
-		stop   bool
-	}{
-		{"stopped", "while :; do sleep 1; done\n", true},
-		{"crashed", "sleep 1\nexit 3\n", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			spec := scriptApp(t, tc.script)
-			spec.version = "socket-" + tc.name // scriptApp's t.Name()-derived version carries the subtest's "/"
-			spec.socket = filepath.Join(spec.dir, "app.sock")
-			ln, err := net.Listen("unix", spec.socket)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ln.(*net.UnixListener).SetUnlinkOnClose(false)
-			t.Cleanup(func() { _ = ln.Close() })
-			h, err := r.Start(spec)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.stop {
-				if err := r.Stop(h, spec.grace); err != nil {
-					t.Fatalf("Stop: %v", err)
-				}
-			} else {
-				select {
-				case <-r.Wait(h):
-				case <-time.After(10 * time.Second):
-					t.Fatal("crash never observed")
-				}
-			}
-			pollUntil(t, 3*time.Second, "the unit to remove its socket", func() bool {
-				_, err := os.Lstat(spec.socket)
-				return os.IsNotExist(err)
-			})
-		})
+	n, err := newNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	canary := "/dev/shm/hotserve-itest-" + n
+	t.Cleanup(func() { _ = os.Remove(canary) })
+	spec := scriptApp(t, "readlink /proc/self/ns/ipc > ns.txt\necho x > "+canary+"\n")
+	if err := r.RunOnce(context.Background(), spec); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(spec.dir, "ns.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := os.Readlink("/proc/self/ns/ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns := strings.TrimSpace(string(got)); !strings.HasPrefix(ns, "ipc:[") || ns == own {
+		t.Fatalf("unit's IPC namespace %q, this process's %q: want the unit's own", ns, own)
+	}
+	if _, err := os.Lstat(canary); !os.IsNotExist(err) {
+		t.Fatalf("%s written inside the unit is visible on the host (%v): /dev/shm is shared", canary, err)
 	}
 }
 
@@ -614,6 +600,72 @@ func TestIntegrationSystemdSweepStopsStrays(t *testing.T) {
 	}
 }
 
+// A hotserve that stops during a deploy leaves the deploy's pre_start
+// running under the manager (#317). The next hotserve's sweep must
+// leave it to finish — reporting itself unconfirmed, naming it — and
+// confirm once it has ended: the migration runs to its end.
+func TestIntegrationSystemdSweepLeavesARunningPreStart(t *testing.T) {
+	r1 := integrationRunner(t)
+	spec := scriptApp(t, "sleep 3\necho migrated > done.txt\n")
+	spec.startTimeout = 30 * time.Second
+	unit, err := unitName(spec, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan error, 1)
+	go func() { ran <- r1.RunOnce(context.Background(), spec) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st, err := userManager.UnitStatus(context.Background(), unit)
+		if err == nil && st.running() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pre_start never ran: %+v (%v)", st, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	r1.close() // the hotserve that started it is gone; the manager runs it on
+
+	r2 := newSystemdRunner(userManager, zap.NewNop())
+	t.Cleanup(r2.close)
+	err = r2.Sweep(spec.app, nil)
+	var mr *migrationRunningError
+	if !errors.As(err, &mr) || mr.unit != unit {
+		t.Fatalf("the sweep must leave the running pre_start and name it, got %v", err)
+	}
+	select {
+	case err := <-ran:
+		if err != nil {
+			t.Fatalf("the migration must run to its end, got %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the pre_start never ended")
+	}
+	if out, err := os.ReadFile(filepath.Join(spec.dir, "done.txt")); err != nil || strings.TrimSpace(string(out)) != "migrated" {
+		t.Fatalf("the migration was cut short: %q (%v)", out, err)
+	}
+	if err := r2.Sweep(spec.app, nil); err != nil {
+		t.Fatalf("once the pre_start has ended the sweep confirms, got %v", err)
+	}
+}
+
+// With no hotserve watching it, a pre_start's own TimeoutStartSec= is
+// what ends it: RunOnce here waits on no deadline of its own.
+func TestIntegrationSystemdPreStartEndsOnItsOwnDeadline(t *testing.T) {
+	r := integrationRunner(t)
+	spec := scriptApp(t, "sleep 300\n")
+	spec.startTimeout = time.Second
+	start := time.Now()
+	err := r.RunOnce(context.Background(), spec)
+	if err == nil {
+		t.Fatal("a pre_start past its deadline must fail")
+	}
+	if took := time.Since(start); took > 20*time.Second {
+		t.Fatalf("the unit's own deadline did not end it: took %s", took)
+	}
+}
+
 // managerPID is the user manager's own process, for the stall test.
 func managerPID(t *testing.T) int {
 	t.Helper()
@@ -711,6 +763,94 @@ func TestIntegrationSystemdSandboxProbe(t *testing.T) {
 	}
 }
 
+// TestIntegrationSandboxProbeRefusesAnUnfilteredUnit starts the
+// capability probe's own unit, built as probeSandboxCapability builds
+// it (probeStartSpec, unitFor, unitProperties), three times: whole;
+// without RestrictNamespaces=, where the mode still reads 2 as it
+// would from a filter the manager inherited and the unshare check must
+// fail it; and without any seccomp-backed setting, which is what the
+// manager runs where seccomp is unavailable to it, and where the mode
+// check must fail it. Each failure must be the one the probe's journal
+// line names. TestIntegrationSystemdSandboxProbe cannot stand in for
+// the last two, since this host delivers the whole set.
+func TestIntegrationSandboxProbeRefusesAnUnfilteredUnit(t *testing.T) {
+	r := integrationRunner(t)
+	conn, err := userManager.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := func(drop ...string) (result, line string) {
+		t.Helper()
+		nonce, err := newNonce()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ipcNS, err := ownIPCNamespace()
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, err := r.unitFor(probeStartSpec(nonce, ipcNS), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// An identifier of its own, matched below: journald can store a
+		// short-lived unit's lines with no unit field at all
+		// (TestIntegrationSystemdJournalTailWhenJournaldIsBehind), but
+		// the stream's identifier is on every one.
+		u.SyslogIdentifier = "itest-probe-" + nonce
+		var props []sddbus.Property
+		for _, p := range unitProperties(u) {
+			if !slices.Contains(drop, p.Name) {
+				props = append(props, p)
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
+		defer cancel()
+		ch := make(chan string, 1)
+		if _, err := conn.StartTransientUnitContext(ctx, u.Name, "fail", props, ch); err != nil {
+			t.Fatalf("starting %s: %v", u.Name, err)
+		}
+		if result, err = jobResult(ctx, ch); err != nil {
+			t.Fatalf("waiting for %s: %v", u.Name, err)
+		}
+		_ = conn.ResetFailedUnitContext(ctx, u.Name)
+		// The probe's own line names what it saw; the journal may take
+		// a moment to have it.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			out, _ := exec.Command("journalctl", "--no-pager", "-o", "cat", "-t", u.SyslogIdentifier).CombinedOutput()
+			if line = string(out); strings.Contains(line, "sandbox probe:") || time.Now().After(deadline) {
+				return result, line
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	// Every setting the manager applies through seccomp, and so skips
+	// together where seccomp is unavailable to it. A new one added to
+	// sandboxProperties without being listed here leaves the mode at 2,
+	// and the last case below fails, naming it.
+	seccompBacked := []string{"SystemCallFilter", "SystemCallErrorNumber", "SystemCallArchitectures",
+		"RestrictAddressFamilies", "RestrictNamespaces", "RestrictRealtime", "RestrictSUIDSGID",
+		"LockPersonality", "ProtectKernelModules", "ProtectKernelLogs", "ProtectKernelTunables", "PrivateDevices"}
+	for _, c := range []struct {
+		name, want string
+		pass       bool
+		drop       []string
+	}{
+		{"whole", ", seccomp 2, unshare refused", true, nil},
+		{"no RestrictNamespaces", ", seccomp 2, unshare allowed", false, []string{"RestrictNamespaces"}},
+		{"no seccomp-backed setting", ", seccomp 0, unshare allowed", false, seccompBacked},
+	} {
+		result, line := probe(c.drop...)
+		if (result == "done") != c.pass {
+			t.Errorf("%s: the probe unit's job is %q, want passed=%v: %q", c.name, result, c.pass, line)
+		}
+		if !strings.Contains(line, c.want) {
+			t.Errorf("%s: the probe's journal line does not say %q: %q", c.name, c.want, line)
+		}
+	}
+}
+
 // writeSandboxView installs the shared view probe (sandboxViewScript,
 // the same file e2e/liveswap/systemd.sh and packaging/test/smoke.sh
 // use) into the release dir, alongside a ./server that sources it and
@@ -780,9 +920,9 @@ func readProbe(t *testing.T, shared string) map[string]string {
 // sandbox and reads the view from inside: the namespaces are in
 // effect, the root shows only the app's own dirs, everything nothing
 // named is absent (not merely unreadable), the manager's /proc is
-// closed, cgroupfs is read-only, /tmp is private and writable, HOME is
-// the shared dir. Then the unit is stopped through the runner like any
-// other.
+// closed, cgroupfs is read-only, the syscall filter is in force, /tmp
+// is private and writable, HOME is the shared dir. Then the unit is
+// stopped through the runner like any other.
 func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 	r := integrationRunner(t)
 	root, release, shared := sandboxRoot(t)
@@ -832,6 +972,11 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 		// No core dump of a crashed app, and no way to raise the soft
 		// limit back: LimitCORE=0 on both, read back from inside.
 		"core_soft": "0", "core_hard": "0",
+		// The syscall filter is in force in here, not only set on the
+		// unit: seccomp's filter mode, and the call the filter takes
+		// out of @system-service refused (EPERM). The same call from
+		// outside the unit is checked below.
+		"seccomp": "2", "io_uring_setup": "refused",
 		// The base view: an OS the app can actually run on. Without
 		// these, "absent" below would only mean the unit is empty.
 		"binsh": "ok", "usrbinenv": "ok", "etcssl": "ok", "resolvconf": "ok",
@@ -878,12 +1023,27 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 	if n, _ := strconv.Atoi(got["nprocs"]); n == 0 || n > 8 {
 		t.Errorf("nprocs = %q, want a handful (own PID namespace)", got["nprocs"])
 	}
+	// From this process, outside the unit, the same call reaches the
+	// kernel (EFAULT on the null params): otherwise "refused" above
+	// could be a filter this test inherited rather than the unit's.
+	if _, _, errno := syscall.Syscall(unix.SYS_IO_URING_SETUP, 1, 0, 0); errno == syscall.EPERM {
+		sysctl, _ := os.ReadFile("/proc/sys/kernel/io_uring_disabled")
+		t.Errorf("io_uring_setup is refused outside the unit too, so io_uring_setup=refused inside proves nothing about the unit's filter (kernel.io_uring_disabled=%s; anything but 0 can refuse it outside too)", strings.TrimSpace(string(sysctl)))
+	}
 	unit := h.state().Unit
-	props := run(t, "systemctl", "--user", "show", unit, "-p", "PrivatePIDs,PrivateUsers,ProtectSystem,ProtectControlGroups,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,InaccessiblePaths,LimitCORE,LimitCORESoft")
-	for _, want := range []string{"PrivatePIDs=yes", "PrivateUsers=yes", "ProtectControlGroups=yes", "TemporaryFileSystem=/:ro", "LimitCORE=0", "LimitCORESoft=0"} {
+	props := run(t, "systemctl", "--user", "show", unit, "-p", "PrivatePIDs,PrivateUsers,ProtectSystem,ProtectControlGroups,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,InaccessiblePaths,LimitCORE,LimitCORESoft,SystemCallArchitectures")
+	for _, want := range []string{"PrivatePIDs=yes", "PrivateUsers=yes", "ProtectControlGroups=yes", "TemporaryFileSystem=/:ro", "LimitCORE=0", "LimitCORESoft=0", "SystemCallArchitectures=native"} {
 		if !strings.Contains(props, want) {
 			t.Errorf("unit lacks %s:\n%s", want, props)
 		}
+	}
+	// The filter the manager built from the allow list and the deny
+	// entry after it: still an allow list (no leading ~), still holding
+	// the rest of @aio — so io_uring_setup's absence is the deny entry's
+	// doing, not a missing set — and without io_uring_setup.
+	filter := strings.Fields(strings.TrimPrefix(strings.TrimSpace(run(t, "systemctl", "--user", "show", unit, "-p", "SystemCallFilter")), "SystemCallFilter="))
+	if len(filter) == 0 || strings.HasPrefix(filter[0], "~") || !slices.Contains(filter, "io_uring_enter") || slices.Contains(filter, "io_uring_setup") {
+		t.Errorf("SystemCallFilter is not @system-service less io_uring_setup: %v", filter)
 	}
 	// The retired half of the old model, read back off the live unit.
 	for _, gone := range []string{"ProtectSystem=strict", "InaccessiblePaths=/"} {
@@ -1013,4 +1173,107 @@ func TestIntegrationSystemdSIGTERMReachesNamespaceInit(t *testing.T) {
 		t.Fatalf("stop took %s, the whole grace — SIGTERM was discarded and SIGKILL did the work", took)
 	}
 	t.Logf("SIGTERM honoured inside the PID namespace: handler ran, stop took %s of a %s grace", took, spec.grace)
+}
+
+// TestIntegrationSystemdCapsHoldAndChangeLive: the caps a unit starts
+// with read back from the manager at the values given; SetCaps changes
+// a running unit's with its process untouched, lifting what is now
+// unset; a reattach reads them back. The kernel's own view (the
+// cgroup files) is asserted where this lane's container delegates the
+// controllers, and the e2e lane asserts it from inside the sandbox.
+func TestIntegrationSystemdCapsHoldAndChangeLive(t *testing.T) {
+	r := integrationRunner(t)
+	spec := scriptApp(t, "exec sleep 300\n")
+	spec.caps = resourceCaps{memoryMax: 64 << 20, tasksMax: 40, cpuQuota: 50}
+	h, err := r.Start(spec)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Stop(h, spec.grace) })
+	unit := h.state().Unit
+	show := func() string {
+		return run(t, "systemctl", "--user", "show", unit, "-p", "MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec")
+	}
+	expect := func(label string, wants ...string) {
+		t.Helper()
+		props := show()
+		for _, want := range wants {
+			if !strings.Contains(props, want+"\n") {
+				t.Errorf("%s: unit lacks %s:\n%s", label, want, props)
+			}
+		}
+	}
+	expect("at start", "MemoryMax=67108864", "MemorySwapMax=0", "TasksMax=40", "CPUQuotaPerSecUSec=500ms")
+	if got := h.state().Caps; got != spec.caps {
+		t.Errorf("handle reports %+v, want the start's %+v", got, spec.caps)
+	}
+	cg := strings.TrimSpace(run(t, "systemctl", "--user", "show", "-p", "ControlGroup", "--value", unit))
+	kernel := func(file string) string {
+		b, err := os.ReadFile("/sys/fs/cgroup" + cg + "/" + file)
+		if err != nil {
+			return "absent"
+		}
+		return strings.TrimSpace(string(b))
+	}
+	delegated := kernel("memory.max") != "absent"
+	if delegated {
+		for file, want := range map[string]string{"memory.max": "67108864", "memory.swap.max": "0", "pids.max": "40", "cpu.max": "50000 100000"} {
+			if got := kernel(file); got != want {
+				t.Errorf("kernel %s = %q, want %q", file, got, want)
+			}
+		}
+		if got := h.state().CapsUnenforced; len(got) != 0 {
+			t.Errorf("every controller reaches the unit, yet the handle names %v as unenforced", got)
+		}
+	} else {
+		t.Log("the memory controller does not reach the unit's cgroup in this container; the kernel's view is the e2e lane's to assert")
+		// What the handle must say about it: the manager holds the
+		// caps, the kernel enforces none of them.
+		if got := h.state().CapsUnenforced; !slices.Contains(got, "memory_max") {
+			t.Errorf("the memory controller is absent, yet the handle does not name memory_max as unenforced: %v", got)
+		}
+	}
+
+	// A lifted tasks cap goes to the manager's own default, which is
+	// what the manager reports for a unit that never had a TasksMax=
+	// — never to infinity, which would lift the manager's bound too.
+	def := strings.TrimSpace(run(t, "systemctl", "--user", "show", "-p", "DefaultTasksMax", "--value"))
+	if def == "" || def == "infinity" {
+		t.Fatalf("DefaultTasksMax = %q: the lift has no number to go to", def)
+	}
+	pid := h.state().PID
+	next := resourceCaps{memoryMax: 128 << 20, cpuQuota: 25} // tasks_max lifted
+	if err := r.SetCaps(h, next); err != nil {
+		t.Fatalf("SetCaps: %v", err)
+	}
+	expect("after SetCaps", "MemoryMax=134217728", "MemorySwapMax=0", "TasksMax="+def, "CPUQuotaPerSecUSec=250ms")
+	if got := h.state().Caps; got != next {
+		t.Errorf("handle reports %+v after SetCaps, want %+v", got, next)
+	}
+	if got := h.state().PID; got != pid {
+		t.Errorf("pid changed from %d to %d: the caps must apply without a restart", pid, got)
+	}
+	if delegated {
+		for file, want := range map[string]string{"memory.max": "134217728", "pids.max": def, "cpu.max": "25000 100000"} {
+			if got := kernel(file); got != want {
+				t.Errorf("kernel %s = %q after SetCaps, want %q", file, got, want)
+			}
+		}
+	}
+	// A reattach reads the caps the unit carries, not the spec's.
+	if again, ok, err := r.Reattach(h.state()); err != nil || !ok {
+		t.Fatalf("reattach: ok=%v err=%v", ok, err)
+	} else if got := again.state().Caps; got != next {
+		t.Errorf("reattached handle reports %+v, want the unit's %+v", got, next)
+	}
+	if err := r.SetCaps(h, resourceCaps{}); err != nil {
+		t.Fatalf("SetCaps (lift): %v", err)
+	}
+	expect("lifted", "MemoryMax=infinity", "MemorySwapMax=infinity", "TasksMax="+def, "CPUQuotaPerSecUSec=infinity")
+	if delegated && kernel("memory.max") != "max" {
+		t.Errorf("kernel memory.max = %q after lifting, want max", kernel("memory.max"))
+	}
+	if got := h.state().Caps; got.any() {
+		t.Errorf("handle reports %+v after lifting, want none", got)
+	}
 }
