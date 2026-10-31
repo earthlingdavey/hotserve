@@ -68,18 +68,21 @@ writer:
 
 ```sh
 db=/var/lib/liveswap/blog/shared/app.db; out=/var/backups/blog/app.db
-rm -f $out.new &&
+[ -s $db ] && rm -f $out.new &&
   runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "file:$db?mode=rw" "VACUUM INTO '$out.new'" &&
-  [ "$(runuser -u hotserve -- sqlite3 $out.new 'PRAGMA integrity_check')" = ok ] &&
-  mv $out.new $out && echo backed up
+  [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
+  mv $out.new $out && echo backed up ||
+  { rm -f $out.new $out.new-journal; false; }
 ```
 
 ```
 backed up
 ```
 
-The `&&`s stop at the first step that fails, and the last good copy
-stays in place. It needs about the database's size free on the disk.
+The `&&`s stop at the first step that fails, the last good copy stays
+in place, and the partial file goes: left on the app's disk, it would
+keep the app's own writes failing (measured). It needs about the
+database's size free on that disk.
 
 Why this and not something shorter:
 
@@ -103,12 +106,18 @@ of your own:
 runuser -u hotserve -- sqlite3 /var/backups/blog/app.db 'SELECT count(*) FROM posts'
 ```
 
-Anything else in `shared/`, uploads say, is plain files. This leaves
-the database out, since the block above has it:
+**A second database in `shared/` is not a plain file.** Under writes,
+`tar` archived one corrupt while this block said `files copied`
+(measured). Give it a copy block of its own, and add it to the
+`--exclude`s.
+
+Anything else there, uploads say, is plain files. This leaves the
+database out, since the block above has it:
 
 ```sh
 runuser -u hotserve -- tar -C /var/lib/liveswap/blog/shared --exclude=./app.db --exclude='./app.db-*' -czf /var/backups/blog/files.tar.gz.new . ; [ $? -le 1 ] &&
-  mv /var/backups/blog/files.tar.gz.new /var/backups/blog/files.tar.gz && echo files copied
+  mv /var/backups/blog/files.tar.gz.new /var/backups/blog/files.tar.gz && echo files copied ||
+  { rm -f /var/backups/blog/files.tar.gz.new; false; }
 ```
 
 ```
@@ -126,7 +135,7 @@ From your laptop, or any machine that is not the box:
 ```sh
 t=$(date +%F-%H%M%S)
 scp root@box.example.com:/var/backups/blog/app.db blog-$t.db
-scp root@box.example.com:/var/backups/blog/files.tar.gz files-$t.tar.gz
+scp root@box.example.com:/var/backups/blog/files.tar.gz blog-files-$t.tar.gz
 ssh root@box.example.com sha256sum /var/backups/blog/app.db
 sha256sum blog-$t.db                 # the same sum as the line above
 ```
@@ -146,32 +155,32 @@ cat > /usr/local/sbin/copy-blog <<'EOF'
 #!/bin/sh
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 db=/var/lib/liveswap/blog/shared/app.db; out=/var/backups/blog/app.db
-rm -f $out.new &&
+[ -s $db ] && rm -f $out.new &&
   runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "file:$db?mode=rw" "VACUUM INTO '$out.new'" &&
-  [ "$(runuser -u hotserve -- sqlite3 $out.new 'PRAGMA integrity_check')" = ok ] &&
-  mv $out.new $out || exit 1
+  [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
+  mv $out.new $out || { rm -f $out.new $out.new-journal; exit 1; }
 runuser -u hotserve -- tar -C /var/lib/liveswap/blog/shared --exclude=./app.db --exclude='./app.db-*' -czf /var/backups/blog/files.tar.gz.new . ; [ $? -le 1 ] &&
-  mv /var/backups/blog/files.tar.gz.new /var/backups/blog/files.tar.gz || exit 1
+  mv /var/backups/blog/files.tar.gz.new /var/backups/blog/files.tar.gz || { rm -f /var/backups/blog/files.tar.gz.new; exit 1; }
 EOF
 chmod 0700 /usr/local/sbin/copy-blog
 ```
 
-And on the other machine, a script run from its copies' directory. It
-names a fetch only once the copy and the fetch have both worked, so a
+And on the other machine, a script run from a directory for this app's
+copies alone, since it prunes by name. It names a fetch only once the copy and the fetch have both worked, so a
 stale or cut-off copy never gets a fresh name, and it keeps the newest
 30:
 
 ```sh
 #!/bin/sh
 t=$(date +%F-%H%M%S)
-rm -f blog-*.db.new files-*.tar.gz.new
+rm -f blog-*.db.new blog-files-*.tar.gz.new
 ssh root@box.example.com /usr/local/sbin/copy-blog &&
   scp -q root@box.example.com:/var/backups/blog/app.db blog-$t.db.new &&
-  scp -q root@box.example.com:/var/backups/blog/files.tar.gz files-$t.tar.gz.new &&
+  scp -q root@box.example.com:/var/backups/blog/files.tar.gz blog-files-$t.tar.gz.new &&
   [ -s blog-$t.db.new ] &&
-  mv blog-$t.db.new blog-$t.db && mv files-$t.tar.gz.new files-$t.tar.gz || exit 1
+  mv blog-$t.db.new blog-$t.db && mv blog-files-$t.tar.gz.new blog-files-$t.tar.gz || exit 1
 ls -1t blog-*.db | tail -n +31 | xargs -r rm --
-ls -1t files-*.tar.gz | tail -n +31 | xargs -r rm --
+ls -1t blog-files-*.tar.gz | tail -n +31 | xargs -r rm --
 ```
 
 Run it from cron with `cd` first. A bare `%` on a crontab line ends the
@@ -185,11 +194,19 @@ You cannot stop the app first: its watchdog relaunches it. You do not
 need to. SQLite's `.restore` replaces the database in one transaction
 with the app running. Everything written since the copy is lost.
 
+**A copy brings back the schema it was taken on,** and its
+`user_version`, under the version running now, and no `pre_start` runs.
+So before you restore, roll back to a version that works on that
+schema. Afterwards go forward with new versions, whose `pre_start`
+migrates it. Deploying the version already there runs no `pre_start`.
+A version that merely reads the old schema is not enough: [the
+migration rule](#the-migration-rule) shows why.
+
 Bring the copy to `/root/restore.db`. From the laptop:
 
 ```sh
 scp blog-2026-10-30-030000.db root@box.example.com:/root/restore.db
-scp files-2026-10-30-030000.tar.gz root@box.example.com:/root/files.tar.gz
+scp blog-files-2026-10-30-030000.tar.gz root@box.example.com:/root/files.tar.gz
 ```
 
 Or, for the copy already on the box, `cp /var/backups/blog/app.db
@@ -200,10 +217,11 @@ back. If it stops because the live database is damaged, go on without it:
 
 ```sh
 db=/var/lib/liveswap/blog/shared/app.db; out=/var/backups/blog/before-restore-$(date +%F-%H%M%S).db
-rm -f $out.new &&
+[ -s $db ] && rm -f $out.new &&
   runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "file:$db?mode=rw" "VACUUM INTO '$out.new'" &&
-  [ "$(runuser -u hotserve -- sqlite3 $out.new 'PRAGMA integrity_check')" = ok ] &&
-  mv $out.new $out && echo backed up
+  [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
+  mv $out.new $out && echo backed up ||
+  { rm -f $out.new $out.new-journal; false; }
 ```
 
 Then restore:
@@ -226,7 +244,7 @@ untouched (measured). Without the `&&`s, `.restore` of a missing file
 restores an empty database over your data. Check the result:
 
 ```sh
-runuser -u hotserve -- sqlite3 /var/lib/liveswap/blog/shared/app.db 'PRAGMA integrity_check; SELECT count(*) FROM posts'
+runuser -u hotserve -- sqlite3 'file:/var/lib/liveswap/blog/shared/app.db?mode=rw' 'PRAGMA integrity_check; SELECT count(*) FROM posts'
 ```
 
 ```
@@ -248,14 +266,6 @@ but what it holds in memory stays. To clear that, give it a fresh
 launch: [roll back to the running
 version](../liveswap/README.md#relaunching-the-running-version).
 
-**A copy brings back the schema it was taken on,** and its
-`user_version`, under the version running now, and no `pre_start` runs.
-So roll back first to a version that works on that schema, then go
-forward with new versions, whose `pre_start` migrates it. Deploying the
-version already there runs no `pre_start`. A version that merely reads
-the old schema is not enough: [the migration
-rule](#the-migration-rule) shows why.
-
 Files go back over what is there, and anything the copy does not hold
 stays:
 
@@ -269,7 +279,10 @@ runuser -u hotserve -- tar -C /var/lib/liveswap/blog/shared -xzf - < /root/files
 header is damaged, it fails with `unable to open database file` or
 `file is not a database`, and changes nothing. (Damage further in does
 not stop it: use the block above.) Move the file aside with its
-companions, and put the copy in place:
+companions, and restore into what is left. The copy goes in through
+SQLite's locks, not over the file: with an app opening the database for
+each write, an `install` over it printed `in place` and left an empty
+database (measured).
 
 ```sh
 db=/var/lib/liveswap/blog/shared/app.db; src=/var/backups/blog/restore.db; aside=/var/backups/blog/damaged-$(date +%F-%H%M%S)
@@ -277,9 +290,8 @@ db=/var/lib/liveswap/blog/shared/app.db; src=/var/backups/blog/restore.db; aside
   install -m 0600 -o hotserve -g hotserve /root/restore.db $src &&
   [ "$(runuser -u hotserve -- sqlite3 "file:$src?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
   install -d -m 0700 -o hotserve -g hotserve $aside &&
-  find "${db%/*}" -maxdepth 1 \( -name "${db##*/}" -o -name "${db##*/}-*" \) -exec mv -t $aside {} + &&
-  install -m 0640 -o hotserve -g hotserve $src $db &&
-  rm -f $db-wal $db-shm $db-journal &&
+  { find "${db%/*}" -maxdepth 1 \( -name "${db##*/}" -o -name "${db##*/}-*" \) -exec mv -t $aside {} + ; true; } &&
+  runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "$db" ".restore file:$src?mode=ro" &&
   echo in place
 ```
 
@@ -287,10 +299,13 @@ db=/var/lib/liveswap/blog/shared/app.db; src=/var/backups/blog/restore.db; aside
 in place
 ```
 
-Then [roll back to the running
+A `mv: cannot stat` about a companion the app has just removed does no
+harm. Check the result as above. Then [roll back to the running
 version](../liveswap/README.md#relaunching-the-running-version) at
-once: the running instance still has the old file open. (hotserve
-0.3.1 refuses that with a 422: deploy a new version instead.) A corrupt
+once: the running instance may still have the old file open, and until
+it relaunches it reports success for writes that go to the moved file,
+not the restored one (measured). (hotserve 0.3.1 refuses that rollback
+with a 422: deploy a new version instead.) A corrupt
 database fails its next launch too, so this is the way back from one.
 The copy is in rollback-journal mode, so an app that wants WAL sets it
 when it opens the database.
@@ -299,15 +314,16 @@ when it opens the database.
 
 Install hotserve, put back a `deploy_trust local` key if you have one,
 and run `hotserve init`, as the first deploy did. Bring the secrets
-back ([A rebuilt box](secrets.md#a-rebuilt-box)). **Before the app's
-first deploy**, with the copies at `/root/restore.db` and
-`/root/files.tar.gz`:
+back ([A rebuilt box](secrets.md#a-rebuilt-box)). `apt install sqlite3`.
+**Before the app's first deploy**, with the copies at `/root/restore.db`
+and `/root/files.tar.gz`. It stops if the app already has a database:
 
 ```sh
-[ -s /root/restore.db ] &&
+[ -s /root/restore.db ] && [ ! -e /var/lib/liveswap/blog/shared/app.db ] &&
+  [ "$(sqlite3 'file:/root/restore.db?mode=ro' 'PRAGMA integrity_check')" = ok ] &&
   install -d -m 0750 -o hotserve -g hotserve /var/lib/liveswap/blog /var/lib/liveswap/blog/shared &&
-  install -m 0640 -o hotserve -g hotserve /root/restore.db /var/lib/liveswap/blog/shared/app.db &&
   runuser -u hotserve -- tar -C /var/lib/liveswap/blog/shared -xzf - < /root/files.tar.gz &&
+  install -m 0640 -o hotserve -g hotserve /root/restore.db /var/lib/liveswap/blog/shared/app.db &&
   echo in place
 ```
 
@@ -348,7 +364,8 @@ takes it. You copy it from outside the sandbox, as root, which is why
 ```sh
 install -d -m 0700 -o hotserve -g hotserve /var/backups/blog
 runuser -u postgres -- pg_dump -Fc blog > /var/backups/blog/blog.dump.new &&
-  mv /var/backups/blog/blog.dump.new /var/backups/blog/blog.dump && echo dumped
+  mv /var/backups/blog/blog.dump.new /var/backups/blog/blog.dump && echo dumped ||
+  { rm -f /var/backups/blog/blog.dump.new; false; }
 ```
 
 It prints `dumped`, and is consistent with the app writing. Fetch it
@@ -363,24 +380,25 @@ runuser -u postgres -- pg_restore --clean --if-exists --single-transaction -d bl
 It prints `restored`. It fails with `cannot drop constraint`, exit 1 and
 nothing changed, if a later migration added a foreign key to a table in
 the dump. It also leaves tables the dump does not know. For either,
-replace the database. The app's connections drop, and it should retry
-them:
+replace the database. The restore goes into one beside it, so the app
+never meets an empty database (measured: one that creates its tables
+when it connects broke a restore into the emptied `blog`):
 
 ```sh
-runuser -u postgres -- pg_restore -f /dev/null < /var/backups/blog/blog.dump &&
-  runuser -u postgres -- pg_dump -Fc blog > /var/backups/blog/before-restore-$(date +%F-%H%M%S).dump &&
+runuser -u postgres -- pg_dump -Fc blog > /var/backups/blog/before-restore-$(date +%F-%H%M%S).dump &&
+  runuser -u postgres -- dropdb --if-exists blog_new &&
+  runuser -u postgres -- createdb -O blog blog_new &&
+  runuser -u postgres -- pg_restore --single-transaction -d blog_new < /var/backups/blog/blog.dump &&
   runuser -u postgres -- dropdb --force blog &&
-  runuser -u postgres -- createdb -O blog blog &&
-  runuser -u postgres -- pg_restore --single-transaction -d blog < /var/backups/blog/blog.dump && echo restored
+  runuser -u postgres -- psql -d postgres -qc 'ALTER DATABASE blog_new RENAME TO blog' && echo restored
 ```
 
-The first line reads the whole dump and stops if it is missing or
-damaged, before anything is dropped.
+A missing or damaged dump stops at the restore, with `blog` untouched.
+The app's connections drop at the `dropdb`, and it should retry them.
 
-If it stops because `blog` no longer exists, a run was interrupted, and
-the sized `before-restore-` file is your way back. Run
-`runuser -u postgres -- createdb -O blog blog`, then the block's last
-line, with that file if you want what was there. A dump holds neither
+If `blog` is gone and `blog_new` is there, a run was interrupted before
+its last line: run that line. The `before-restore-` file is your way
+back. A dump holds neither
 `ALTER DATABASE blog SET …` nor `GRANT … ON DATABASE blog`: set those
 again after replacing the database or on a new box.
 
@@ -422,8 +440,8 @@ safe for the one before it:
 | Release | `pre_start` | The code | Rollback is safe to |
 |---|---|---|---|
 | v2, expand | `ALTER TABLE users ADD COLUMN email_address TEXT;` and `UPDATE users SET email_address = email WHERE email_address IS NULL;` | Writes both; reads `COALESCE(email_address, email)` | v1 (below) |
-| v3 | `UPDATE users SET email_address = email WHERE email_address IS NOT email;` | Writes both; reads `email_address` | v2, v1 (below) |
-| v4 | None | Writes and reads `email_address` only | v3, v2. Never v1, directly or through v2: it reads `NULL` for v4's rows and the old value for those v4 changed |
+| v3 | `UPDATE users SET email_address = email WHERE email_address IS NOT email;` | Writes both; reads `email_address` | v2; v1 only if v4 never ran (below) |
+| v4 | None | Writes and reads `email_address` only | v3, v2. Never v1, directly or through v2 or v3: it reads `NULL` for v4's rows and the old value for those v4 changed |
 | v5, contract | `ALTER TABLE users DROP COLUMN email;` | As v4 | v4 only |
 
 v3's `UPDATE` fixes rows v1 changed during v2's soak, which v2 reads
@@ -438,8 +456,12 @@ Never run it once v4 has been live: `email` is stale by then and `NULL`
 on v4's own rows, so it would undo changes and erase addresses. A
 restore can run it by accident: a copy from before v3 comes back with a
 `user_version` below v3's, and the next `pre_start` applies it over
-whatever v4 has written since. Put such a copy back under v3, rolling
-back to it first, and go forward from there.
+whatever v4 has written since. So roll back to v3, restore, then deploy
+v3's code as a new release, so its `pre_start` runs the `UPDATE` before
+v4 goes live. Going straight on to v4, which has no `pre_start`, leaves
+the `UPDATE` waiting for v5, and it erases v4's addresses (measured). A
+copy from before v2 has no `email_address`: it needs a release that
+reads v1's schema first.
 
 This assumes a plain nullable column. If `email` is `NOT NULL`, v4's
 inserts fail once it is live. If it is `UNIQUE` or indexed, SQLite
