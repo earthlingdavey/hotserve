@@ -46,8 +46,8 @@ v=v$(cat .deno-version)               # from a checkout; on the box, type what t
 f=deno-$(uname -m)-unknown-linux-gnu.zip
 curl -fsSLO "https://github.com/denoland/deno/releases/download/$v/$f"
 curl -fsSLO "https://github.com/denoland/deno/releases/download/$v/$f.sha256sum"
-sha256sum -c "$f.sha256sum"
-apt install -y unzip && unzip -o "$f" deno -d /usr/local/bin
+sha256sum -c "$f.sha256sum" &&
+  apt install -y unzip && unzip -o "$f" deno -d /usr/local/bin
 ```
 
 **2. Add the app to the box's Caddyfile**, with the lines from
