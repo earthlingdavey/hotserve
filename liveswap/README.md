@@ -13,8 +13,15 @@ One binary. Part of [hotserve](https://github.com/smallhoursorg/hotserve), from 
 describe what no release has yet. If you run a release, read it at
 that release's tag: `dpkg-query -W hotserve` on the box gives the
 version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
-(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
-box installs the
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. Notes
+here that name your release say what that copy leaves out, so search
+this page for it too. To install or upgrade, take the block from
+`main`'s
+[first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/first-deploy.md#2-install-hotserve)
+or
+[upgrading](https://github.com/smallhoursorg/hotserve/blob/main/docs/upgrading.md):
+copies up to v0.3.1 go on to `apt install` after a failed checksum.
+A new box installs the
 [latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
 
 ```
@@ -628,7 +635,8 @@ so whatever a compromised instance left there — a copied secret, a
 payload the next version reads — is inside the view of every version
 after it. If an app may have been compromised, deploying a fixed
 version is not enough: clear its `shared/` and rotate anything it
-could read.
+could read. (On v0.3.1 too: its copy says this only of a hotserve from
+before the sandbox.)
 
 **When an app breaks under the sandbox** the symptom is usually an
 `ENOENT` for something that exists on the host: a database's unix
@@ -1145,7 +1153,9 @@ half-changed, so it runs to its end, still bounded by `deadline`, and
 the deploy then fails before any traffic moves. Until then a retry,
 a rollback included, gets the 409. Not on v0.3.1, where a client that
 hangs up stops the `pre_start` midway and the deploy fails: do not
-cancel a job that is migrating. To end a migration that hangs
+cancel a job that is migrating, and raise `--max-time` with `deadline`,
+since that release's `scripts/deploy.sh` and examples give up at 600
+seconds. To end a migration that hangs
 sooner than its `deadline`, stop its unit yourself; it is named
 `hotserve-<app>.<version>.<nonce>.prestart.service`. For example, as root:
 `runuser -u hotserve -- env XDG_RUNTIME_DIR=/run/user/$(id -u hotserve) systemctl --user stop 'hotserve-blog.*.prestart.service'`. The deploy

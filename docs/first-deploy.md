@@ -4,8 +4,15 @@
 describe what no release has yet. If you run a release, read it at
 that release's tag: `dpkg-query -W hotserve` on the box gives the
 version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
-(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
-box installs the
+(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. Notes
+here that name your release say what that copy leaves out, so search
+this page for it too. To install or upgrade, take the block from
+`main`'s
+[first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/first-deploy.md#2-install-hotserve)
+or
+[upgrading](https://github.com/smallhoursorg/hotserve/blob/main/docs/upgrading.md):
+copies up to v0.3.1 go on to `apt install` after a failed checksum.
+A new box installs the
 [latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
 
 From a fresh server to an app you deploy by pushing to `main`, in four
@@ -293,8 +300,8 @@ the above:
    f=deno-$(uname -m)-unknown-linux-gnu.zip
    curl -fsSLO "https://github.com/denoland/deno/releases/download/$v/$f"
    curl -fsSLO "https://github.com/denoland/deno/releases/download/$v/$f.sha256sum"
-   sha256sum -c "$f.sha256sum"
-   apt install -y unzip && unzip -o "$f" deno -d /usr/local/bin
+   sha256sum -c "$f.sha256sum" &&
+     apt install -y unzip && unzip -o "$f" deno -d /usr/local/bin
    ```
 
 2. In the `app example` block, replace the four lines from the Node

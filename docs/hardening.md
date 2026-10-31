@@ -1,12 +1,9 @@
 # Hardening the box
 
-**Which release this describes.** On the `main` branch, this page can
-describe what no release has yet. If you run a release, read it at
-that release's tag: `dpkg-query -W hotserve` on the box gives the
-version, and `https://github.com/smallhoursorg/hotserve/tree/v<version>`
-(a candidate's `~rc1` is `-rc1` in the tag) is that tag's copy. A new
-box installs the
-[latest release](https://github.com/smallhoursorg/hotserve/releases/latest).
+**Which release this describes.** Each step is the box's own setting,
+not hotserve's, so read this copy whichever release you run: v0.3.1's
+has only the first three steps. The exception is the per-app caps
+step 6 names, which v0.3.1 refuses.
 
 [Your first deploy](first-deploy.md) leaves a working box with the
 doors a fresh server has. This page closes them: SSH by key only, the

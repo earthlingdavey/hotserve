@@ -8,7 +8,8 @@ you are upgrading to, usually the
 candidate's `~rc1` is `-rc1` in the tag). `dpkg-query -W hotserve` on
 the box gives the version it runs now. Take the install blocks below
 from here whichever you read: they stop at a failed checksum, and
-v0.3.1's copy goes on to `apt install`.
+copies up to v0.3.1 go on to `apt install`. Notes here that name your
+release say what that copy leaves out, so search this page for it too.
 
 A release is a new `.deb`; installing it over the old one is the
 upgrade. Everything on this page runs as root on the box
