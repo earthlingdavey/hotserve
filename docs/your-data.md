@@ -11,8 +11,7 @@ Names: an app called `blog` with its database at `shared/app.db`, on
 `box.example.com`. Commands run as root on the box unless they say
 otherwise. Those that touch the app's files run as `hotserve`, through
 `runuser`, so nothing in `shared/` ends up root's and out of the app's
-reach. Change `blog`, `app.db` and `posts`, a table of yours that is
-never empty, everywhere before you paste. Most
+reach. Change `blog` and `app.db` everywhere before you paste. Most
 blocks stop on a wrong name, but those that put a file in place cannot
 tell, and print `in place` anyway.
 
@@ -72,7 +71,6 @@ db=/var/lib/liveswap/blog/shared/app.db; out=/var/backups/blog/app.db
 rm -f $out.new &&
   runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "file:$db?mode=rw" "VACUUM INTO '$out.new'" &&
   [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
-  [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'SELECT count(*) FROM posts')" -gt 0 ] &&
   mv $out.new $out && echo backed up ||
   { rm -f $out.new $out.new-journal; echo "no copy made: the last good one stays" >&2; false; }
 ```
@@ -84,8 +82,7 @@ backed up
 The `&&`s stop at the first step that fails, the last good copy stays
 in place, and the partial file goes: left on the app's disk, it would
 keep the app's own writes failing (measured). It needs about the
-database's size free on that disk. The row count stops a database the
-app has recreated empty from replacing your last good copy (measured).
+database's size free on that disk.
 
 Why this and not something shorter:
 
@@ -103,7 +100,9 @@ rollback-journal mode, writers are locked out for the copy: one with a
 busy timeout waits, and one without gets `database is locked`.
 
 Check that it holds your data, not only that it is sound, with a table
-of your own:
+of your own. The block cannot tell: a database the app has recreated
+empty passes, and replaces the last good copy (measured), so keep
+several:
 
 ```sh
 runuser -u hotserve -- sqlite3 /var/backups/blog/app.db 'SELECT count(*) FROM posts'
@@ -161,7 +160,6 @@ db=/var/lib/liveswap/blog/shared/app.db; out=/var/backups/blog/app.db
 rm -f $out.new &&
   runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "file:$db?mode=rw" "VACUUM INTO '$out.new'" &&
   [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
-  [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'SELECT count(*) FROM posts')" -gt 0 ] &&
   mv $out.new $out || { rm -f $out.new $out.new-journal; echo "no copy made: the last good one stays" >&2; exit 1; }
 runuser -u hotserve -- tar -C /var/lib/liveswap/blog/shared --exclude=./app.db --exclude='./app.db-*' -czf /var/backups/blog/files.tar.gz.new . ; [ $? -le 1 ] &&
   mv /var/backups/blog/files.tar.gz.new /var/backups/blog/files.tar.gz || { rm -f /var/backups/blog/files.tar.gz.new; exit 1; }
