@@ -44,7 +44,7 @@ running version with the same artifact relaunches it too (see
 
 `pre_start` runs while the old version serves, so the old version is
 on the new schema from then on: through the soak, after a deploy that
-fails, and again after a rollback, which leaves the database as it is.
+then fails, and again after a rollback, which leaves the database as it is.
 Every migration has to work with it: see
 [the migration rule](../docs/your-data.md#the-migration-rule).
 

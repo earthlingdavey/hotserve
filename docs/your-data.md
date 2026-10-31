@@ -20,7 +20,7 @@ tell, and print `in place` anyway.
 | Event | `shared/` | Release dirs | The app's `/tmp` | What else |
 |---|---|---|---|---|
 | A deploy | Kept; `pre_start` runs on it | A new one beside the others | Empty for the new version | The old version serves until the cutover |
-| A deploy that fails | Kept, **with whatever `pre_start` did to it** | The failed one removed | The old version's, kept | The old version keeps serving, on the migrated schema |
+| A deploy that fails | Kept, **with whatever `pre_start` did to it**, if it got that far | The failed one removed | The old version's, kept | The old version keeps serving, on the migrated schema if `pre_start` ran |
 | A rollback | Kept and not touched: nothing is undone | Kept | Empty | An on-disk release relaunched, with no `pre_start` |
 | A watchdog restart | Kept | Kept | Empty | The same version, with no `pre_start` |
 | `systemctl restart hotserve`, or an upgrade | Kept | Kept | Kept | The app is not relaunched: the same process goes on |
@@ -124,7 +124,7 @@ A worse error is 2 and stops it.
 From your laptop, or any machine that is not the box:
 
 ```sh
-t=$(date +%F-%H%M)
+t=$(date +%F-%H%M%S)
 scp root@box.example.com:/var/backups/blog/app.db blog-$t.db
 scp root@box.example.com:/var/backups/blog/files.tar.gz files-$t.tar.gz
 ssh root@box.example.com sha256sum /var/backups/blog/app.db
@@ -163,7 +163,7 @@ stale or cut-off copy never gets a fresh name, and it keeps the newest
 
 ```sh
 #!/bin/sh
-t=$(date +%F-%H%M)
+t=$(date +%F-%H%M%S)
 rm -f blog-*.db.new files-*.tar.gz.new
 ssh root@box.example.com /usr/local/sbin/copy-blog &&
   scp -q root@box.example.com:/var/backups/blog/app.db blog-$t.db.new &&
@@ -188,8 +188,8 @@ with the app running. Everything written since the copy is lost.
 Bring the copy to `/root/restore.db`. From the laptop:
 
 ```sh
-scp blog-2026-10-30-0300.db root@box.example.com:/root/restore.db
-scp files-2026-10-30-0300.tar.gz root@box.example.com:/root/files.tar.gz
+scp blog-2026-10-30-030000.db root@box.example.com:/root/restore.db
+scp files-2026-10-30-030000.tar.gz root@box.example.com:/root/files.tar.gz
 ```
 
 Or, for the copy already on the box, `cp /var/backups/blog/app.db
