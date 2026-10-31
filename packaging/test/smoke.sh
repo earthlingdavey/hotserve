@@ -832,7 +832,7 @@ outside=$(as_hotserve "perl -e 'syscall(425, 1, 0); print \$!{EPERM} ? q(refused
 [ "$outside" = "reached" ] \
 	|| die "io_uring_setup outside the unit is '$outside', want reached: io_uring_setup=refused inside proves nothing (kernel.io_uring_disabled=$(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo absent); anything but 0 can refuse it outside too)"
 tmpfs=$(user_systemctl show -p TemporaryFileSystem --value "$unit")
-case "$tmpfs" in *%*) false ;; "/:ro /dev/shm:mode=1777,size="[0-9]*) ;; *) false ;; esac || die "unit's TemporaryFileSystem= is '$tmpfs', want '/:ro /dev/shm:mode=1777,size=<bytes>': the empty root the view starts from, and a /dev/shm of the unit's own (#311)"
+printf '%s\n' "$tmpfs" | grep -Eqx '/:ro /dev/shm:mode=1777,size=[0-9]+' || die "unit's TemporaryFileSystem= is '$tmpfs', want '/:ro /dev/shm:mode=1777,size=<bytes>': the empty root the view starts from, and a /dev/shm of the unit's own (#311)"
 # The retired half of the old model, read back off the live unit. Both
 # properties still exist on every service, so test the value rather
 # than its presence: what must be gone is the setting, not the row.
