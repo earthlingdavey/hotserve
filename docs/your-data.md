@@ -11,7 +11,8 @@ Names: an app called `blog` with its database at `shared/app.db`, on
 `box.example.com`. Commands run as root on the box unless they say
 otherwise. Those that touch the app's files run as `hotserve`, through
 `runuser`, so nothing in `shared/` ends up root's and out of the app's
-reach. Change `blog` and `app.db` everywhere before you paste. Most
+reach. Change `blog`, `app.db` and `posts`, a table of yours that is
+never empty, everywhere before you paste. Most
 blocks stop on a wrong name, but those that put a file in place cannot
 tell, and print `in place` anyway.
 
@@ -68,11 +69,12 @@ writer:
 
 ```sh
 db=/var/lib/liveswap/blog/shared/app.db; out=/var/backups/blog/app.db
-[ -s $db ] && rm -f $out.new &&
+rm -f $out.new &&
   runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "file:$db?mode=rw" "VACUUM INTO '$out.new'" &&
   [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
+  [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'SELECT count(*) FROM posts')" -gt 0 ] &&
   mv $out.new $out && echo backed up ||
-  { rm -f $out.new $out.new-journal; false; }
+  { rm -f $out.new $out.new-journal; echo "no copy made: the last good one stays" >&2; false; }
 ```
 
 ```
@@ -82,7 +84,8 @@ backed up
 The `&&`s stop at the first step that fails, the last good copy stays
 in place, and the partial file goes: left on the app's disk, it would
 keep the app's own writes failing (measured). It needs about the
-database's size free on that disk.
+database's size free on that disk. The row count stops a database the
+app has recreated empty from replacing your last good copy (measured).
 
 Why this and not something shorter:
 
@@ -155,10 +158,11 @@ cat > /usr/local/sbin/copy-blog <<'EOF'
 #!/bin/sh
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 db=/var/lib/liveswap/blog/shared/app.db; out=/var/backups/blog/app.db
-[ -s $db ] && rm -f $out.new &&
+rm -f $out.new &&
   runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "file:$db?mode=rw" "VACUUM INTO '$out.new'" &&
   [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
-  mv $out.new $out || { rm -f $out.new $out.new-journal; exit 1; }
+  [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'SELECT count(*) FROM posts')" -gt 0 ] &&
+  mv $out.new $out || { rm -f $out.new $out.new-journal; echo "no copy made: the last good one stays" >&2; exit 1; }
 runuser -u hotserve -- tar -C /var/lib/liveswap/blog/shared --exclude=./app.db --exclude='./app.db-*' -czf /var/backups/blog/files.tar.gz.new . ; [ $? -le 1 ] &&
   mv /var/backups/blog/files.tar.gz.new /var/backups/blog/files.tar.gz || { rm -f /var/backups/blog/files.tar.gz.new; exit 1; }
 EOF
@@ -217,7 +221,7 @@ back. If it stops because the live database is damaged, go on without it:
 
 ```sh
 db=/var/lib/liveswap/blog/shared/app.db; out=/var/backups/blog/before-restore-$(date +%F-%H%M%S).db
-[ -s $db ] && rm -f $out.new &&
+rm -f $out.new &&
   runuser -u hotserve -- sqlite3 -cmd '.timeout 30000' "file:$db?mode=rw" "VACUUM INTO '$out.new'" &&
   [ "$(runuser -u hotserve -- sqlite3 "file:$out.new?mode=ro" 'PRAGMA integrity_check')" = ok ] &&
   mv $out.new $out && echo backed up ||
@@ -300,12 +304,13 @@ in place
 ```
 
 A `mv: cannot stat` about a companion the app has just removed does no
-harm. Check the result as above. Then [roll back to the running
+harm. Under a busy app this can stop with `Error: disk I/O error` or
+`source database is busy`, with the copy in place or not (measured):
+check the result as above, and run it again if it is not there. Then [roll back to the running
 version](../liveswap/README.md#relaunching-the-running-version) at
 once: the running instance may still have the old file open, and until
 it relaunches it reports success for writes that go to the moved file,
-not the restored one (measured). (hotserve 0.3.1 refuses that rollback
-with a 422: deploy a new version instead.) A corrupt
+not the restored one (measured). A corrupt
 database fails its next launch too, so this is the way back from one.
 The copy is in rollback-journal mode, so an app that wants WAL sets it
 when it opens the database.
@@ -330,85 +335,6 @@ and `/root/files.tar.gz`. It stops if the app already has a database:
 Then deploy by pushing a commit: the old releases are gone, so a
 rollback has nothing to relaunch. Its `pre_start` runs on the restored
 file, which is why a migration has to be safe to run again.
-
-## Postgres on the same box
-
-An app reaches it over TCP loopback, and only that way. From inside a
-unit, `postgresql://blog:…@127.0.0.1/blog` connects, while
-`/run/postgresql` does not exist (measured):
-
-```
-ls: cannot access '/run/postgresql': No such file or directory
-```
-
-There is no way to widen the
-[view](../liveswap/README.md#sandbox). So:
-
-- **A password, not `peer`,** which only works over the socket. Debian
-  13's package listens on `localhost` and asks for one on `127.0.0.1`
-  (`scram-sha-256`) as it comes.
-- **A role and a database per app,** with the password in its env file
-  ([Secrets](secrets.md)). Every app shares the network, so every app
-  can reach that port.
-- **A Deno app needs the host in its flags,** beside the socket, not in
-  place of it: `--allow-net=unix:{socket},127.0.0.1:5432`
-  ([Runtime permissions](../liveswap/README.md#runtime-permissions-deno-node)).
-- **Retry the connection.** hotserve is not ordered after Postgres at
-  boot.
-
-hotserve neither installs nor manages it. Its data is not in `shared/`,
-so the table above does not reach it, and only rebuilding the server
-takes it. You copy it from outside the sandbox, as root, which is why
-`peer` works here. A failed dump leaves the last good one in place:
-
-```sh
-install -d -m 0700 -o hotserve -g hotserve /var/backups/blog
-runuser -u postgres -- pg_dump -Fc blog > /var/backups/blog/blog.dump.new &&
-  mv /var/backups/blog/blog.dump.new /var/backups/blog/blog.dump && echo dumped ||
-  { rm -f /var/backups/blog/blog.dump.new; false; }
-```
-
-It prints `dumped`, and is consistent with the app writing. Fetch it
-with `scp` as above. Keep dumps out of `shared/`, where every later
-version of the app could read them. To put it back, with the app running
-(it waits for locks an open transaction holds):
-
-```sh
-runuser -u postgres -- pg_restore --clean --if-exists --single-transaction -d blog < /var/backups/blog/blog.dump && echo restored
-```
-
-It prints `restored`. It fails with `cannot drop constraint`, exit 1 and
-nothing changed, if a later migration added a foreign key to a table in
-the dump. It also leaves tables the dump does not know. For either,
-replace the database. The restore goes into one beside it, so the app
-never meets an empty database (measured: one that creates its tables
-when it connects broke a restore into the emptied `blog`):
-
-```sh
-runuser -u postgres -- pg_dump -Fc blog > /var/backups/blog/before-restore-$(date +%F-%H%M%S).dump &&
-  runuser -u postgres -- dropdb --if-exists blog_new &&
-  runuser -u postgres -- createdb -O blog blog_new &&
-  runuser -u postgres -- pg_restore --single-transaction -d blog_new < /var/backups/blog/blog.dump &&
-  runuser -u postgres -- dropdb --force blog &&
-  runuser -u postgres -- psql -d postgres -qc 'ALTER DATABASE blog_new RENAME TO blog' && echo restored
-```
-
-A missing or damaged dump stops at the restore, with `blog` untouched.
-The app's connections drop at the `dropdb`, and it should retry them.
-
-If `blog` is gone and `blog_new` is there, a run was interrupted before
-its last line: run that line. The `before-restore-` file is your way
-back. A dump holds neither
-`ALTER DATABASE blog SET …` nor `GRANT … ON DATABASE blog`: set those
-again after replacing the database or on a new box.
-
-On a new box, make the role and the empty database, then restore:
-
-```sh
-runuser -u postgres -- createuser --pwprompt blog
-runuser -u postgres -- createdb -O blog blog
-runuser -u postgres -- pg_restore --single-transaction -d blog < /var/backups/blog/blog.dump && echo restored
-```
 
 ## The migration rule
 
@@ -459,7 +385,9 @@ restore can run it by accident: a copy from before v3 comes back with a
 whatever v4 has written since. So roll back to v3, restore, then deploy
 v3's code as a new release, so its `pre_start` runs the `UPDATE` before
 v4 goes live. Going straight on to v4, which has no `pre_start`, leaves
-the `UPDATE` waiting for v5, and it erases v4's addresses (measured). A
+the `UPDATE` waiting for v5, and it erases v4's addresses (measured).
+Until that release, rows v1 changed or added in v2's soak read stale or
+`NULL`, so deploy it first. A
 copy from before v2 has no `email_address`: it needs a release that
 reads v1's schema first.
 
