@@ -284,8 +284,8 @@ the above:
    f=deno-$(uname -m)-unknown-linux-gnu.zip
    curl -fsSLO "https://github.com/denoland/deno/releases/download/$v/$f"
    curl -fsSLO "https://github.com/denoland/deno/releases/download/$v/$f.sha256sum"
-   sha256sum -c "$f.sha256sum"
-   apt install -y unzip && unzip -o "$f" deno -d /usr/local/bin
+   sha256sum -c "$f.sha256sum" &&
+     apt install -y unzip && unzip -o "$f" deno -d /usr/local/bin
    ```
 
 2. In the `app example` block, replace the four lines from the Node
