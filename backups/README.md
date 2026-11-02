@@ -274,7 +274,9 @@ line.
   read its environment nor signal it. The one capability lets it read
   files it does not own, in a view that holds one app and nothing else.
   The run passes the *path* of `repository.env` to systemd, which reads
-  it as root; the run itself never opens it. `setup` is its one writer,
+  it as root for each restic unit; the run itself reads it only for the
+  repository it names, to refuse before any unit what `setup` refuses
+  (`repositoryInUse`, "What it refuses"). `setup` is its one writer,
   and `status`, as root, its one other reader.
 - **What an operator or an app wrote stays off command lines**, with
   one exception. Units get the app's declaration as a root-written file
@@ -756,8 +758,9 @@ incomplete backup, which a run records as `incomplete`.)
 
 That anyone may run it is meant. `status.json` is readable by every
 account on the box, and so are the app names, data paths, snapshot ids
-and cleaned error text in it; nothing of the repository's location or
-credentials is. Run as root, `status` also reads the credential file
+and cleaned error text in it; nothing of the credentials is, and of
+the repository's location only what a run's refusal of it names: the
+bucket and path of a `b2:` repository, in the S3 URL that moves it. Run as root, `status` also reads the credential file
 and says, as `warning:` lines, where a hand-edited line is not what the
 manager reads (a key with whitespace around it, a key set twice — the
 last wins — a line that is not `KEY=value` or whose name the manager
