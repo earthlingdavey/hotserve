@@ -20,8 +20,12 @@ the word **unverified** where only a real provider can say. Write down
 what the provider showed; each answer replaces an **unverified** in
 [Backups](backups.md), or is a defect to fix before the release.
 `v0.3.0-rc1` ran them on Backblaze B2 from 2026-10-04 to 10-06, all
-but check 5, and each check says what B2 showed; on AWS S3 and Hetzner
-every one is still **unverified**.
+but check 5, through B2's own API. `v0.5.0-rc1` ran all twelve on
+2026-11-02 through B2's S3-compatible endpoint, the one the box uses
+([its record](design/backups/rc-runs/v0.5.0-rc1.md)), all but
+check 3's last step and check 8's egress, which are read later. Each
+check says what B2 showed; on AWS S3 and Hetzner every one is still
+**unverified**.
 
 `<url>` is the bucket's repository URL: on B2
 `s3:https://s3.<region>.backblazeb2.com/<bucket>`, the endpoint the
@@ -74,8 +78,8 @@ region left for you to read from the bucket's page:
 hotserve-backup: b2: is not supported: B2 is reached at its S3-compatible endpoint, s3:https://s3.<region>.backblazeb2.com/<bucket>/rc-check1, with an application key, not the master key; restic's own B2 backend retries a failed upload without end
 ```
 
-What the other two say, and how long each takes: **unverified**. On the
-e2e server the second took 13 s and made the bucket:
+What the other two say, and how long each takes: on the e2e server,
+whose key may make a bucket, the second took 13 s and made it:
 
 ```
 looking for a repository at s3:https://…/box1 (up to 10s)
@@ -99,11 +103,31 @@ it as a timeout, a password was shown, and the init was refused —
 `b2.NewClient: b2_authorize_account: 401` for a wrong secret,
 `NewBucket: b2_list_buckets: 401` for a bucket the key may not reach —
 three askings in 7.5 s for the bucket nobody made and 3.8 s for the
-wrong secret. What `setup` says of it has changed since (#353), and the box now
-reaches B2 at its S3 endpoint: whether the look is refused at once
-there — a key restricted to another bucket, or a wrong secret,
-answered `403` — or only at its 10 s clock, and whether a password is
-shown before the storage takes a key: **unverified**.
+wrong secret.
+
+**On B2's S3 endpoint**, `v0.5.0-rc1`, each
+with nothing written:
+
+- **The `b2:` URL:** refused as above in 0.007 s, exit 1.
+- **A wrong secret:** refused at the look itself, before any password
+  was shown, three askings in 0.66 s, each in restic's words:
+
+  ```
+  restic could not open the repository (exit 1): Stat(<config/>) failed: Stat: Access Denied. Fatal: unable to open config file: Stat: Access Denied. Is there a repository at the following location? s3:https://s3.<region>.backblazeb2.com/<bucket>/rc-check1
+  the storage refused the key, or could not be reached: the key id and secret again
+  ```
+
+- **A bucket nobody made, with a key for another bucket:** the look
+  said at once that no repository was there (exit 10), so a password
+  was shown, and init was refused, `client.MakeBucket: not entitled`.
+  `v0.5.0-rc1` then asked for the key twice more as for a key refused:
+  three askings in 1.3 s, ending `the password shown above was never
+  used: discard it`. From #388 on, `setup` ends at the first refusal
+  and names the bucket, **unverified** on B2 until the next candidate:
+
+  ```
+  hotserve-backup: restic could not make or open the repository (exit 1): …: client.MakeBucket: not entitled; the storage has no bucket by that name for this key, and the key may not make one: check the bucket's name in the URL, or make the bucket first (the guide, "Before you start"); then run setup again; the password shown above was never used: discard it
+  ```
 
 ## 2. Set up, a first backup, status and the drill, over real TLS
 
@@ -112,10 +136,17 @@ shown before the storage takes a key: **unverified**.
 [look from your own machine](backups.md#look-from-your-own-machine),
 both its lines. Each as [Backups](backups.md) shows it: **unverified**
 over S3's and Hetzner's TLS; the e2e server over TLS from a private CA gave
-exactly those lines, and MinIO the look's. **On B2:** all of it, as
-written — the box's lines on an arm64 Hetzner VPS, the look from the
-owner's laptop in a `debian:13` container with `ca-certificates`
-added; the drill 10 s, the look's check `no errors were found`.
+exactly those lines, and MinIO the look's. **On B2's own API**,
+`v0.3.0-rc1`: all of it, as written — the box's lines on an arm64
+Hetzner VPS, the look from the owner's laptop in a `debian:13`
+container with `ca-certificates` added; the drill 10 s, the look's
+check `no errors were found`. **On B2's S3 endpoint**, `v0.5.0-rc1`,
+on the same VPS with 501 MiB of data:
+all of it, as written. `setup` made a new repository in 5.3 s; the
+first run took 26 s and proved its own restore; `status` was `ok`;
+the drill took 7.8 s, its check `data group 45/52: clean`; and the
+look from a `debian:13` container found no lock, and its `restic check
+--read-data` no errors, in 11 s.
 
 On B2, `setup` says
 `B2's region, <region>, from the endpoint's name, goes in the file as AWS_DEFAULT_REGION`
@@ -124,15 +155,20 @@ before it asks for the key — for a host that is
 trailing dot — and the credential file
 then holds five keys: `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`,
 `AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-That both keys work without `listAllBucketNames` or `readBuckets`,
-which the guide does not give them: **unverified**.
+Both keys work without `listAllBucketNames` or `readBuckets`, which
+the guide does not give them: on B2's S3 endpoint, `v0.5.0-rc1`, every
+key had the guide's four capabilities and no more, the box's for the
+box's lines and the off-box machine's for the look and retention
+(check 5).
 
 Where `setup` finds a repository there already — check 4's copy, check
 7's second box, check 9 — its opening takes the repository's lock,
 writing a lock file and removing it. After such a `setup`, and before
 the next run, `restic list locks --no-lock | wc -l` from the off-box
-machine should be 0. Where B2 refuses a delete by name to a key
-without `deleteFiles` (check 3's first step), restic exits 0 and says
+machine should be 0 (on B2's S3 endpoint, `v0.5.0-rc1`: 0 after
+check 9's `setup`, and after check 7's first run and drill). Where a
+storage refuses a delete by name to the key — B2 does not, to a key
+without `deleteFiles` (check 3's first step) — restic exits 0 and says
 `error while unlocking:`, and `setup` refuses the key, naming the lock
 it left: `restic opened the repository and could not remove the lock
 file it wrote (restic said: Remove(<lock/…>) failed: …)`, then where
@@ -164,7 +200,12 @@ The first delete answered with `"DeleteMarker": true` means the guide's
 keys can remove restic's locks and prune, as it says; `AccessDenied`
 means they cannot — then stop here, and decide the bucket's design
 before any other check. The second, a version deleted by its id as an
-attack would, should be `AccessDenied`. Both **unverified**.
+attack would, should be `AccessDenied`. **On B2's S3 endpoint**,
+`v0.5.0-rc1`, both:
+the first answered `"DeleteMarker": true`, the second `An error
+occurred (AccessDenied) when calling the DeleteObject operation: not
+entitled`, and the listing then held the version under its marker. On
+AWS S3 and Hetzner, **unverified**.
 
 Then a locking command past restic's 22-minute mark: with the box's
 timers stopped, so that no run of its own holds a lock meanwhile
@@ -194,9 +235,9 @@ Then on the box, `systemctl start hotserve-backup.service` twice,
 probe ends `snapshot … saved` after 30 minutes with no lock left, each
 lock it removed a delete marker over a version that stays, the runs end
 `ok`, and the drill proves and its check is `clean`: **unverified**
-through B2's S3 endpoint, on AWS S3 and on Hetzner (through B2's
-native API, on `v0.3.0-rc1`, the probe held its lock 30 minutes and
-ended saved, no lock left). On
+on AWS S3 and on Hetzner (through B2's native API, on `v0.3.0-rc1`,
+the probe held its lock 30 minutes and ended saved, no lock left;
+through its S3 endpoint, below). On
 MinIO all of that held; a key that may delete nothing, on the other
 hand, stopped the probe at 22 minutes —
 `failed to refresh stale lock: client.RemoveObject: Access Denied.`,
@@ -212,14 +253,22 @@ restore and checked `data group 40/52: clean` in 10 s (dummy data, not
 check 8's figure); and the `forget` hid the snapshot's file and left
 its version
 (`backblaze-b2 ls --long --versions` showed its upload, then its
-upload and a hide).
+upload and a hide). **On B2's S3 endpoint**, `v0.5.0-rc1`, the same
+way:
+`processed 1 files, 6 B in 30:05`, `snapshot … saved`, no lock left,
+and `locks/` held 13 versions under 13 delete markers; the two runs
+ended `ok`, the drill proved and checked `data group 46/52: clean` in
+16 s, and `status` was healthy. The `forget`, made once the timers were
+started again, met a run's lock, and went through with `--retry-lock`.
 
 Over S3 restic removes a file by name alone (`RemoveObject` with no
 version), so on B2 even a key with `deleteFiles` should only hide what
 restic removes. With such a key, in a repository of its own on a bucket
 you can spare, a backup and a `restic snapshots`, then the listing of
 its `locks/` as above: versions and delete markers both there means
-restic hid; neither, that it destroyed. **Unverified.**
+restic hid; neither, that it destroyed. **On B2's S3 endpoint**,
+`v0.5.0-rc1`, with `deleteFiles` added to the box's capabilities:
+2 versions under 2 delete markers, so restic hid.
 
 On B2, the bucket's own rule as well: two days after the first step,
 `aws s3api list-object-versions --bucket <that bucket> --prefix
@@ -229,7 +278,9 @@ marker: B2's documentation says a delete by name inserts a delete
 marker ([Delete Object](https://www.backblaze.com/apidocs/s3-delete-object)),
 and that its lifecycle rules always remove an orphan delete marker
 ([Put Bucket Lifecycle Configuration](https://www.backblaze.com/apidocs/s3-put-lifecycle-configuration)).
-**Unverified** through the S3 endpoint. Through B2's own API it does:
+**Unverified** through the S3 endpoint: `v0.5.0-rc1`'s probe was hidden
+at 12:42:37 UTC on 2026-11-02, and is read from 12:42 UTC on the 4th.
+Through B2's own API it does:
 a file hidden at 11:47 UTC on 2026-10-04 was still listed, upload and
 hide, about 30 hours on (17:36 UTC on the 5th, the plan's record), and
 both were gone by 48 hours (11:26 UTC on the 6th). On S3 the guide's
@@ -271,8 +322,8 @@ bucket's history, to compare; the copy is read with a new key of its
 own. That destroying is refused through both APIs for every file, that
 the version count does not fall, that the deletion only hides, that the
 run fails `exit 10`, and that the copy, checked, holds the last
-complete backup: **unverified** through B2's S3 endpoint and on AWS S3
-and Hetzner (through B2's own API, on `v0.3.0-rc1`, every destruction
+complete backup: **unverified** on AWS S3 and Hetzner (through B2's
+own API, on `v0.3.0-rc1`, every destruction
 was refused, `401` for each of 17 files, the run failed `exit 10`,
 and two copies checked clean:
 [RC-check4-attack.out](design/backups/rc-runs/RC-check4-attack.out),
@@ -281,7 +332,7 @@ S3 line was `AccessDenied` for each of 48 versions, all of which
 remained, and the deletion emptied the bucket's listing; the run said
 `there is no repository at the configured location (exit 10)`, and
 the copy as written held the last complete backup and checked clean.
-**On B2:** the first line was `401 unauthorized` for each of 17 files,
+**On B2's own API**, `v0.3.0-rc1`: the first line was `401 unauthorized` for each of 17 files,
 three tries each over some three minutes, and all 17 remained; the
 deletion hid every file; the run failed `exit 10` and `status` exited
 1. The copy at `status`'s minute held the backup before the last and
@@ -293,8 +344,32 @@ too and checked clean;
 `setup` onto it kept the record, and the run, the drill and `status`
 were healthy. Both copies were made with the *box's* key — on B2
 `listFiles` and `readFiles` read old versions — into a folder of the
-same bucket; the account's key and a new bucket, as the guide writes
-it, are still **unverified**.
+same bucket.
+
+**On B2's S3 endpoint**, `v0.5.0-rc1`, a box set
+up at the bucket's root and run once:
+
+- **Destroying:** the bucket held 43 versions before and after the two
+  destroying lines. The native line was `401 unauthorized` for every
+  file, and the S3 line and the delete by version id were `AccessDenied:
+  not entitled`.
+- **The overwrite and the deletion:** both went through, leaving no
+  file listed and 44 versions.
+- **The box:** the run failed `there is no repository at the configured
+  location (exit 10)`, and `status` exited 1.
+- **The copy at `status`'s minute** (13:20, the backup's own) held no
+  snapshot. A minute cut short of the backup's last file holds the
+  backup before the last, and here there was none.
+- **The copy from the bucket's history,** the second before the
+  attack's first change, held that backup and checked clean,
+  `--read-data` included. `setup` onto it found the repository, its id
+  unchanged, and the run, the drill and `status` were healthy.
+- **The keys:** both copies went into a new bucket, over B2's own API,
+  with two rclone remotes. The attacked bucket was read with a
+  read-only key of its own (`listBuckets`, `listFiles`, `readFiles`),
+  and the new bucket written with a key of the box's capabilities. So
+  recovery needs no key of the account's. The guide's single remote
+  with the account's key is still **unverified**.
 
 ## 5. Retention off the box, then status on the box
 
@@ -302,7 +377,8 @@ it, are still **unverified**.
 with the off-box machine's key; then on the box
 `systemctl start hotserve-backup.service` and
 `hotserve-backup status`. Each line as [Backups](backups.md) shows it:
-**unverified** on a provider; on the e2e server, as shown there.
+on the e2e server and on B2's S3 endpoint (below), as shown there; on
+AWS S3 and Hetzner, **unverified**.
 
 On B2, with the same key, what `prune` removes should become delete
 markers over versions that stay:
@@ -317,7 +393,20 @@ no fewer versions, and
 `restic check --no-lock` then finds no errors. On a box a few hours old
 nothing is due: a snapshot of its own (`head -c 8388608 /dev/urandom |
 restic backup --stdin --tag rc-retention`), forgotten by its id, gives
-`prune` a pack to remove. **Unverified.**
+`prune` a pack to remove.
+
+**On B2's S3 endpoint**, `v0.5.0-rc1`, with the off-box machine's key:
+
+- **The prune:** after such a snapshot and the guide's three lines,
+  `prune` removed 10 files (21 blobs, 8 MiB).
+- **`data/`:** it went from 47 versions and no marker to 47 versions
+  under 10 markers.
+- **Afterwards:** `restic check --no-lock` found no errors, and no lock
+  was left.
+- **The box:** its next run ended `ok`. `status` then said that the
+  drill's snapshot had been thinned away, as the guide shows:
+  `example: snapshot f4fafbfb is no longer in the repository (last seen
+  there 2026-11-02 13:17 UTC); the restore proven was of it`.
 
 ## 6. A read-only key
 
@@ -382,23 +471,60 @@ the drill failed after 832 s in #170's words; `status` exited 1. **On
 B2's S3 endpoint**, a key without `writeFiles` — the bucket alone,
 `listBuckets`, `listFiles` and `readFiles` — should be answered
 `AccessDenied` at the lock's write, which restic's S3 backend does not
-retry, so `setup` refuses at once: **unverified**. Where a `setup` does
-take such a key, `setup` again with the box's own afterwards.
+retry, so `setup` refuses at once. **On B2's S3 endpoint**,
+`v0.5.0-rc1`, a key with exactly those capabilities, on a repository
+made before with the box's: `the
+repository exists; its password is needed`, then, 2.7 s from the
+start, exit 1:
+
+```
+hotserve-backup: restic could not open the repository with its lock (exit 1): Save(<lock/…>) failed: client.PutObject: not entitled unable to create lock in backend: client.PutObject: not entitled
+```
+
+The credential file stayed byte for byte as before, and `status`
+unchanged.
+Where a `setup` does take such a key, `setup` again with the box's own
+afterwards.
 
 ## 7. Restore onto a second box, with another uid for `hotserve`
 
 [A rebuilt box](backups.md#a-rebuilt-box) on a second fresh box — its
 Caddyfile from the box repo with `hotserve init`, as step 1 says —
-with `id -u hotserve` there not the first box's (make a system user or
-two before installing the package). Then
+with `id -u hotserve` and `id -g hotserve` there both not the first
+box's. Before installing the package, make a system user and a system
+group (`useradd --system rc-uidshift`, `groupadd --system rc-gidshift`).
+Users alone move the uid and may leave the gid where the first box had
+it: below, two users moved the uid from 988 to 986, and the gid came
+back as 989, the first box's. A restore that kept the snapshot's gid
+would then pass. Then
 `ls -ln /var/lib/liveswap/<app>/shared`: every file the second
-box's uid. **Unverified** on S3 and Hetzner; on the e2e server (uids 996
+box's uid and gid. **Unverified** on S3 and Hetzner; on the e2e server (uids 996
 and 993) the restore put back the database and the files, owned by
-993, and the first run and drill there were `ok` and proven. **On B2:**
-a second box with no box repo, its Caddyfile copied over (as the e2e
-run, L5 in the design record, before the box channel), uids 996 and
-993, the restore 10 s. The guide's way back — the box repo and
-`hotserve init` — is **unverified** on any box.
+993, and the first run and drill there were `ok` and proven. **On B2's
+own API**, `v0.3.0-rc1`: a second box with no box repo, its Caddyfile
+copied over (as the e2e run, L5 in the design record, before the box
+channel), uids 996 and 993, the restore 10 s.
+
+**On B2's S3 endpoint**, `v0.5.0-rc1`, the first box wiped and installed again
+([how](design/backups/rc-runs/v0.5.0-rc1.md#where-the-run-left-the-guide)):
+
+- **The ids:** `hotserve` 986:986, where the first box had 988:989.
+- **`hotserve init`:** run on the box repo's file at the commit the
+  first box ran, it installed the file and said the box applies
+  commits descending from that one. The repository is private, so the
+  file was copied from the first box, its checksum matched. The
+  `backup` block was added by hand after it, as the first box had it.
+- **`setup`:** found the first box's repository (`existing, id
+  b171a534`). At the first try that was only after its look met the
+  10 s clock and a password was shown: the case #388 adds a line for.
+- **The restore,** before the first deploy: 501 MiB in 17 s. Every one
+  of 43 entries was 986:986, where the snapshot holds 988:989; the
+  database passed `integrity_check` and took a write as `hotserve`.
+- **After the deploy:** the first run (42 s, its restore proof
+  included) and the drill (8.6 s) were `ok` and proven, `status`
+  exited 0, and no lock was left.
+
+The guide's way back — the box repo and `hotserve init` — works.
 
 ## 8. One drill, timed, and its egress
 
@@ -417,12 +543,21 @@ machine, a 400 MiB app took the drill 7 s, its check included. **On
 B2**, through its native API on `v0.3.0-rc1` (EU Central, an arm64
 Hetzner VPS), with 500 MB of new uploads:
 the run that uploaded them 24 s, the drill 14 s — `restore proven`,
-its check 41/52 `clean` included.
+its check 41/52 `clean` included. **On B2's S3 endpoint**,
+`v0.5.0-rc1`, on the same VPS with 501 MiB:
+the first run 26 s, the drill 7.8 s, its check `data group 45/52:
+clean` included. B2's console counts egress by the day, and
+2026-11-02's figure holds every check of that run: the drill's 501 MiB
+alone is read only on a day with nothing else.
 
 ## 9. A box set up on `b2:`, moved to B2's S3 endpoint
 
 On a box that an earlier release set up with a `b2:` repository, with
-the candidate installed: `systemctl start hotserve-backup.service`,
+the candidate installed. A release before the box channel refuses a
+Caddyfile with a `box` block or `box_webhook` (`v0.3.0-rc1`:
+`unrecognized global option: box`, `unrecognized directive:
+box_webhook`), so give it the file without them, and the candidate the
+file with them. Then `systemctl start hotserve-backup.service`,
 then `hotserve-backup status` as root. The run refuses at once, before
 any unit starts, in these words (in its journal,
 `journalctl -u hotserve-backup.service`, after the date and host):
@@ -451,7 +586,21 @@ the id beside the record unchanged), put no record aside, leave no
 lock, and write the file with `AWS_DEFAULT_REGION` and no `B2_` line;
 then a run, the drill and
 `status` as before the candidate, the last backup and the restore last
-proven going on from there: **unverified**.
+proven going on from there.
+
+**On B2**, `v0.5.0-rc1` over `v0.3.0-rc1`:
+
+- **The earlier release:** set up on `b2:<bucket>:rc-check9c`, then ran,
+  drilled and was healthy.
+- **With the candidate installed:** the run refused before any unit in
+  the words above. `status` said the last run ended early, warned of the
+  file, and exited 1. The restore and the drill refused the same way,
+  exit 1. The drill first printed the record's last proof, which is
+  accepted ([backups/README.md](../backups/README.md#accepted-residuals)).
+- **The move:** `setup` on the S3 URL found the repository (`existing,
+  id a1ec8733`, the id beside the record unchanged), left no lock, and
+  wrote the five keys with `AWS_DEFAULT_REGION` and no `B2_` line. The
+  run, the drill and `status` went on from there.
 
 ## 10. A key restricted to a name prefix
 
@@ -461,7 +610,11 @@ rc-prefix/` and the box's capabilities; from the off-box machine,
 --no-lock` with `RESTIC_REPOSITORY` at `…/<bucket>/rc-prefix`, then
 `restic init` at `…/<bucket>/rc-outside`. Backblaze documents such
 keys for its S3 API. That restic works inside the prefix and is refused
-outside it, how fast, and in what words: **unverified**.
+outside it, how fast, and in what words: **on B2's S3 endpoint**,
+`v0.5.0-rc1`,
+the four inside it worked, the check `no errors were found`; outside
+it `restic init` was refused in 0.22 s, `Fatal: create key in
+repository at …/rc-outside failed: Stat: Access Denied.`
 
 ## 11. A lock removed in the second it was written
 
@@ -479,7 +632,8 @@ restic list locks --no-lock | wc -l
 
 0 expected. A lock left behind holds off a `prune`, which ends
 `repository is already locked`, exit 11, after its `--retry-lock`,
-until `restic unlock` removes it. **Unverified.**
+until `restic unlock` removes it. **On B2's S3 endpoint**,
+`v0.5.0-rc1`: 100 commands in 3 min 25 s, and 0 locks left.
 
 ## 12. The region
 
@@ -492,5 +646,9 @@ its request and status lines,
 `grep -E '^(GET|HEAD|PUT|DELETE) |^HTTP/'`, then delete the file. With
 the region there should be no `?location` request. Without it, whether
 B2 takes the `us-east-1` signature decides whether the region is needed
-or only spares a request: **unverified**. `setup` writes the region for
-a B2 endpoint either way (check 2).
+or only spares a request. **On B2's S3 endpoint**, `v0.5.0-rc1`:
+without the region, `GET /<bucket>/?location=` answered `403` and
+every request after it `200`, so B2 takes that signature and the
+region only spares a request; with it, there was no `?location`
+request. `setup` writes the region for a B2 endpoint either way
+(check 2).

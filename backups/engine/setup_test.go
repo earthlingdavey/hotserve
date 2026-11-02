@@ -43,8 +43,10 @@ const (
 	// only on a 403, which a HEAD's, having no body, reaches it as
 	// "Access Denied." [restic 0.18.0's shape, from its source —
 	// cmd/restic/global.go's open, internal/backend/s3/s3.go's Stat and
-	// IsPermanentError, minio-go 7.0.89's 403 — not measured on any
-	// storage]. The same opening init's first step makes.
+	// IsPermanentError, minio-go 7.0.89's 403 — measured on B2's S3
+	// endpoint for a wrong secret, RC check 1 of v0.5.0-rc1, where restic
+	// puts "Stat(<config/>) failed: Stat: Access Denied." before it]. The
+	// same opening init's first step makes.
 	refusedAtOnce = "Fatal: unable to open config file: Stat: Access Denied.\nIs there a repository at the following location?\n" + b2Repo + "\n"
 	// A repository at B2's S3-compatible endpoint, as the guide writes one.
 	b2Repo = "s3:https://s3.eu-central-003.backblazeb2.com/hs-rc-bucket/rc-check1"
