@@ -1135,10 +1135,12 @@ What can be known to fail is refused before anything is asked for
    storage that **refuses at once** — restic's exit 1 within the clock:
    B2's own API answered a wrong key or a bucket the key may not reach
    with `401` through restic's own `b2:` backend [measured, on real B2,
-   RC check 1; B2's S3 endpoint, which the box uses, **unverified**];
+   RC check 1 of `v0.3.0-rc1`];
    S3 an `AccessDenied`, which restic 0.18.0's
    retry wrapper treats as permanent under its default feature set
-   [read in its source, `internal/backend/s3`; not measured] — is said
+   [read in its source, `internal/backend/s3`; measured on B2's S3
+   endpoint, which the box uses: a wrong secret, `Stat: Access
+   Denied`, three askings in 0.66 s, RC check 1 of `v0.5.0-rc1`] — is said
    in restic's own words ("restic could not open the repository (exit
    1): …"; any other exit 1 within the clock is said the same, with
    restic's words, see the residuals), and
@@ -1251,9 +1253,10 @@ What can be known to fail is refused before anything is asked for
      unlocking:` one. A key that may write
      and not delete (narrower than the guide's policies, which grant
      the delete — on B2 restic's S3 backend deletes by name, which
-     leaves a hide marker, and whether `writeFiles` covers that without
-     `deleteFiles` is **unverified**: Backblaze's own page says so in
-     prose and lists Delete Object under `deleteFiles` in its table)
+     leaves a hide marker, which `writeFiles` covers without
+     `deleteFiles` [measured, B2's S3 endpoint, RC check 3 of
+     `v0.5.0-rc1`], as Backblaze's own page says in prose, though its
+     table lists Delete Object under `deleteFiles`)
      would leave one more lock with every run after, which restic
      never passes by itself [M75]: the first prune, or a check from
      elsewhere, would exit 11 for good. The refusal names both causes
@@ -1274,8 +1277,9 @@ What can be known to fail is refused before anything is asked for
    - exit 1 — a write refused (S3's 403 [M3]), a storage gone, a read
      that failed — or the clock, where restic retries (B2's own API
      answered such a key `401`, which restic's own `b2:` backend
-     retried for a quarter of an hour [measured, RC check 6]; what
-     B2's S3 endpoint answers it is **unverified**): one neutral line. Exit 1 is "restic could not open the repository with
+     retried for a quarter of an hour [measured, RC check 6 of
+     `v0.3.0-rc1`]; B2's S3 endpoint answers it `client.PutObject: not
+     entitled`, at once [measured, RC check 6 of `v0.5.0-rc1`]): one neutral line. Exit 1 is "restic could not open the repository with
      its lock (exit 1): …" with all restic said, cleaned — restic
      prints hint lines last [M4 case G], and the cause is before them —
      less restic's retry lines ("… returned error, retrying after …")
@@ -1385,7 +1389,8 @@ the file is written whole, without the old `B2_ACCOUNT_*` lines. The
 URL names the same objects: restic's two backends lay a repository out
 alike under the bucket and path, which the refusal carries over as
 restic's b2 backend reads them (`b2AsS3`, `backups/engine/setup.go`).
-That a real bucket answers both with the one id is **unverified**.
+A real bucket answered both with the one id [measured, B2, RC check 9
+of `v0.5.0-rc1`: `existing, id a1ec8733`, as before the move].
 
 With the package, the first backup runs from `hotserve-backup.timer`
 within the hour and ten minutes of setup ("On a fresh box"), or now
