@@ -274,6 +274,7 @@ looking for a repository at s3:https://s3.example.com/my-backups (up to 10s)
 no repository answered within 10s: a bucket not made yet, a wrong key and a wrong host look alike here; a new repository will be made with the password shown next
 Repository password (new): <52 characters>
 Store it off the box now, with the repository URL, s3:https://s3.example.com/my-backups, and the storage key: with those three, `restic -r <url>` reads every backup from any machine; without the password nothing can.
+The look could not tell whether a repository is there: store this password beside any you already keep for this repository, never in its place; if one is there, setup says so next and asks for its own.
 Type stored to go on: stored
 repository ready: s3:https://s3.example.com/my-backups (new, id e9157010)
 credentials: /etc/hotserve-backup/repository.env (root, 0600)
@@ -286,7 +287,11 @@ standing — on B2 a wrong key was refused at once (`401`): on
 shown, then the init refused; the current look refuses it there and
 shows none, **unverified** on B2; a setup that ends early says
 whether to keep that password or discard it
-([backups/README.md](../backups/README.md#setup)). Then
+([backups/README.md](../backups/README.md#setup)). A bucket that is not
+there, which the key may not make — a key made as
+[Before you start](#before-you-start-the-bucket-and-what-it-protects)
+says never may — ends `setup` at once, naming the bucket: check its
+name in the URL, or make it first. Then
 [look from your own machine](#look-from-your-own-machine) with the URL,
 the key and the password as you stored them: a password copied wrong is
 otherwise found only when the box is gone.

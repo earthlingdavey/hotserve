@@ -31,7 +31,13 @@ const (
 	// the config answers [measured: a local repository].
 	alreadyThere = `{"message_type":"exit_error","code":1,"message":"Fatal: create repository at s3:http://e2e-s3:9000/box failed: Fatal: unable to open repository at s3:http://e2e-s3:9000/box: config file already exists\n"}` + "\n"
 	wrongKey     = `{"message_type":"exit_error","code":1,"message":"Fatal: create repository at s3:http://e2e-s3:9000/box failed: Fatal: unable to open repository at s3:http://e2e-s3:9000/box: client.BucketExists: The request signature we calculated does not match the signature you provided. Check your key and signing method.\n"}` + "\n"
-	configJSON   = `{"version": 2, "id": "` + repoID + `", "chunker_polynomial": "27ec33083365e9"}` + "\n"
+	// A bucket not there, and a key that may not make it: restic's S3
+	// backend tries to make the bucket [measured, B2's S3 endpoint, RC
+	// check 1].
+	bucketNotThere = `{"message_type":"exit_error","code":1,"message":"Fatal: create repository at s3:http://e2e-s3:9000/box failed: Fatal: unable to open repository at s3:http://e2e-s3:9000/box: client.MakeBucket: not entitled\n"}` + "\n"
+	configJSON     = `{"version": 2, "id": "` + repoID + `", "chunker_polynomial": "27ec33083365e9"}` + "\n"
+	// What a look that could not tell adds to the password's showing.
+	unsureStore = "The look could not tell whether a repository is there: store this password beside any you already keep for this repository, never in its place; if one is there, setup says so next and asks for its own."
 	// What the look's `cat config` (no --json) says on stderr where the
 	// storage refuses the key at once: over S3 restic gives up at once
 	// only on a 403, which a HEAD's, having no body, reaches it as
@@ -242,6 +248,10 @@ func TestAFreshSetupShowsThePasswordBeforeAnythingIsWritten(t *testing.T) {
 	}
 	if !strings.Contains(m.saidAll(), "looking for a repository at s3:http://e2e-s3:9000/box") {
 		t.Fatalf("said:\n%s", m.saidAll())
+	}
+	// The look said none: no word of a repository that may be there.
+	if strings.Contains(m.saidAll(), unsureStore) {
+		t.Fatalf("a look that found none was said unsure:\n%s", m.saidAll())
 	}
 	if got, want := m.askedAll(), "Storage key id (AWS_ACCESS_KEY_ID): \nsecret:Storage secret key (AWS_SECRET_ACCESS_KEY): \nType stored to go on: "; got != want {
 		t.Fatalf("asked:\n%s\nwant:\n%s", got, want)
@@ -1215,6 +1225,12 @@ func TestWhereTheProbeCannotTellInitAnswers(t *testing.T) {
 				if !strings.Contains(m.saidAll(), "the repository exists; its password is needed (the one shown above is not it)") {
 					t.Fatalf("said:\n%s", m.saidAll())
 				}
+				// Shown on a look that could not tell, the password is
+				// to be stored beside the repository's own, not over it
+				// [RC check 7: a rebuilt box, B2 slow to answer].
+				if !strings.Contains(m.saidAll(), unsureStore) {
+					t.Fatalf("said lacks %q:\n%s", unsureStore, m.saidAll())
+				}
 				if !strings.Contains(m.saidAll(), "the password shown above was never used: discard it") {
 					t.Fatalf("the unused password was not said dead on the way out:\n%s", m.saidAll())
 				}
@@ -1394,6 +1410,42 @@ func TestFilesOfARepositoryWithNoConfigEndSetupAtOnce(t *testing.T) {
 		}
 		m.asked = nil
 		nothingWritten(t, b, m)
+	}
+}
+
+// A bucket not there, with a key that may not make it, is said as that:
+// setup ends at once, naming the bucket and not the key — asked for
+// again, the key is refused the same — and the password shown was never
+// used. On B2's S3 endpoint the look says none at once (exit 10), so a
+// password has been shown [RC check 1].
+func TestABucketNotThereEndsSetupAtOnceNamingIt(t *testing.T) {
+	b, m := setupBox(t)
+	b.outcome["init"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
+	b.initOut, b.initErr = "", bucketNotThere
+	m.answers = []string{"AKIDX", "the-secret", "stored"}
+	_, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
+	if err == nil || !strings.Contains(err.Error(), "client.MakeBucket: not entitled; the storage has no bucket by that name for this key, and the key may not make one: check the bucket's name in the URL, or make the bucket first (the guide, \"Before you start\"); then run setup again") || !strings.HasSuffix(err.Error(), "the password shown above was never used: discard it") {
+		t.Fatalf("err = %v", err)
+	}
+	if got, want := b.roles(), "plan probe init"; got != want || strings.Contains(m.saidAll(), "the key id and secret again") {
+		t.Fatalf("units %s; said:\n%s", got, m.saidAll())
+	}
+	m.asked = nil
+	nothingWritten(t, b, m)
+	// Read after the URL's echo, at the opening: restic's words inside
+	// the URL are not its answer, and another reason there is the key's.
+	for _, tc := range []struct {
+		message, repo string
+		want          bool
+	}{
+		{"Fatal: create repository at s3:x failed: Fatal: unable to open repository at s3:x: client.MakeBucket: not entitled", "s3:x", true},
+		{"Fatal: create repository at s3:x failed: Fatal: unable to open repository at s3:x: client.BucketExists: Access Denied.", "s3:x", false},
+		{"Fatal: create repository at s3:http://h/client.MakeBucket: x failed: Fatal: unable to open repository at s3:http://h/client.MakeBucket: x: client.BucketExists: signature", "s3:http://h/client.MakeBucket: x", false},
+		{"Fatal: create key in repository at s3:x failed: Fatal: unable to open repository at s3:x: client.MakeBucket: not entitled", "s3:x", false},
+	} {
+		if got := noBucket(tc.message, tc.repo); got != tc.want {
+			t.Errorf("%q: no bucket %v, want %v", tc.message, got, tc.want)
+		}
 	}
 }
 
