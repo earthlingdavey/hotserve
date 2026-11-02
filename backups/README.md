@@ -274,10 +274,11 @@ line.
   read its environment nor signal it. The one capability lets it read
   files it does not own, in a view that holds one app and nothing else.
   The run passes the *path* of `repository.env` to systemd, which reads
-  it as root for each restic unit; the run itself reads it only for the
-  repository it names, to refuse before any unit what `setup` refuses
-  (`repositoryInUse`, "What it refuses"). `setup` is its one writer,
-  and `status`, as root, its one other reader.
+  it as root for each restic unit; the run itself reads it only to
+  refuse, before any unit, a file the manager would refuse whole, a
+  `RESTIC_REPOSITORY_FILE` and a `b2:` repository (`repositoryInUse`) —
+  not every repository `setup` refuses (Accepted residuals). `setup` is
+  its one writer, and `status`, as root, its one other reader.
 - **What an operator or an app wrote stays off command lines**, with
   one exception. Units get the app's declaration as a root-written file
   bound at a fixed path, and declared paths as bind sources. Every
