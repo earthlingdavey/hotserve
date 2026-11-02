@@ -1146,7 +1146,9 @@ What can be known to fail is refused before anything is asked for
    with init's refusals below, before any password is made: init's
    first step is the same opening, and would be refused the same. Where
    restic is still **retrying at the clock** — S3 on a bucket not there
-   yet, a wrong secret or a host that does not resolve [measured] — the
+   yet, a wrong secret or a host that does not resolve [measured, on
+   rclone's S3 server; B2's S3 endpoint says a bucket not there at once,
+   as none (exit 10), and init meets it, below: RC check 1] — the
    look is given up on, said as such ("no repository answered within
    10s": the three look alike there), and init answers instead. A look
    that failed on its own account — a unit the manager could not set
@@ -1156,7 +1158,13 @@ What can be known to fail is refused before anything is asked for
    bytes, base32, 52 characters — and **shown**, once, with what to
    store beside it (the repository URL and the storage key: with those
    three `restic -r <url>` reads every backup from any machine;
-   without the password nothing can); the operator types `stored` to
+   without the password nothing can); where the look could not tell,
+   it is to be stored beside any password already kept for that
+   repository, never in its place, since a repository may be there
+   after all (a rebuilt box's, on a storage slow to answer: B2's S3
+   endpoint, the look stopped at its clock once in four [measured, RC
+   check 7]) and the password kept is then the
+   only way to read it; the operator types `stored` to
    go on, and gets one more asking for any other word. Then
    `restic init --json` runs with that password, under a two-minute
    clock; after 20 seconds a person waiting is told what for, and what
@@ -1183,8 +1191,15 @@ What can be known to fail is refused before anything is asked for
    refused at the opening — restic's "unable to open repository at …",
    its word for a backend it could not open, which comes before anything
    of a repository is written (restic 0.18.0, `cmd/restic/global.go`):
-   a key refused, a bucket out of reach, a host that does not resolve;
-   once an init has got past the opening — "create key in repository
+   a key refused, a bucket out of reach, a host that does not resolve.
+   One of those ends setup at once, with no asking for the key again: a
+   **bucket not there** that the key may not make, restic's S3 backend's
+   `client.MakeBucket: …` after its echo of the URL — on B2's S3
+   endpoint `not entitled`, after a look that said none at once (exit
+   10), so the password has been shown [measured, RC check 1] — since
+   the guide's keys never may make a bucket and a key typed again is
+   refused the same; setup names the bucket, to check its name or make
+   it first. Once an init has got past the opening — "create key in repository
    at … failed", Ctrl-C or the clock during init, any failure after —
    "keep the password shown above: restic init ran with it, and may
    have made the repository", since an init still running, or one that
@@ -1466,6 +1481,7 @@ severity × occurrence × detection, then the fix's size and risk.
 | The guide's B2 timeline sort, `sort -t_ -k9,9` ("After an attack"), assumes the ninth `_` field of every B2 file id is the millisecond upload stamp: generalised from the lines measured in `rc-runs/rc-results/L10-timeline-sort.out`, while Backblaze calls file ids opaque. An id of another shape mis-sorts the listing and gives a wrong copy moment. And the timeline gives the moment to the second, while the guide has no step for a sub-second `version_at` when the last run's write and the attack's first fall in one second. | docs/backups.md, "After an attack", the timeline line | 3 | 2 | 3 | 18 | size 1, risk 2 (text no test checks) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-25, PR #356; D re-scored from 1 the same day). A moment too late is loud when the copy's `restic check --no-lock --read-data` finds errors, but not when the attack began by hiding the newest snapshot: the copy after that hide checks clean and is short of it. The guide's step for that, beside the check: for a moment from the bucket's history, each app's newest snapshot in the copy must be the one `hotserve-backup status` named before the attack (`snapshot <id>` on its `last complete backup` line, `backups/status/status.go`); one missing means an earlier moment. D is 3, not 1: the step is loud only where the reader holds that id from before the attack, and without it the copy is a plausible, clean, older backup. |
 | The look's container line (docs/backups.md, "Look from your own machine": `apt-get install -y restic ca-certificates`) and the RC page's off-box machine (release-candidate.md, "install `ca-certificates` beside `restic` and `rclone`") give no `apt-get update` before the install; a fresh `debian:13` image has no package lists, so apt fails. | docs/backups.md, the look; docs/release-candidate.md, the off-box machine | 2 | 5 | 1 | 10 | size 1, risk 2 (text no test checks) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-25, PR #356). Rule 2 holds: apt fails at once, naming the package it cannot locate, and the B2 key recipe in "Before you start" shows `apt-get update &&` before its own install. |
 | The tutorial's backups bullet (`docs/after-first-deploy.md`) names no command as root's: it links to "Who runs these". An administrator in `adm` alone who goes straight to "Set it up" runs `setup` as themselves. | `docs/after-first-deploy.md`, "Backups" | 2 | 5 | 1 | 10 | size 1, risk 2 (a list of root's commands in the bullet, which round 2 of #323's self-review found narrower than the guide's) | Rule 2 holds: `setup` refuses before anything else, "a setup starts system units, which needs root: run the same command again as root", and "Set it up" opens "As root on the box". Under rule 3 the product is under 20 (2026-10-28, #323 self-review round 3). |
+| A drill refused before any unit — a `b2:` repository, say — still prints each app's last proof from the record in a drill's own words, `example: restore proven: snapshot …, on <its date>`, before the refusal and exit 1 [RC check 9, `v0.5.0-rc1`]. | `drill`, `reportDrill` (cmd/hotserve-backup) | 2 | 5 | 1 | 10 | size 2, risk 2 | The refusal follows at once, the exit is 1, and the line carries the proof's own date, not the drill's. The report is wanted for a drill that ran and failed part way; telling that from a refusal before any unit needs the engine to say which, one more state for a message. |
 
 ## Development
 

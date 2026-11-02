@@ -840,6 +840,7 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 		if err != nil {
 			return nil, s.err(err)
 		}
+		unsure := false
 		switch {
 		case found == lookRefused:
 			// restic gave the look up at once and said why — the storage
@@ -876,6 +877,7 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 			// answers at once, and says which.
 			term.Say(fmt.Sprintf("no repository answered within %s: a bucket not made yet, a wrong key and a wrong host look alike here; a new repository will be made, and the password shown above still applies", setupProbeClock))
 		default:
+			unsure = true
 			term.Say(fmt.Sprintf("no repository answered within %s: a bucket not made yet, a wrong key and a wrong host look alike here; a new repository will be made with the password shown next", setupProbeClock))
 		}
 		if exists || rep.New {
@@ -893,6 +895,14 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 				keep = "the repository URL, " + o.Repository + ", the storage key, and B2's region, " + r + ", set as AWS_DEFAULT_REGION wherever restic runs: with those four"
 			}
 			term.Say("Store it off the box now, with " + keep + ", `restic -r <url>` reads every backup from any machine; without the password nothing can.")
+			if unsure {
+				// A repository may be there after all — a rebuilt box's, on a
+				// storage slow to answer [RC check 7, B2: once in four looks]
+				// — and its password, in the store this one goes to, is then
+				// the only way to read it: an entry for the URL updated with
+				// this one would lose it.
+				term.Say("The look could not tell whether a repository is there: store this password beside any you already keep for this repository, never in its place; if one is there, setup says so next and asks for its own.")
+			}
 			if err := s.confirmStored(ctx); err != nil {
 				return nil, s.err(err)
 			}
@@ -967,6 +977,13 @@ func Setup(ctx context.Context, cfg Config, r Runner, o SetupOptions) (*SetupRep
 				// nothing was written with the password, and this
 				// attempt says nothing of an earlier one's.
 				s.initRan = ranBefore
+				if noBucket(message, o.Repository) {
+					// No bucket by that name, and a key that may not make
+					// one — the guide's keys never may: the key asked for
+					// again is refused the same, so setup ends here, naming
+					// the bucket rather than the key.
+					return nil, s.err(fmt.Errorf("%w; the storage has no bucket by that name for this key, and the key may not make one: check the bucket's name in the URL, or make the bucket first (the guide, \"Before you start\"); then run setup again", failure))
+				}
 			}
 			// What the storage says of the key, the host or the bucket is
 			// a mistake in what was typed, as often as not: the key is
@@ -1749,6 +1766,19 @@ func repositoryExists(message string) bool {
 // repository exists shares the head, and is read first.
 func backendRefused(message string) bool {
 	return strings.HasPrefix(strings.TrimPrefix(message, "Fatal: "), "create repository at ") && !repositoryExists(message)
+}
+
+// noBucket reads restic's word for a bucket not there and a key that
+// may not make it, out of an init refused at the opening: restic's S3
+// backend makes a bucket it does not find, and the storage's refusal
+// follows the backend's own echo of the URL as "client.MakeBucket: …"
+// [measured, B2's S3 endpoint, RC check 1: "client.MakeBucket: not
+// entitled"; there the look says exit 10 at once, so the password has
+// been shown]. Read after that echo, so that the words inside the URL
+// are not taken for restic's.
+func noBucket(message, repository string) bool {
+	_, reason, ok := strings.Cut(message, "unable to open repository at "+repository+": ")
+	return backendRefused(message) && ok && strings.HasPrefix(reason, "client.MakeBucket: ")
 }
 
 // repositoryHalfThere reads restic's word for files of a repository
