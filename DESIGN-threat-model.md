@@ -16,8 +16,10 @@ work in the wider attack surface rather than restating it.
 Scope: a single Debian 13 box running `hotserve` (a Caddy distribution)
 as the `hotserve` system user, supervising deployed apps as transient
 systemd units under the hotserve user's own service manager via
-liveswap's `systemdRunner` (liveswap/runner_systemd.go). Multi-node,
-Windows, and macOS-as-a-server are out of scope by product design.
+liveswap's `systemdRunner` (liveswap/runner_systemd.go). Backups add
+one place off the box: the bucket their repository lives in
+("Backups"). Multi-node, Windows, and macOS-as-a-server are out of
+scope by product design.
 
 ## Assets (what an attacker is after), ranked
 
@@ -27,12 +29,26 @@ Windows, and macOS-as-a-server are out of scope by product design.
    namespaces ("The shared-UID rule"). Still on disk wherever Caddy
    persists config (`/var/lib/hotserve/caddy/autosave.json`) — a
    filesystem route, closed by the sandbox view.
-2. **TLS private keys** — `/var/lib/hotserve/caddy/**`, mode `0750`
+2. **The backup repository's credential** —
+   `/etc/hotserve-backup/repository.env`, root 0600 in a root 0755
+   directory: the repository URL, its password and the storage key.
+   With the three, restic reads every app's declared data and all its
+   history, what an app has since deleted included, from any machine
+   (docs/backups.md, "Before you start"); on B2 the key reads old
+   versions too, so what a prune removed stays readable for the 180
+   days the bucket keeps it. The password outlasts the box: restic
+   changes a master key only through a new repository. Ranked under
+   the ACME tokens and above the TLS keys because it is every app's
+   data, past and present, readable from anywhere. The hotserve uid
+   cannot read it: root reads the file, and the `hotserve-backup` uid
+   holds the values while a job runs ("Backups"). It holds no env
+   file: a backup holds what each app declares under its `shared/`.
+3. **TLS private keys** — `/var/lib/hotserve/caddy/**`, mode `0750`
    owned by `hotserve`.
-3. **Admin API socket** — `/run/hotserve/admin.sock` (the `admin`
+4. **Admin API socket** — `/run/hotserve/admin.sock` (the `admin`
    directive, packaging/Caddyfile); reconfigures the whole server.
    Gated on being the `hotserve` user, not on the network.
-4. **Per-app secrets** — an app's own env vars / `env_file`
+5. **Per-app secrets** — an app's own env vars / `env_file`
    (`/etc/hotserve/*.env`). Legitimately reachable by that app; the
    goal is to keep them from *siblings*. From accounts beyond the
    file's owner and group it is the file's mode that keeps them (0640
@@ -46,7 +62,7 @@ Windows, and macOS-as-a-server are out of scope by product design.
    encrypted in that repository's history, which the box's key for
    secrets (`/etc/hotserve/age/identity`, root 0600 in a 0700 root
    directory) and each reader's key decrypt.
-5. **The box's configuration at rest** — `/etc/hotserve/Caddyfile`:
+6. **The box's configuration at rest** — `/etc/hotserve/Caddyfile`:
    which repository may deploy each app, each app's command and
    flags, which hosts are served, and who may change the file itself.
    Root-owned, 0644; written only by root — `hotserve init`, the `box`
@@ -59,9 +75,9 @@ Windows, and macOS-as-a-server are out of scope by product design.
    upgrade into overwriting the box's config. A
    writer here outlasts a restart, which is what makes it an asset
    distinct from the admin socket (whose changes do not).
-6. **Sibling app data** — `/var/lib/liveswap/<app>/{releases,shared,state.json}`.
-7. **System integrity** — root, persistence, other system services.
-8. **Availability** — serving traffic and the deploy pipeline.
+7. **Sibling app data** — `/var/lib/liveswap/<app>/{releases,shared,state.json}`.
+8. **System integrity** — root, persistence, other system services.
+9. **Availability** — serving traffic and the deploy pipeline.
 
 There is no deploy secret on the box. Deploys are authenticated by a
 verified JWT (CI OIDC or a local public key); the verifier holds only
@@ -735,12 +751,239 @@ changes:
   old stays in history, so a value that must stay secret is changed
   too (box/DESIGN-box.md, Open questions).
 
+### Backups — `backups/`
+
+`hotserve-backup` copies what each app's `backup` block declares — its
+SQLite databases and the files under its `shared/` — into one restic
+repository off the box every hour, and drills a restore of every app
+each week. [backups/README.md](backups/README.md) is authoritative for
+its behaviour and [docs/backups.md](docs/backups.md) for the bucket and
+the operator's part; this section places them. Status: built on the
+`backup` branch, released when it merges into `main`, which this
+section gates (#172). It adds no entry point: it is a program of its
+own, run by root's timers and root's hand, and the server's one use of
+it is the box handler's `hotserve-backup validate`. What it adds is
+asset 2, a root service that handles every app's data, and a bucket
+whose rules the provider enforces.
+
+**Who runs what** (backups/README.md, "Who runs as what", the one
+table). The run is root, with `CAP_SYS_ADMIN`, `CAP_DAC_READ_SEARCH`,
+`CAP_CHOWN` and `CAP_FOWNER` of root's and nothing else, in the host's
+mount and PID namespaces, since the manager has to see its mounts. It
+plans from `/etc/hotserve/Caddyfile` — the file, not the running
+server — and does every step as a transient unit with a
+deny-by-default view:
+
+- what parses an app's bytes — `sqlite3`'s copy and check, a restore's
+  check and install — runs as `hotserve`, in user and PID namespaces of
+  its own, with no network and no credential, seeing one app;
+- what holds the credential — restic, in every unit that runs it — runs
+  as `hotserve-backup` and sees nothing of an app, or that app's
+  declared paths read-only (the upload, with `CAP_DAC_READ_SEARCH`), or
+  one empty directory (the fetch);
+- the plan unit, which runs the adapter on the file, runs as
+  `hotserve-backup` in namespaces of its own, with no network and no
+  credential, and sees `/etc/hotserve` read-only;
+- root itself opens an app's paths as `O_PATH` only, refusing a link
+  anywhere on the way, binds what it opened, chowns a fetch to
+  `hotserve` by name in a view of nothing else, and starts units. It
+  reads the credential file only for which repository it names; the
+  manager reads it, as root, for each restic unit.
+
+**The bucket** (docs/backups.md, "Before you start"). Versioned, with
+one rule: old versions are removed after 180 days. Two keys, the box's
+and the off-box machine's, neither able to destroy a version: on B2 an
+application key for the bucket alone with `listBuckets`, `listFiles`,
+`readFiles` and `writeFiles`, never `deleteFiles`; on AWS S3 a user
+whose policy denies `s3:DeleteObjectVersion` and every change to the
+bucket. Nothing on the box forgets, prunes or repairs: retention runs
+off the box, with the second key (backups/README.md, "Retention"). This
+is option A, the owner's choice (docs/design/backups/plan.md, PR 8),
+and its claim is the guide's: nothing the box or the off-box machine
+holds can destroy a backup, and a deletion or overwrite made with
+either key can be undone for 180 days, if someone looks from off the
+box at least once every 90.
+
+**The principals.**
+
+- **Root**, reached over SSH by key only (docs/hardening.md, step 1), is
+  the trusted base. It runs `setup`, `restore`, `run`, `sweep`, the
+  drill on demand, and every `systemctl` line that starts, stops,
+  enables or disables a backup unit (docs/backups.md, "Who runs
+  these"); the timers run `run` and the drill as root services
+  (backups/README.md, "On a fresh box"). Each starts system units, and
+  `restore --to` is root-equivalent (Residual risks), so no role short
+  of root holds any of them: a two-tier sudoers would be a
+  security-model change (the owner, F1 of the RC docs run,
+  docs/design/backups/plan.md). An administrator whose `sudo` is
+  root's is root. `setup` is a person's: it shows the repository
+  password on its terminal.
+- **A signer of the box repository** chooses what is backed up. A
+  `backup` block reaches `/etc/hotserve/Caddyfile` by a signed push, as
+  the rest of the file does ("Config webhook"): the handler, as the
+  hotserve uid, runs `hotserve-backup validate` on it after `hotserve
+  validate` (box/validate.go), and the applier proves it and runs
+  neither. On a box with no box repository, root edits the file by
+  hand. Either way the run leans on no earlier check: the plan unit
+  adapts the file with no environment, and the run validates every
+  field of the plan again (backups/README.md, "A run", step 3, and "The
+  Caddyfile is read without the server's environment"). A signer is the
+  operator ("A signer's laptop is the operator").
+- **The administrator** (optional; docs/hardening.md, step 3) is in
+  `adm` alone, with no `sudo`. They read the journal — restic's stderr
+  among it, which names an app's files — and run `hotserve-backup
+  status` and `validate`, which need no privilege: the record,
+  `/var/lib/hotserve-backup/status.json`, is world-readable and holds
+  no secret (backups/README.md, "Status"). They choose nothing and
+  cannot read the credential. An agent fits here, never in root's role.
+- **The `hotserve-backup` uid** runs every restic unit, with the
+  credential in its environment while the unit runs: whoever is that
+  uid reads it there. It is a system account with no shell and no home,
+  made by the package or by `setup` with the comment
+  `made-by-hotserve`; any other account of that name is refused before
+  any unit (backups/README.md, "What it refuses"). The server and the
+  apps can neither read restic's environment nor signal it.
+- **The storage provider** holds the repository, encrypted under its
+  master key: without the password nothing reads it. It enforces the
+  keys' limits, versioning and the rule.
+- **The off-box machine**, the operator's own, holds the second key, for
+  retention and for the look — `restic snapshots` and `restic check
+  --read-data` (docs/backups.md, "Look from your own machine") — the one
+  view of the backups the box does not author: whoever has the box can
+  make its own `status` say anything. Somewhere off the box, too, the
+  repository URL, the box's key and the password are kept, as `setup`
+  asks: asset 2 whole.
+
+**What each attacker gains.**
+
+- **T1** reaches its own app's backup and nothing more. What it writes
+  under its declared paths is what the next snapshot holds; earlier
+  snapshots it cannot change, since it holds no key and nothing on the
+  box forgets or prunes. It cannot aim the backup elsewhere: a declared
+  path is the app's to replace with a link while it runs, so the run
+  opens each one itself, refusing a link anywhere on the way, binds
+  what it opened (`mount(2)` from `/proc/self/fd/<n>`), and refuses a
+  `shared/` that is not the `hotserve` user's. Its bytes are parsed
+  only by units that hold nothing: a FIFO in a database's place holds
+  `sqlite3` five minutes at most (backups/README.md, "Databases"), and
+  a restore puts a link back as a link, never followed, and no setuid
+  bit. What it can spend is time and money: nothing bounds an upload,
+  or a copy once begun, so an app that grows its data without limit
+  holds the run lock — its siblings' backups wait, and `status` exits 1
+  from the third hour — and grows the provider's bill. Its bytes become
+  root's configuration only where root restores them `--to` such a
+  directory (Residual risks).
+- **T5** gains nothing ("What is unchanged", below).
+- **T6.** A push credential or an OIDC holder lands only files a signer
+  signed ("Config webhook"), and gains nothing more here. A signer
+  chooses what is backed up: a signed file can add a declaration,
+  narrow one, or drop them all. A dropped block is said once, by the
+  run that finds it gone and by `status` until the next run, and only
+  for an app the record held a snapshot of; a path dropped from a block
+  still declared is not said (backups/README.md, "A run" and Accepted
+  residuals). What is in the repository stays: the box cannot remove
+  it, and the look sees the snapshots stop. A declaration stays inside
+  its app's `shared/`, whoever signed it: the run refuses an absolute,
+  unclean or escaping path, as `hotserve validate` does
+  (liveswap/README.md, "Declaring backups"). The credential does not
+  ride the channel: `setup` writes it at a terminal into
+  `/etc/hotserve-backup`, outside the channel's `/etc/hotserve`
+  (backups/README.md, "Setup"). A signer's software key is the box all
+  the same ("Config webhook").
+- **The administrator** gains what the journal and the record show —
+  app names, data paths, snapshot ids, restic's words, an app's file
+  names — and nothing to act with: every command that changes a backup
+  is root's, and none they run reads the credential.
+- **A stolen box key**, without the password, can list, read, overwrite
+  and delete by name, and destroys no version: a delete by name only
+  hides, and a version deleted by its id is refused. An attack with the
+  box's key destroyed nothing through either of B2's APIs; the next run
+  failed `exit 10`, and `status` exited 1 (measured through B2's S3
+  endpoint, `v0.5.0-rc1`, 2026-11-02). A quieter attack, one pack
+  overwritten, left the hourly runs `ok` and only the next drill saying
+  so (measured; docs/backups.md, "After an attack"): the drill fetches
+  each app's newest snapshot whole and checks one fifty-second of the
+  data a week, and the look's `restic check --read-data` reads all of
+  it. With the password as well — and the box's own file holds both —
+  it reads every backup, on B2 the old versions too (`listFiles`,
+  `readFiles`), and can write a snapshot the box's restore and drill
+  take for its own: they choose by host, tag and time, which the writer
+  sets (`newest`, backups/engine/engine.go); on a box with its record, a
+  restore names the last snapshot a run ended `ok` on when the newest is
+  another (backups/README.md, "A restore", step 2). The way back is a
+  copy from a moment before its first write (docs/backups.md, "After an
+  attack").
+- **A stolen off-box key** has the same capabilities, and so the same
+  gains. It is also the key that prunes, so its deletions look like a
+  prune — and `prune` too only hides (measured, `v0.5.0-rc1`); the
+  bucket's history, against when you last pruned, tells them apart
+  (docs/backups.md, "After an attack").
+- **A stolen provider account** — its login or its master key — can
+  destroy everything, and no key on the box or the off-box machine is
+  it: the guide gives the login a second factor, keeps its keys off the
+  box, and has the master key regenerated once it has been typed to
+  make the two keys (docs/backups.md, "Before you start"). Recovery from
+  the other attackers needs no account key: a copy from the attacked
+  bucket's history into a new bucket, made with a read-only key of the
+  attacked bucket and a key of the new one, held the last backup and
+  checked clean, and a box set up onto it was healthy (measured,
+  `v0.5.0-rc1`). The answer to this attacker, repository rotation under
+  a compliance Object Lock, is deferred (#169).
+
+**What is unchanged.** The serving process gains nothing. Root reads
+nothing it writes: the plan is root's file read by a unit of the backup
+account, never the running server's word — "what gets backed up is not
+for the process the internet talks to to say" (backups/README.md, "The
+Caddyfile is read without the server's environment"); root opens app
+data as `O_PATH`, a descriptor that cannot read; and what a unit under
+the hotserve uid reports — a dump's result, a check's — is decoded
+strictly against what was asked. The credential is never under its uid:
+the file is root's, restic runs as `hotserve-backup`, and the staging
+and restore directories are root's, 0700 (`open`,
+backups/engine/engine.go), reached by a unit only through a bind the
+manager makes. The hotserve uid holds every app's data already, so a
+dump or a restore under it shows it nothing new; it can change what the
+next snapshot holds, as T1 can of its own app, and no earlier one.
+Skipping the handler's `hotserve-backup validate` installs a signed
+file that the next run refuses, red and named ("Config webhook").
+hotserve validates a declaration and does nothing else with it; the
+supervisor still holds no grant.
+
+**Measured on a real provider.** `v0.5.0-rc1` ran the release-candidate
+checks on 2026-11-02 through B2's S3-compatible endpoint, the door the
+box uses, with keys holding `listBuckets`, `listFiles`, `readFiles` and
+`writeFiles` for one bucket (docs/release-candidate.md states each
+check): a delete by name only hid, and a delete of a version by its id
+was `AccessDenied` (check 3); restic left no lock, a lock held 30
+minutes included (check 3), and `prune` only hid (check 5); the attack
+and the recovery above (check 4); a read-only key was refused by
+`setup` at once (check 6); and a rebuilt box with another uid and gid
+for `hotserve` restored every file under the new ids (check 7). Not yet
+read: whether B2's rule removes a marker hidden through the S3
+endpoint, as it removed one hidden through its own API within two days
+of a one-day rule
+([RC-lifecycle-day2.out](docs/design/backups/rc-runs/RC-lifecycle-day2.out),
+`v0.3.0-rc1`) — read on 2026-11-04; it bears on how the rule ends the
+180 days for what the box hides, not on what a key can destroy within
+them; and the drill's egress on a bill (check 8), which bears on the
+drill's cost, not on a boundary. `v0.3.0-rc1` ran most of the checks
+through B2's own API, which the box no longer uses (2026-10-04 to
+10-06; docs/design/backups/rc-runs/). On AWS S3 and Hetzner nothing has
+run, and every provider claim above is unverified there; on Hetzner
+every key reaches every bucket of its project, so the keys' limits
+would be a bucket policy, not worked out (docs/backups.md, "Before you
+start").
+
+What it does not close is under Residual risks: a stolen provider
+account, root's reach after the fact, `restore --to`, the provider's
+enforcement, a directory the box is joined to, and the account's name.
+
 ### Install-time — `packaging/postinstall.sh`
 
 Runs as root at install; creates the `hotserve` user, chowns
 `/var/lib/{hotserve,liveswap}`, enables linger so the hotserve user
 manager runs without a session, and installs or replaces the starter
-config at `/etc/hotserve/Caddyfile` only as asset 5 says: where nothing
+config at `/etc/hotserve/Caddyfile` only as asset 6 says: where nothing
 stands, or while the file is byte-identical to the starter recorded in
 root's own `/var/lib/hotserve-package`. Supply-chain attacks on hotserve's own
 build land here, but they run in CI, not from a deployed app — out of
@@ -791,7 +1034,7 @@ scope for the runtime model, in scope for release signing (roadmap).
   a `deploy_trust local` key, whoever holds that key, who mints the
   `sha` claim themselves and so needs no workflow and no `main`; a
   compromised signer's laptop.
-  The asset is the configuration at rest — asset 5, the one that
+  The asset is the configuration at rest — asset 6, the one that
   survives a restart. The first can push and cannot sign: what it
   writes is refused on every later push too, until removed, and what it
   can land is only a branch a signer fully signed already (the README's
@@ -799,10 +1042,11 @@ scope for the runtime model, in scope for release signing (roadmap).
   present only what a signer signed, in order, for this box, including
   `HEAD` again after a console edit; the third is the operator, bounded
   only by a hardware key's touch. Faces `box/` ("Config webhook").
-  Once secrets ride the channel, the asset widens to asset 4's values:
+  Once secrets ride the channel, the asset widens to asset 5's values:
   any of the three that can read the repository learns the secrets'
   names and lengths, and the third, or anyone holding a reader's key
-  file, decrypts them.
+  file, decrypts them. A signer also chooses what is backed up
+  ("Backups").
 
 For **T2**: deploy-arbitrary-code (a push is contained by nothing but
 the claim scope; a pull additionally by the allowlist); deliberate
@@ -815,7 +1059,8 @@ log-amplification, bounded by the auth-failure throttle (online
 For **T5**: total, by definition — the containment question is
 root-vs-not-root, and `box` adds a root process fed by the supervisor
 to that question (the "Config webhook" section says what keeps it
-closed). For **T6**: a push credential gets a red run and a stalled
+closed); backups add root services that read nothing it writes
+("Backups"). For **T6**: a push credential gets a red run and a stalled
 `main` until its commit is removed, or a signer's own signed branch
 landed early; an OIDC holder gets a replay of `HEAD` (a `no_change`,
 or the undoing of a console edit), one bundle in `in/` at a time with
@@ -1132,6 +1377,10 @@ does not isolate the runtime.
   and the rule it holds is the same one from the other side: root
   consumes nothing from the serving process except a bundle it
   re-verifies from scratch, and the exit status of `systemctl reload`.
+  The backup run is another root service, under the same rule: it
+  reads nothing the serving process writes, and what its units under
+  the hotserve uid report is decoded strictly against what was asked
+  ("Backups").
 - **The reload's exit status is the hotserve uid's word.** The `box`
   applier marks a push `applied` on it. A compromised supervisor can
   say "loaded" and keep serving the old configuration until a restart;
@@ -1168,6 +1417,55 @@ does not isolate the runtime.
   public to anyone who can read the repository. No key involved is post-quantum
   (X25519, and RSA for `ssh-rsa` readers). Each is the price of a repository-held secret that
   no CI and no service ever sees in plaintext.
+- **A stolen provider account destroys every backup** — the limit of
+  the bucket's design (option A; docs/backups.md, "Before you start").
+  Nothing the box or the off-box machine holds can destroy a backup,
+  and a deletion or overwrite made with either key can be undone for
+  180 days if someone looks from off the box at least once every 90,
+  which leaves another 90 to recover; whoever has the box can make its
+  own `status` say anything, so the look is what counts. The account is
+  outside that: its login, with a second factor, and its keys, never on
+  the box, are the operator's to keep. Repository rotation under a
+  compliance Object Lock is the deferred answer (#169).
+- **After root on the box, the repository password and master key are
+  the attacker's.** Root had the credential file: the password and,
+  through the key files, the master key that encrypts every backup.
+  New storage keys stop the attacker writing; they do not unknow the
+  password, and restic changes a master key only by moving the data
+  into a new repository (`restic copy`) or starting one
+  (docs/backups.md, "After an attack"). Anyone who later reads the
+  bucket with them reads the backups.
+- **`restore --to` is root-equivalent for whoever chooses the
+  directory.** It writes where the name leads; the rule that every
+  directory on the way is root's and writable by no one else keeps
+  others from planting a link, not root's own directories out of
+  reach. Restored into `/etc/systemd/system/<unit>.d`, an app's files
+  became that unit's settings at the next `daemon-reload` (measured;
+  backups/README.md, "A restore"). So it is never to be granted through
+  `sudo`.
+- **The bucket's protection is the provider's to enforce.** That no key
+  can destroy a version, that a delete by name only hides, and that the
+  rule keeps old versions 180 days are the provider's behaviour:
+  measured through B2's S3 endpoint (`v0.5.0-rc1`) and on MinIO,
+  unverified on AWS S3 and Hetzner, and on Hetzner, where every key
+  reaches every bucket of its project, not worked out. Whether B2's
+  rule removes a marker hidden through its S3 endpoint is read on
+  2026-11-04.
+- **A directory the box is joined to is trusted as root is** (the
+  owner, 2026-09-27; backups/README.md, "What it refuses"). Its
+  administrator can give any account of its own the backup account's
+  uid, and whoever holds that uid is the restic process and reads the
+  credential from its environment. No check on the box stops that.
+- **The `hotserve-backup` account is trusted by name and mark.** Every
+  `setup`, run, restore and drill asks that the account of that name be
+  the one in `/etc/passwd`, resolved line for line, with hotserve's
+  comment `made-by-hotserve`, and refuses any other, a directory's
+  included (backups/README.md, "What it refuses"). Past that it is
+  trusted: what root does to it afterwards — a shell, a password, a
+  group — is root's, and whoever then logs in as it reads a running
+  restic's environment. Requiring a locked shell and no real home as
+  well was deferred by the owner (2026-09-26,
+  docs/design/backups/plan.md).
 - **Sibling localhost ports** — closed for the contract: nothing
   hotserve runs listens on a port. Each instance binds a unix socket
   in a directory of its own (`<root>/<app>/run/<nonce>/app.sock`, the
@@ -1420,3 +1718,8 @@ Dated one-liners; the full text of each is in git.
   a second process the manager spawns cannot join the unit's IPC
   namespace; the probe checks the IPC namespace and `/dev/shm` from
   inside the unit, as it does the other namespaces.
+- 2026-11-02 (#172) — Backups joined the model ("Backups"): the
+  repository credential is asset 2, and the assets after it move down
+  one; the principals, what each attacker gains, and six residual
+  risks, the stolen provider account first (#169), with what
+  `v0.5.0-rc1` measured through B2's S3 endpoint.
