@@ -8,7 +8,7 @@ go 1.27.1
 
 require (
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/godbus/dbus/v5 v5.2.3
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/smallhoursorg/hotserve/liveswap v0.0.0-00010101000000-000000000000
 	golang.org/x/sys v0.49.0
 )
