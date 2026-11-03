@@ -2,8 +2,14 @@
 
 The working notes behind `hotserve-backup`, kept as they were when the
 feature was put on ice (2026-10-09). They are a record, not a guide: the
-operator guide is [docs/backups.md](../../backups.md) and the reference is
-[backups/README.md](../../../backups/README.md).
+operator guide is [docs/backups.md](../../docs/backups.md) and the reference is
+[backups/README.md](../README.md).
+
+Moved here from `docs/design/backups/` on 2026-11-03, with
+`docs/release-candidate.md` to [release-candidate.md](../release-candidate.md):
+`docs/` is for the operator. The four links that left the record were
+rewritten for the new place; a path the notes quote in prose is the one
+that held when they were written.
 
 ## Where things stand
 
@@ -18,7 +24,7 @@ operator guide is [docs/backups.md](../../backups.md) and the reference is
   `b2:` backend, and rclone's and `backblaze-b2`'s B2 code. Since
   D13 (2026-10-23, #354) B2 is reached through restic's S3 backend at
   B2's S3-compatible endpoint and `b2:` is refused, so every check of
-  `docs/release-candidate.md` that runs restic against B2 is run again
+  `release-candidate.md` that runs restic against B2 is run again
   there, its new ones (9–12) among them; the native results stay in
   `rc-runs/` as the record they are.
 - Open work is labelled [`backup`](https://github.com/smallhoursorg/hotserve/issues?q=is%3Aopen+label%3Abackup).
@@ -33,6 +39,7 @@ operator guide is [docs/backups.md](../../backups.md) and the reference is
 | [plan.md](plan.md) | The running plan and log: decisions (D…), measurements (M…), each PR's brief and outcome, the RC run check by check. Was `PLAN-backups.md`. |
 | [pr-plans/](pr-plans/) | One plan per PR: procedures, claims traced to code, measurements, review rankings. |
 | [rc-runs/](rc-runs/) | Raw outputs of the RC checks run against real B2 through B2's native API (restic's own `b2:` backend, and rclone's and `backblaze-b2`'s B2 code), and the scripts that made them; `RC-stuck-upload.md` is #177's evidence; `rc-results/` is the RC-results PR's own. |
+| [provider-results.md](provider-results.md) | What `docs/backups.md` said about real providers up to v0.5.0 — the evidence sentences and its "Against a real provider" section — moved out of the guide on 2026-11-03. |
 | [tools/lanes.sh](tools/lanes.sh) | Runs every lane (`make test` … `make e2e`) in turn, a log and a summary line each. |
 
 Paths inside the notes that pointed at `.claude/plans/` and

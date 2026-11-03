@@ -1,6 +1,6 @@
 #!/bin/sh
 # Every lane, one after another, each logged; a summary line per lane.
-# Usage: sh docs/design/backups/tools/lanes.sh <dir for the logs>; tail <dir>/lanes.summary.
+# Usage: sh backups/design/tools/lanes.sh <dir for the logs>; tail <dir>/lanes.summary.
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 L=$1
 for lane in test lint secretscan test-integration package install-test e2e-backup e2e; do

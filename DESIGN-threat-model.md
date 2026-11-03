@@ -798,7 +798,7 @@ application key for the bucket alone with `listBuckets`, `listFiles`,
 whose policy denies `s3:DeleteObjectVersion` and every change to the
 bucket. Nothing on the box forgets, prunes or repairs: retention runs
 off the box, with the second key (backups/README.md, "Retention"). This
-is option A, the owner's choice (docs/design/backups/plan.md, PR 8),
+is option A, the owner's choice (backups/design/plan.md, PR 8),
 and its claim is the guide's: nothing the box or the off-box machine
 holds can destroy a backup, and a deletion or overwrite made with
 either key can be undone for 180 days, if someone looks from off the
@@ -815,7 +815,7 @@ box at least once every 90.
   `restore --to` is root-equivalent (Residual risks), so no role short
   of root holds any of them: a two-tier sudoers would be a
   security-model change (the owner, F1 of the RC docs run,
-  docs/design/backups/plan.md). An administrator whose `sudo` is
+  backups/design/plan.md). An administrator whose `sudo` is
   root's is root. `setup` is a person's: it shows the repository
   password on its terminal.
 - **A signer of the box repository** chooses what is backed up. A
@@ -952,7 +952,7 @@ supervisor still holds no grant.
 **Measured on a real provider.** `v0.5.0-rc1` ran the release-candidate
 checks on 2026-11-02 through B2's S3-compatible endpoint, the door the
 box uses, with keys holding `listBuckets`, `listFiles`, `readFiles` and
-`writeFiles` for one bucket (docs/release-candidate.md states each
+`writeFiles` for one bucket (backups/release-candidate.md states each
 check): a delete by name only hid, and a delete of a version by its id
 was `AccessDenied` (check 3); restic left no lock, a lock held 30
 minutes included (check 3), and `prune` only hid (check 5); the attack
@@ -962,13 +962,13 @@ for `hotserve` restored every file under the new ids (check 7). Not yet
 read: whether B2's rule removes a marker hidden through the S3
 endpoint, as it removed one hidden through its own API within two days
 of a one-day rule
-([RC-lifecycle-day2.out](docs/design/backups/rc-runs/RC-lifecycle-day2.out),
+([RC-lifecycle-day2.out](backups/design/rc-runs/RC-lifecycle-day2.out),
 `v0.3.0-rc1`) — read on 2026-11-04; it bears on how the rule ends the
 180 days for what the box hides, not on what a key can destroy within
 them; and the drill's egress on a bill (check 8), which bears on the
 drill's cost, not on a boundary. `v0.3.0-rc1` ran most of the checks
 through B2's own API, which the box no longer uses (2026-10-04 to
-10-06; docs/design/backups/rc-runs/). On AWS S3 and Hetzner nothing has
+10-06; backups/design/rc-runs/). On AWS S3 and Hetzner nothing has
 run, and every provider claim above is unverified there; on Hetzner
 every key reaches every bucket of its project, so the keys' limits
 would be a bucket policy, not worked out (docs/backups.md, "Before you
@@ -1465,7 +1465,7 @@ does not isolate the runtime.
   group — is root's, and whoever then logs in as it reads a running
   restic's environment. Requiring a locked shell and no real home as
   well was deferred by the owner (2026-09-26,
-  docs/design/backups/plan.md).
+  backups/design/plan.md).
 - **Sibling localhost ports** — closed for the contract: nothing
   hotserve runs listens on a port. Each instance binds a unix socket
   in a directory of its own (`<root>/<app>/run/<nonce>/app.sock`, the
