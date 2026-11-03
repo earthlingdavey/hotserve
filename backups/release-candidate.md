@@ -6,23 +6,24 @@ backups have met the e2e suites' S3 server, which has one key that may
 do anything, makes a bucket when asked and enforces no policy, and
 MinIO standing in for a provider's versions and key policies. These
 twelve checks are what neither can show. Run them on a fresh Debian 13
-box with the candidate's `.deb` ([Your first deploy](first-deploy.md)),
+box with the candidate's `.deb` ([Your first deploy](../docs/first-deploy.md)),
 against a bucket made for the purpose as
-[Backups](backups.md#before-you-start-the-bucket-and-what-it-protects)
+[Backups](../docs/backups.md#before-you-start-the-bucket-and-what-it-protects)
 makes it — on B2 first, the provider it is easiest on, through its
-S3-compatible endpoint — following [Backups](backups.md) as written,
-the box's commands as root ([Who runs these](backups.md#who-runs-these)).
+S3-compatible endpoint — following [Backups](../docs/backups.md) as written,
+the box's commands as root ([Who runs these](../docs/backups.md#who-runs-these)).
 On B2, check 3's first step comes before every other: its answer
 decides whether the rest apply.
 
 Each check gives its commands, and what the e2e server showed beside
 the word **unverified** where only a real provider can say. Write down
-what the provider showed; each answer replaces an **unverified** in
-[Backups](backups.md), or is a defect to fix before the release.
+what the provider showed, in the check itself; an answer the guide
+contradicts is a defect to fix before the release, and the guide's
+closing table, "What has been verified where", says what has been run.
 `v0.3.0-rc1` ran them on Backblaze B2 from 2026-10-04 to 10-06, all
 but check 5, through B2's own API. `v0.5.0-rc1` ran all twelve on
 2026-11-02 through B2's S3-compatible endpoint, the one the box uses
-([its record](design/backups/rc-runs/v0.5.0-rc1.md)), all but
+([its record](design/rc-runs/v0.5.0-rc1.md)), all but
 check 3's last step and check 8's egress, which are read later. Each
 check says what B2 showed; on AWS S3 and Hetzner every one is still
 **unverified**.
@@ -31,12 +32,12 @@ check says what B2 showed; on AWS S3 and Hetzner every one is still
 `s3:https://s3.<region>.backblazeb2.com/<bucket>`, the endpoint the
 bucket's page shows; elsewhere `s3:https://…/<bucket>`. The off-box
 machine is your own, with Debian 13's restic 0.18, awscli, rclone and
-backblaze-b2, the [look](backups.md#look-from-your-own-machine) lines'
+backblaze-b2, the [look](../docs/backups.md#look-from-your-own-machine) lines'
 first three set, and its own key; where it is a `debian:13`
-container, install `ca-certificates` beside `restic` and `rclone`: apt
+container, `apt-get update`, then install `ca-certificates` beside `restic` and `rclone`: apt
 brings it with neither (rclone only suggests it; measured: the
 `apt-get install -s` and `apt-cache depends` lines of
-[`docs/design/backups/rc-runs/rc-results/L11-tar-exclude-umask.out`](design/backups/rc-runs/rc-results/L11-tar-exclude-umask.out)),
+[`backups/design/rc-runs/rc-results/L11-tar-exclude-umask.out`](design/rc-runs/rc-results/L11-tar-exclude-umask.out)),
 and restic without it fails every https storage, `x509: certificate
 signed by unknown authority`. On B2, three more: every `aws` line
 below then goes to B2's endpoint and not to AWS, and adds no checksum
@@ -60,7 +61,7 @@ share a transcript of a check, put `<N characters>` in its place.
 On a box not set up yet, with buckets of their own — not the one
 checks 2 to 8 use (a failed setup writes nothing; one that succeeds
 leaves the box on a bucket nobody made as
-[Backups](backups.md#before-you-start-the-bucket-and-what-it-protects)
+[Backups](../docs/backups.md#before-you-start-the-bucket-and-what-it-protects)
 says, so set the box up afresh for check 2). A key made as Backups
 says should not be able to make a bucket at all:
 
@@ -131,10 +132,10 @@ with nothing written:
 
 ## 2. Set up, a first backup, status and the drill, over real TLS
 
-[Set it up](backups.md#set-it-up) as written, then
+[Set it up](../docs/backups.md#set-it-up) as written, then
 `hotserve-backup drill`, `hotserve-backup status`, and the
-[look from your own machine](backups.md#look-from-your-own-machine),
-both its lines. Each as [Backups](backups.md) shows it: **unverified**
+[look from your own machine](../docs/backups.md#look-from-your-own-machine),
+both its lines. Each as [Backups](../docs/backups.md) shows it: **unverified**
 over S3's and Hetzner's TLS; the e2e server over TLS from a private CA gave
 exactly those lines, and MinIO the look's. **On B2's own API**,
 `v0.3.0-rc1`: all of it, as written — the box's lines on an arm64
@@ -292,7 +293,7 @@ rule asks for it (expired delete markers), and Hetzner's cannot; both
 On a bucket you can spare, with a box set up on it and run at least
 once. A B2 key reaches both of B2's APIs, so from the off-box machine
 the *box's* key is tried through each, in two rclone remotes set in the
-environment as in [After an attack](backups.md#after-an-attack):
+environment as in [After an attack](../docs/backups.md#after-an-attack):
 `b2store:` over the native API (`RCLONE_CONFIG_B2STORE_TYPE=b2`, with
 `…_ACCOUNT` and `…_KEY`), and `s3store:` over the S3 endpoint
 (`RCLONE_CONFIG_S3STORE_TYPE=s3`, `…_PROVIDER=Other`,
@@ -316,7 +317,7 @@ write itself, and B2 is never asked. On AWS the box's key may not list
 versions, so the S3 line stops before it tries — #171.)
 
 Then on the box, `systemctl start hotserve-backup.service` and
-`hotserve-backup status`, and [After an attack](backups.md#after-an-attack)
+`hotserve-backup status`, and [After an attack](../docs/backups.md#after-an-attack)
 as written, with the account's key, from `status`'s minute and from the
 bucket's history, to compare; the copy is read with a new key of its
 own. That destroying is refused through both APIs for every file, that
@@ -326,8 +327,8 @@ complete backup: **unverified** on AWS S3 and Hetzner (through B2's
 own API, on `v0.3.0-rc1`, every destruction
 was refused, `401` for each of 17 files, the run failed `exit 10`,
 and two copies checked clean:
-[RC-check4-attack.out](design/backups/rc-runs/RC-check4-attack.out),
-[RC-check4-recover.out](design/backups/rc-runs/RC-check4-recover.out)). On MinIO, run after the deletion, the
+[RC-check4-attack.out](design/rc-runs/RC-check4-attack.out),
+[RC-check4-recover.out](design/rc-runs/RC-check4-recover.out)). On MinIO, run after the deletion, the
 S3 line was `AccessDenied` for each of 48 versions, all of which
 remained, and the deletion emptied the bucket's listing; the run said
 `there is no repository at the configured location (exit 10)`, and
@@ -373,10 +374,10 @@ up at the bucket's root and run once:
 
 ## 5. Retention off the box, then status on the box
 
-[Retention, off the box](backups.md#retention-off-the-box) as written,
+[Retention, off the box](../docs/backups.md#retention-off-the-box) as written,
 with the off-box machine's key; then on the box
 `systemctl start hotserve-backup.service` and
-`hotserve-backup status`. Each line as [Backups](backups.md) shows it:
+`hotserve-backup status`. Each line as [Backups](../docs/backups.md) shows it:
 on the e2e server and on B2's S3 endpoint (below), as shown there; on
 AWS S3 and Hetzner, **unverified**.
 
@@ -443,7 +444,7 @@ for byte as it was).
 
 **A key that may write and not delete** — narrower than the guide's
 policies — writes the lock file and cannot remove it; restic says so,
-`error while unlocking:`, and exits 0 ([M4](design/backups/rc-runs/rc-results/M4-unlock.out),
+`error while unlocking:`, and exits 0 ([M4](design/rc-runs/rc-results/M4-unlock.out),
 case A), and setup refuses the key, quoting restic's line, which names
 the lock (on the e2e server, behind a proxy that refuses DELETE
 alone):
@@ -460,7 +461,7 @@ machine with the same hostname too: case E); otherwise from your own
 machine once it is half an hour old (from another machine restic takes
 only those for stale), or with
 `restic unlock --remove-all` sooner, when nothing else holds the
-repository ([look from your own machine](backups.md#look-from-your-own-machine)).
+repository ([look from your own machine](../docs/backups.md#look-from-your-own-machine)).
 
 **On B2's native API**, `v0.3.0-rc1`, whose `setup` only read, took a
 console Read Only key (`repository ready … (existing, …)`). The run
@@ -488,7 +489,7 @@ afterwards.
 
 ## 7. Restore onto a second box, with another uid for `hotserve`
 
-[A rebuilt box](backups.md#a-rebuilt-box) on a second fresh box — its
+[A rebuilt box](../docs/backups.md#a-rebuilt-box) on a second fresh box — its
 Caddyfile from the box repo with `hotserve init`, as step 1 says —
 with `id -u hotserve` and `id -g hotserve` there both not the first
 box's. Before installing the package, make a system user and a system
@@ -506,7 +507,7 @@ copied over (as the e2e run, L5 in the design record, before the box
 channel), uids 996 and 993, the restore 10 s.
 
 **On B2's S3 endpoint**, `v0.5.0-rc1`, the first box wiped and installed again
-([how](design/backups/rc-runs/v0.5.0-rc1.md#where-the-run-left-the-guide)):
+([how](design/rc-runs/v0.5.0-rc1.md#where-the-run-left-the-guide)):
 
 - **The ids:** `hotserve` 986:986, where the first box had 988:989.
 - **`hotserve init`:** run on the box repo's file at the commit the
@@ -536,7 +537,7 @@ time hotserve-backup drill
 ```
 
 then the provider's egress for that hour, from its console or bill.
-Against [the drill's cost](backups.md#the-weekly-drill-and-what-it-costs),
+Against [the drill's cost](../docs/backups.md#the-weekly-drill-and-what-it-costs),
 this decides whether the lighter drill is ever needed.
 The egress on a bill: **unverified.** On the e2e server, on one
 machine, a 400 MiB app took the drill 7 s, its check included. **On
