@@ -1,5 +1,5 @@
-// A minimal hotserve app. On the box, liveswap starts it with the
-// flags in hotserve.caddy and hands it a unix socket in $SOCKET: it
+// A minimal motel app. On the box, liveswap starts it with the
+// flags in motel.caddy and hands it a unix socket in $SOCKET: it
 // never listens on a TCP port there. Locally, `deno task dev` has no
 // $SOCKET, so it serves http://localhost:8000 instead.
 import { join } from "@std/path";

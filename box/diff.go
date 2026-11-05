@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/smallhoursorg/hotserve/liveswap"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 const (

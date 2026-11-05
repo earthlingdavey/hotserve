@@ -126,7 +126,7 @@ func generate(t *testing.T, out string) {
 	}
 	const path = "box1/Caddyfile"
 	caddyfile := func(v int) string {
-		return fmt.Sprintf("# box1, version %d\n{\n\tbox {\n\t\tdeploy_trust github {\n\t\t\taudience hotserve\n\t\t}\n\t\tsigner alice@example.com ssh-ed25519 AAAA\n\t}\n}\n\ndeploy.example.com {\n\tbox_webhook\n}\n", v)
+		return fmt.Sprintf("# box1, version %d\n{\n\tbox {\n\t\tdeploy_trust github {\n\t\t\taudience motel\n\t\t}\n\t\tsigner alice@example.com ssh-ed25519 AAAA\n\t}\n}\n\ndeploy.example.com {\n\tbox_webhook\n}\n", v)
 	}
 
 	git("init", "-q", "-b", "main")

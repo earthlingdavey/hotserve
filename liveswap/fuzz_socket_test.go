@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// state.json is hotserve's own file, but it is a file, and the nonce
+// state.json is motel's own file, but it is a file, and the nonce
 // it records becomes a path component under run/ and proxy/. The
 // property: whatever the recorded string, either nonceRe refuses it
 // (and ensureRunning derives no path from it) or every path derived

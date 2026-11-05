@@ -15,7 +15,7 @@ import (
 // The webhook's responses land in CI logs — readable by everyone with
 // read access to the repository, retained, public for a public repo —
 // so nothing leaves the box through them without passing this filter.
-// hotserve is the right place for it: it built the app's environment
+// motel is the right place for it: it built the app's environment
 // from env_file, so it knows the secrets by value, and it knows which
 // high-entropy strings of its own (versions, paths) are not secrets.
 //
@@ -296,7 +296,7 @@ var shapeRules = []struct {
 	// JWT: three base64url segments, the header starting {"…
 	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b`), "[redacted:jwt]"},
 	// Authorization schemes with a token-shaped credential. The
-	// placeholder text in hotserve's own 401 body, "Bearer <jwt>", is
+	// placeholder text in motel's own 401 body, "Bearer <jwt>", is
 	// not token-shaped and passes.
 	{regexp.MustCompile(`(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{20,}`), "$1 [redacted:token]"},
 	// URL userinfo: scheme://user:pass@host.
@@ -315,7 +315,7 @@ var shapeRules = []struct {
 	// (DB_PASSWORD, AWS_SECRET_ACCESS_KEY, STRIPE_API_KEY). The value
 	// must be 8+ characters that are not a delimiter, not a marker
 	// layer 1 left there, and not a path or placeholder (an argv flag
-	// such as --api-key=/etc/hotserve/app.key names a file, not a
+	// such as --api-key=/etc/motel/app.key names a file, not a
 	// secret).
 	{regexp.MustCompile(`(?i)\b([a-z0-9_-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)[a-z0-9_-]*)(["']?\s*[=:]\s*["']?)[^\s"',;\[/{][^\s"',;]{7,}`), "$1$2[redacted:credential]"},
 }

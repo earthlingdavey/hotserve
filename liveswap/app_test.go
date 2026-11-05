@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
@@ -621,7 +621,7 @@ func socketNames(t *testing.T, dir string) []string {
 
 // listenSocket binds a real unix socket at path, as a running app
 // does; closing the listener leaves the file, as an app's exit does
-// (hotserve removes it with the instance's run dir: socketRef.retire).
+// (motel removes it with the instance's run dir: socketRef.retire).
 func listenSocket(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, err
@@ -1207,7 +1207,7 @@ func TestEnsureRunningReattachesWhenRunnerCan(t *testing.T) {
 	rig := newTestRig(t)
 	rig.runner.reattachOK = true
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	if err := os.MkdirAll(rig.spec.dirs.release("v7"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1861,7 +1861,7 @@ func TestEnsureRunningRefusesARecordWhoseSocketItCannotDial(t *testing.T) {
 			case name == "the nonce is a traversal":
 				touchSocket(t, decoy)
 			}
-			rig.store.state = appState{CurrentVersion: "v7", Nonce: tc.nonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+			rig.store.state = appState{CurrentVersion: "v7", Nonce: tc.nonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 			rig.store.ok = true
 			must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 			must(t, rig.ma.ensureRunning())
@@ -1884,7 +1884,7 @@ func TestEnsureRunningRefusesARecordWhoseSocketItCannotDial(t *testing.T) {
 	rig := newTestRig(t)
 	rig.runner.reattachOK = true
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 	must(t, rig.ma.ensureRunning())
@@ -2062,7 +2062,7 @@ func TestStartSpecCarriesUnitIdentity(t *testing.T) {
 func TestEnsureRunningUnreadableReattachIsTransientAndLaunchesNothing(t *testing.T) {
 	rig := newTestRig(t)
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 	rig.runner.reattachErrs = []error{errTest}
@@ -2096,7 +2096,7 @@ func TestEnsureRunningWaitsForTheOwnershipLock(t *testing.T) {
 	rig := newTestRig(t)
 	rig.runner.reattachOK = true
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 
@@ -2124,7 +2124,7 @@ func TestEnsureRunningWaitsForTheOwnershipLock(t *testing.T) {
 func TestEnsureRunningNotAttachedRetiresThePin(t *testing.T) {
 	rig := newTestRig(t)
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 	must(t, rig.ma.ensureRunning()) // reattachOK is false: definitively not running
@@ -2141,7 +2141,7 @@ func TestEnsureRunningNotAttachedRetiresThePin(t *testing.T) {
 func TestRecoverRetriesTransientErrorsUntilReattached(t *testing.T) {
 	rig := newTestRig(t)
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 	rig.runner.reattachErrs = []error{errTest, errTest}
@@ -2172,7 +2172,7 @@ func TestEnsureRunningRefusesAPlantedVersion(t *testing.T) {
 	for _, bad := range []string{"../../etc", "a/b", "v1\n", strings.Repeat("v", 65), ".hidden", "v 1"} {
 		t.Run(strconv.Quote(bad), func(t *testing.T) {
 			rig := newTestRig(t)
-			rig.store.state = appState{CurrentVersion: bad, Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+			rig.store.state = appState{CurrentVersion: bad, Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 			rig.store.ok = true
 			must(t, os.MkdirAll(rig.spec.dirs.release(bad), 0o755))
 			err := rig.ma.ensureRunning()
@@ -2224,7 +2224,7 @@ func TestRecoveryWithNothingRecordedClearsAGivenUpReason(t *testing.T) {
 func TestEnsureRunningReattachSweepFailureIsTransient(t *testing.T) {
 	rig := newTestRig(t)
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 	rig.runner.reattachOK = true
@@ -2246,7 +2246,7 @@ func TestEnsureRunningReattachSweepFailureIsTransient(t *testing.T) {
 
 func TestCleanupJoinsRecoveryBeforeReleasing(t *testing.T) {
 	rig := newTestRig(t)
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 	rig.runner.reattachErrs = []error{errTest, errTest, errTest, errTest, errTest, errTest}
@@ -2366,7 +2366,7 @@ func TestDeploySweepsBeforePreStart(t *testing.T) {
 }
 
 func TestDestructBeforeStartTouchesNothing(t *testing.T) {
-	// `hotserve validate`, and a candidate config that never became
+	// `motel validate`, and a candidate config that never became
 	// the serving one (another app's Start failed): no started config
 	// is live, so whatever the manager runs belongs to whoever is or
 	// will be serving it and must be left alone.
@@ -2421,7 +2421,7 @@ func TestParseEnvFileRejectsShellOwnedKeys(t *testing.T) {
 
 func TestEnsureRunningRefusesAForeignUnitName(t *testing.T) {
 	rig := newTestRig(t)
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-other.v1.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-other.v1.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	must(t, os.MkdirAll(rig.spec.dirs.release("v7"), 0o755))
 	must(t, rig.ma.ensureRunning())
@@ -2713,7 +2713,7 @@ func TestDeploySweepsBeforeGCAndSkipsGCWhenSweepFails(t *testing.T) {
 func TestFailedDeployKeepsReleaseWhenStartUnconfirmed(t *testing.T) {
 	rig := newTestRig(t)
 	must(t, rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/a.tgz", version: "v1"}))
-	rig.runner.setStartErr(&unitUnconfirmedError{unit: "hotserve-demo.v2.deadbeefdeadbeef.service", err: errTest})
+	rig.runner.setStartErr(&unitUnconfirmedError{unit: "motel-demo.v2.deadbeefdeadbeef.service", err: errTest})
 	err := rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/b.tgz", version: "v2"})
 	if err == nil || !strings.Contains(err.Error(), "left on disk") {
 		t.Fatalf("an unreconciled start must keep the release: %v", err)
@@ -2722,7 +2722,7 @@ func TestFailedDeployKeepsReleaseWhenStartUnconfirmed(t *testing.T) {
 		t.Fatalf("release must survive an unconfirmed start: %v", statErr)
 	}
 	rig.runner.setStartErr(nil)
-	rig.runner.runOnceErr = &unitUnconfirmedError{unit: "hotserve-demo.v3.deadbeefdeadbeef.prestart.service", err: errTest}
+	rig.runner.runOnceErr = &unitUnconfirmedError{unit: "motel-demo.v3.deadbeefdeadbeef.prestart.service", err: errTest}
 	rig.spec.preStart = []string{"migrate"}
 	err = rig.ma.Deploy(context.Background(), deployRequest{url: "https://x/c.tgz", version: "v3"})
 	if err == nil || !strings.Contains(err.Error(), "left on disk") {

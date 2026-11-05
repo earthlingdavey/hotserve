@@ -28,7 +28,7 @@ apply: deploy.example.com at c6d0e81: loaded; running apps are not restarted; ap
 
 The box applied it because a key it lists signed the commit and every
 commit since the one it ran, the file is the one in that commit, and
-hotserve validates it; then it swapped the file in and reloaded. A
+motel validates it; then it swapped the file in and reloaded. A
 reload that fails puts the previous file back. A push it refuses
 changes nothing, and the run says why.
 
@@ -67,7 +67,7 @@ and [what to do when a push is refused](../examples/box/README.md#when-a-push-is
 Skip this if it does not; the examples do not. A secret is a commit,
 like the config. Each value is one small file in the box's repository,
 encrypted on your laptop with [age](https://age-encryption.org) to two
-kinds of key: the box's own, which hotserve made when it was
+kinds of key: the box's own, which motel made when it was
 installed, and the SSH key you sign commits with. GitHub and the
 workflow only ever hold ciphertext, and nothing is typed onto the box.
 
@@ -75,7 +75,7 @@ Once, on the laptop: `brew install age` (Debian: `apt install age`).
 The first secret also needs the box's key, which root prints:
 
 ```sh
-make secret APP=example VAR=DATABASE_URL BOX_KEY=$(ssh root@box.example.com hotserve box key)
+make secret APP=example VAR=DATABASE_URL BOX_KEY=$(ssh root@box.example.com motel box key)
 ```
 
 ```
@@ -83,7 +83,7 @@ value for example DATABASE_URL (typing is not shown):
 secret: made deploy.example.com/secrets/recipients: this box (age1qpzr…7k2d), alice@example.com
 secret: deploy.example.com/secrets/example/DATABASE_URL.age, encrypted to 2 keys, added to the commit
 secret: example's block does not read its secrets yet; add this line to it:
-secret:     env_file /etc/hotserve/secrets/example.env
+secret:     env_file /etc/motel/secrets/example.env
 ```
 
 The value goes from the prompt straight into age, so it is never
@@ -112,8 +112,8 @@ apply: example reads its secrets at its next launch; a deploy of a new version l
 ```
 
 The box decrypts the value with its own key, only after it has checked
-the commit's signature, and writes `/etc/hotserve/secrets/example.env`.
-hotserve reads that file each time the app launches, and no app can
+the commit's signature, and writes `/etc/motel/secrets/example.env`.
+motel reads that file each time the app launches, and no app can
 see it. A pull request shows which variables changed and never what
 they are, and the workflow checks the names before anything is
 merged.
@@ -140,7 +140,7 @@ sees.
 
 ## 3. Know the way back
 
-The `.deb` you installed from is still in `/var/local/hotserve`, and
+The `.deb` you installed from is still in `/var/local/motel`, and
 `apt install --allow-downgrades` of it, as root, is the way back from
 an upgrade that does not suit you; download each later release into
 the same directory. [Upgrading](upgrading.md) has the rest: checking a
@@ -158,29 +158,29 @@ see during the restart, and how to pick a quiet moment for it.
 - **Change the box** — an app's flags, a second app, a new site, a new
   signer, a secret — by a signed push to the box's repository (steps 1
   and 2). The run's output is what changed.
-- **Logs:** `journalctl -t hotserve-example` for the app's own output,
-  `journalctl -u hotserve` for hotserve's, `journalctl -u
-  hotserve-box-apply` for what the box did with a push — as root, or as
+- **Logs:** `journalctl -t motel-example` for the app's own output,
+  `journalctl -u motel` for motel's, `journalctl -u
+  motel-box-apply` for what the box did with a push — as root, or as
   the administrator, if there is one
   ([Hardening](hardening.md#3-an-administrator-if-you-want-one)),
   without sudo.
-- **If hotserve crashes** — a SIGKILL, out of memory, a bug — systemd
+- **If motel crashes** — a SIGKILL, out of memory, a bug — systemd
   starts it again a second later and it picks the running apps back up.
   A plain `kill` (SIGTERM) is a clean stop, like `systemctl stop`, and
-  stays stopped; so does a start it *refuses*: `journalctl -u hotserve
+  stays stopped; so does a start it *refuses*: `journalctl -u motel
   -n 50 --no-pager` says why. Fix it, then, as root, `systemctl start
-  hotserve` (after "start request repeated too quickly", `systemctl
-  reset-failed hotserve` first). A stopped box takes no pushes, so a fix to the
+  motel` (after "start request repeated too quickly", `systemctl
+  reset-failed motel` first). A stopped box takes no pushes, so a fix to the
   config is made on the box too ([At 3am](#at-3am)). A restart loads
-  `/etc/hotserve/Caddyfile` as it stands: a pushed file that did not
+  `/etc/motel/Caddyfile` as it stands: a pushed file that did not
   load was put back, but a hand edit that was not reloaded goes live
-  then — or, if it does not load, keeps hotserve down.
+  then — or, if it does not load, keeps motel down.
 - **A second app:** another `app` block and site in the box's
   Caddyfile, pushed; another copy of the example, with its own
-  `HOTSERVE_URL`. The Caddyfile, and the app's secrets if it has any
+  `MOTEL_URL`. The Caddyfile, and the app's secrets if it has any
   (step 2), are all that change on the box.
 - **A second box:** another directory in the box's repository, named
-  for that box's deploy host, and `hotserve init` from it once as root
+  for that box's deploy host, and `motel init` from it once as root
   on the new box. Every push goes to every box
   ([More than one box](../examples/box/README.md#more-than-one-box)).
 - **Patching the box** (`apt upgrade`, as root, or on its own:
@@ -188,7 +188,7 @@ see during the restart, and how to pick a quiet moment for it.
   step 4) reaches an app only at its next launch; after patching, push
   a commit to each app or reboot
   ([Upgrading](upgrading.md#patching-the-host)).
-- **Backups:** the package ships `hotserve-backup` and its timers;
+- **Backups:** the package ships `motel-backup` and its timers;
   setting them up, checking on them and restoring are
   [Backups](backups.md), which says first
   [who runs which](backups.md#who-runs-these).
@@ -201,11 +201,11 @@ If a pushed change broke the deploy host itself, the next push cannot
 reach the box. The way back is root over SSH (the provider's console
 only if SSH itself is down), in one of two ways:
 
-- Edit `/etc/hotserve/Caddyfile` and `systemctl reload hotserve`, then
+- Edit `/etc/motel/Caddyfile` and `systemctl reload motel`, then
   make the same fix a commit and push it. The next signed push
   overwrites a hand edit — its run warns that it did — because the
   repository is the truth and the edit is a bridge back to it.
-- Or commit the fix first, and run `hotserve init` with that commit
+- Or commit the fix first, and run `motel init` with that commit
   from its directory, copied over as the first page did it.
 
 A change that loads but misbehaves is reverted like any commit: `git
@@ -215,5 +215,5 @@ A secret that has leaked is changed like any other (`make secret`, a
 push), and reaches the app at its next launch: roll back to the
 running version, or deploy a new one ([When a value reaches the
 app](secrets.md#when-a-value-reaches-the-app)). A hand edit of an
-env file under `/etc/hotserve/secrets/` is overwritten by the next
+env file under `/etc/motel/secrets/` is overwritten by the next
 push, as a hand edit of the Caddyfile is.

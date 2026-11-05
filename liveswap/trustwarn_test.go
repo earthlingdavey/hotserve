@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 )
 
 func TestWarnUnboundTrust(t *testing.T) {
@@ -29,7 +29,7 @@ func TestWarnUnboundTrust(t *testing.T) {
 	// variable the block names set empty so the value resolves to
 	// nothing.
 	resolved := func(t *testing.T, tc deploytrust.TrustConfig) []deploytrust.TrustConfig {
-		t.Setenv("HOTSERVE_TEST_UNSET", "")
+		t.Setenv("MOTEL_TEST_UNSET", "")
 		tcs := []deploytrust.TrustConfig{tc}
 		deploytrust.ResolvePlaceholders(caddy.NewReplacer(), tcs)
 		return tcs
@@ -57,11 +57,11 @@ func TestWarnUnboundTrust(t *testing.T) {
 		{"a sub without a ref or environment (the pull_request form, or a customised template) binds nothing",
 			[]deploytrust.TrustConfig{github("repository", "o/r", "sub", "repo:o/r:pull_request")}, nil, []warning{{unbound, "", "", "github"}}},
 		{"a binding claim whose placeholder resolved empty admits no token: the empty claim is the warning, not the width",
-			resolved(t, github("repository", "o/r", "ref", "{env.HOTSERVE_TEST_UNSET}")), nil, []warning{{empty, "", "placeholder", "github"}}},
+			resolved(t, github("repository", "o/r", "ref", "{env.MOTEL_TEST_UNSET}")), nil, []warning{{empty, "", "placeholder", "github"}}},
 		{"an identity claim whose placeholder resolved empty admits no token either",
-			resolved(t, github("repository", "{env.HOTSERVE_TEST_UNSET}")), nil, []warning{{empty, "", "placeholder", "github"}}},
+			resolved(t, github("repository", "{env.MOTEL_TEST_UNSET}")), nil, []warning{{empty, "", "placeholder", "github"}}},
 		{"a JSON subject placeholder that resolved empty is a fail-closed sub constraint, not a vanished one",
-			resolved(t, deploytrust.TrustConfig{Kind: "github", Audience: "a", Subject: "{env.HOTSERVE_TEST_UNSET}", Claims: claims("repository", "o/r")}), nil, []warning{{empty, "", "placeholder", "github"}}},
+			resolved(t, deploytrust.TrustConfig{Kind: "github", Audience: "a", Subject: "{env.MOTEL_TEST_UNSET}", Claims: claims("repository", "o/r")}), nil, []warning{{empty, "", "placeholder", "github"}}},
 		{"ref_protected binds when pinned true",
 			[]deploytrust.TrustConfig{github("repository", "o/r", "ref_protected", "true")}, nil, nil},
 		{"ref_protected pinned to any other literal matches no token, so it is not the warning's case either",
@@ -95,7 +95,7 @@ func TestWarnUnboundTrust(t *testing.T) {
 		{"a local block with an audience is quiet",
 			[]deploytrust.TrustConfig{{Kind: "local", PublicKey: "/k.pub", Audience: "box1"}}, nil, nil},
 		{"an audience placeholder that resolved empty is no audience",
-			resolved(t, deploytrust.TrustConfig{Kind: "local", PublicKey: "/k.pub", Audience: "{env.HOTSERVE_TEST_UNSET}"}), nil, []warning{{noAud, "", "", ""}}},
+			resolved(t, deploytrust.TrustConfig{Kind: "local", PublicKey: "/k.pub", Audience: "{env.MOTEL_TEST_UNSET}"}), nil, []warning{{noAud, "", "", ""}}},
 		{"once per block: an app's own block warns under its name; an app inheriting the global block does not repeat it",
 			[]deploytrust.TrustConfig{github("repository", "o/r")},
 			map[string]*AppConfig{

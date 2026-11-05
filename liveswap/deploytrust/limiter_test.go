@@ -10,7 +10,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 func TestAuthLimiterWindow(t *testing.T) {

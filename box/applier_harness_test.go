@@ -37,7 +37,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 const testPath = "box1/Caddyfile"
@@ -212,11 +212,11 @@ func boxFile(version int, signers ...testKey) []byte {
 		lines = append(lines, "\t\t"+k.line())
 	}
 	return []byte(fmt.Sprintf(`{
-	admin unix//run/hotserve/admin.sock
+	admin unix//run/motel/admin.sock
 
 	box {
 		deploy_trust github {
-			audience hotserve
+			audience motel
 			claim repository your-org/boxes
 		}
 %s
@@ -371,14 +371,14 @@ func newTestBox(t testing.TB) *testBox {
 		verifier: &proof.Verifier{},
 	}
 	b.core, b.logs = observer.New(zapcore.DebugLevel)
-	for _, d := range []string{"etc/hotserve", "var/lib/hotserve-box/in", "var/lib/hotserve-box/work", "var/lib/hotserve-box/out", "var/lib/hotserve-box/stage"} {
+	for _, d := range []string{"etc/motel", "var/lib/motel-box/in", "var/lib/motel-box/work", "var/lib/motel-box/out", "var/lib/motel-box/stage"} {
 		if err := os.MkdirAll(filepath.Join(b.root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// The key's directory, as tmpfiles.d makes it: init makes the key
 	// there. No secrets directory: newSecretsBox adds it.
-	if err := os.Mkdir(filepath.Join(b.root, "etc/hotserve/age"), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(b.root, "etc/motel/age"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	b.v1 = boxFile(1, b.alice)
@@ -657,17 +657,17 @@ func (b *testBox) settled() {
 	if n := b.names(b.x("work")); len(n) != 0 {
 		b.t.Errorf("work/ not empty: %v", n)
 	}
-	for _, n := range b.names(b.path("etc/hotserve")) {
+	for _, n := range b.names(b.path("etc/motel")) {
 		switch n {
 		case "Caddyfile", "age", "age.pub", "secrets":
 		default:
-			b.t.Errorf("/etc/hotserve holds %s", n)
+			b.t.Errorf("/etc/motel holds %s", n)
 		}
 	}
 	if _, err := os.Lstat(b.path(secretsDir)); err == nil {
 		for _, n := range b.names(b.path(secretsDir)) {
 			if strings.HasPrefix(n, ".") {
-				b.t.Errorf("/etc/hotserve/secrets holds a temporary: %s", n)
+				b.t.Errorf("/etc/motel/secrets holds a temporary: %s", n)
 			}
 		}
 	}

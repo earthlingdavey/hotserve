@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/smallhoursorg/hotserve/liveswap"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 // The box template's secrets commands — bin/secrets behind make secret,
@@ -91,7 +91,7 @@ func (r *boxRepo) secrets(shell, stdin, cmd string, env ...string) (string, int)
 	return string(out), 0
 }
 
-// boxKey makes an age identity, as hotserve box key would on a box, and
+// boxKey makes an age identity, as motel box key would on a box, and
 // returns its file and its recipient.
 func (r *boxRepo) boxKey(name string) (string, string) {
 	r.t.Helper()
@@ -184,7 +184,7 @@ func TestBoxSecretSet(t *testing.T) {
 
 	// The box's first secret needs the box's own key.
 	if out, code := r.secrets("", "v\n", "set", app...); code != 1 ||
-		!strings.Contains(out, "this first one needs the box's own key: BOX_KEY=$(ssh root@<your box> hotserve box key)") {
+		!strings.Contains(out, "this first one needs the box's own key: BOX_KEY=$(ssh root@<your box> motel box key)") {
 		t.Fatalf("no BOX_KEY: exit %d\n%s", code, out)
 	}
 	for _, bad := range []string{"age1nope", "ssh-ed25519 AAAA", "age1pq1" + strings.Repeat("q", 55), "AGE-SECRET-KEY-1" + strings.Repeat("Q", 58)} {
@@ -210,7 +210,7 @@ func TestBoxSecretSet(t *testing.T) {
 		"secret: bob@example.com signs with a sk-ssh-ed25519@openssh.com key, which age cannot encrypt to; to read secrets they add an age key of their own",
 		"secret: dave signs with an RSA key under 2048 bits, which age does not take;",
 		"secret: " + dbFile + ", encrypted to 3 keys, added to the commit\n",
-		"secret: example's block does not read its secrets yet; add this line to it:\nsecret:     env_file /etc/hotserve/secrets/example.env\n",
+		"secret: example's block does not read its secrets yet; add this line to it:\nsecret:     env_file /etc/motel/secrets/example.env\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -304,12 +304,12 @@ func TestBoxSecretSet(t *testing.T) {
 
 	// The block that reads them: no hint once the line is there.
 	f := r.read(boxFile)
-	r.write(boxFile, strings.Replace(f, "# env_file /etc/hotserve/secrets/example.env", "env_file /etc/hotserve/secrets/example.env", 1))
+	r.write(boxFile, strings.Replace(f, "# env_file /etc/motel/secrets/example.env", "env_file /etc/motel/secrets/example.env", 1))
 	if out, code := r.secrets("", "v", "set", "APP=example", "VAR=TOKEN"); code != 0 || strings.Contains(out, "env_file") {
 		t.Errorf("with the env_file line: exit %d\n%s", code, out)
 	}
-	r.write(boxFile, strings.Replace(f, "# env_file /etc/hotserve/secrets/example.env", "env_file /etc/hotserve/example.env", 1))
-	if out, code := r.secrets("", "v", "set", "APP=example", "VAR=TOKEN"); code != 0 || !strings.Contains(out, "example's block reads env_file /etc/hotserve/example.env; to read its secrets it needs:\nsecret:     env_file /etc/hotserve/secrets/example.env") {
+	r.write(boxFile, strings.Replace(f, "# env_file /etc/motel/secrets/example.env", "env_file /etc/motel/example.env", 1))
+	if out, code := r.secrets("", "v", "set", "APP=example", "VAR=TOKEN"); code != 0 || !strings.Contains(out, "example's block reads env_file /etc/motel/example.env; to read its secrets it needs:\nsecret:     env_file /etc/motel/secrets/example.env") {
 		t.Errorf("another env_file: exit %d\n%s", code, out)
 	}
 	if out, code := r.secrets("", "v", "set", "APP=blog", "VAR=TOKEN"); code != 0 || !strings.Contains(out, boxFile+" has no app blog yet: the box takes secrets only for an app its file declares") {
@@ -551,7 +551,7 @@ func TestBoxSignerAddsAReader(t *testing.T) {
 	before := r.read(recipientsFile)
 	out, code = r.run("signer", "KEY="+priv+".pub", "PRINCIPAL=gina")
 	if code != 0 || !strings.Contains(out, "signer: this key is an ecdsa-sha2-nistp256 key, which age cannot encrypt to, so it cannot read the boxes' secrets:") ||
-		!strings.Contains(out, "make secret-show IDENTITY=~/.config/age/hotserve.txt") {
+		!strings.Contains(out, "make secret-show IDENTITY=~/.config/age/motel.txt") {
 		t.Fatalf("an ecdsa key: exit %d\n%s", code, out)
 	}
 	if r.read(recipientsFile) != before {
@@ -1014,7 +1014,7 @@ func TestBoxSecretsImport(t *testing.T) {
 		t.Errorf("summary:\n%s", out)
 	}
 
-	// Lines hotserve refuses, it refuses, and then imports nothing.
+	// Lines motel refuses, it refuses, and then imports nothing.
 	for _, c := range []struct{ line, want string }{
 		{"1BAD=x", "line 2: the name is not letters, digits and _, not starting with a digit"},
 		{"NOEQUALS", "line 2: not KEY=VALUE"},
@@ -1026,7 +1026,7 @@ func TestBoxSecretsImport(t *testing.T) {
 	} {
 		input := "OK=1\n" + c.line + "\n"
 		if _, err := liveswap.ParseEnvLines("input", []byte(input)); err == nil && !strings.Contains(c.want, "is empty") {
-			t.Errorf("%q: hotserve's parser takes it, the test expects a refusal", c.line)
+			t.Errorf("%q: motel's parser takes it, the test expects a refusal", c.line)
 		}
 		out, code := r.secrets("", input, "import", "APP=other")
 		if code != 1 || !strings.Contains(out, "secrets: "+c.want) || !strings.Contains(out, "nothing imported") {
@@ -1057,7 +1057,7 @@ func TestBoxSecretsImport(t *testing.T) {
 	if out, code := r.secrets("", strings.Repeat("x", 1048577), "import", "APP=other"); code != 1 || !strings.Contains(out, "the file is over 1048576 bytes") {
 		t.Errorf("a file over the cap: exit %d\n%s", code, out)
 	}
-	// A value the box would refuse, inside a line hotserve's parser takes.
+	// A value the box would refuse, inside a line motel's parser takes.
 	if out, code := r.secrets("", "OK=1\nNUL=a\x00b\n", "import", "APP=other"); code != 1 || !strings.Contains(out, "NUL has a NUL byte in it") || r.exists("deploy.example.com/secrets/other") {
 		t.Errorf("a NUL: exit %d\n%s", code, out)
 	}
@@ -1065,10 +1065,10 @@ func TestBoxSecretsImport(t *testing.T) {
 
 // TestBoxCheckSecrets is make check over a box with secrets: describe's
 // lines read, its refusals and warnings shown (annotated in Actions),
-// what make secret leaves to it checked, and a hotserve too old to read
+// what make secret leaves to it checked, and a motel too old to read
 // secrets named.
 func TestBoxCheckSecrets(t *testing.T) {
-	bin := hotserveBinary(t)
+	bin := motelBinary(t)
 	r := secretsRepo(t)
 	r.key("id_ed25519")
 	if out, code := r.run("signer"); code != 0 {
@@ -1076,9 +1076,9 @@ func TestBoxCheckSecrets(t *testing.T) {
 	}
 	_, box := r.boxKey("box")
 	check := func(env ...string) (string, int) {
-		return r.run("check", append([]string{"HOTSERVE=" + bin}, env...)...)
+		return r.run("check", append([]string{"MOTEL=" + bin}, env...)...)
 	}
-	r.write(boxFile, strings.Replace(r.read(boxFile), "# env_file /etc/hotserve/secrets/example.env", "env_file /etc/hotserve/secrets/example.env", 1))
+	r.write(boxFile, strings.Replace(r.read(boxFile), "# env_file /etc/motel/secrets/example.env", "env_file /etc/motel/secrets/example.env", 1))
 	// A managed env_file and no secret: describe's consistency check.
 	if out, code := check(); code != 1 || !strings.Contains(out, "holds no secret") {
 		t.Fatalf("a managed env_file with no secret: exit %d\n%s", code, out)
@@ -1117,8 +1117,8 @@ func TestBoxCheckSecrets(t *testing.T) {
 	}
 	r.write(recipientsFile, recipients)
 
-	// A hotserve from before secrets: its describe reads none of them.
-	old := filepath.Join(r.home, "old-hotserve")
+	// A motel from before secrets: its describe reads none of them.
+	old := filepath.Join(r.home, "old-motel")
 	script := "#!/bin/sh\n" +
 		"if [ \"$1 $2\" = \"box describe\" ]; then\n" +
 		"\t\"" + bin + "\" box describe \"$3\" | grep -v -E '^(recipients|secret|warning) '\n" +
@@ -1128,13 +1128,13 @@ func TestBoxCheckSecrets(t *testing.T) {
 	if err := os.WriteFile(old, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tooOld := "deploy.example.com/Caddyfile: deploy.example.com/secrets holds values, and this hotserve does not read secrets: check with a release that does (deploy.example.com/HOTSERVE_VERSION would name this box's; without it, the workflow takes the latest stable release, or the one its HOTSERVE_VERSION variable names)\n"
-	if out, code := r.run("check", "HOTSERVE="+old); code != 1 || !strings.Contains(out, tooOld) {
-		t.Fatalf("an old hotserve: exit %d\n%s", code, out)
+	tooOld := "deploy.example.com/Caddyfile: deploy.example.com/secrets holds values, and this motel does not read secrets: check with a release that does (deploy.example.com/MOTEL_VERSION would name this box's; without it, the workflow takes the latest stable release, or the one its MOTEL_VERSION variable names)\n"
+	if out, code := r.run("check", "MOTEL="+old); code != 1 || !strings.Contains(out, tooOld) {
+		t.Fatalf("an old motel: exit %d\n%s", code, out)
 	}
-	// The same release, picked by the box's own HOTSERVE_VERSION file:
+	// The same release, picked by the box's own MOTEL_VERSION file:
 	// the file is not the remedy, so the refusal says what is.
-	hs := filepath.Join(r.home, "bins", "hotserve")
+	hs := filepath.Join(r.home, "bins", "motel")
 	if err := os.MkdirAll(filepath.Dir(hs), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1144,9 +1144,9 @@ func TestBoxCheckSecrets(t *testing.T) {
 	if err := os.WriteFile(hs+"-0.2.9", []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r.write("deploy.example.com/HOTSERVE_VERSION", "0.2.9\n")
-	pinnedOld := "deploy.example.com/Caddyfile: deploy.example.com/secrets holds values, and " + hs + "-0.2.9, the release deploy.example.com/HOTSERVE_VERSION names, does not read secrets: upgrade the box to a release that does and name that one in the file, or remove the values\n"
-	if out, code := r.run("check", "HOTSERVE="+hs); code != 1 || !strings.Contains(out, pinnedOld) {
-		t.Fatalf("an old hotserve, pinned by the file: exit %d\n%s", code, out)
+	r.write("deploy.example.com/MOTEL_VERSION", "0.2.9\n")
+	pinnedOld := "deploy.example.com/Caddyfile: deploy.example.com/secrets holds values, and " + hs + "-0.2.9, the release deploy.example.com/MOTEL_VERSION names, does not read secrets: upgrade the box to a release that does and name that one in the file, or remove the values\n"
+	if out, code := r.run("check", "MOTEL="+hs); code != 1 || !strings.Contains(out, pinnedOld) {
+		t.Fatalf("an old motel, pinned by the file: exit %d\n%s", code, out)
 	}
 }

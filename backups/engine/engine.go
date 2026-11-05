@@ -39,27 +39,27 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/dump"
-	"github.com/smallhoursorg/hotserve/backups/envfile"
-	"github.com/smallhoursorg/hotserve/backups/plan"
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/backups/dump"
+	"github.com/smallhoursorg/motel/backups/envfile"
+	"github.com/smallhoursorg/motel/backups/plan"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
 )
 
 // Config is where things are. Every field is a constant of the
 // installation, none of it an operator's or an app's string.
 type Config struct {
-	ConfigDir string // /etc/hotserve: what the plan unit sees, for the Caddyfile's imports
-	EnvFile   string // /etc/hotserve-backup/repository.env: root-only; read by the manager, and parsed here to refuse before any unit what repositoryInUse refuses
+	ConfigDir string // /etc/motel: what the plan unit sees, for the Caddyfile's imports
+	EnvFile   string // /etc/motel-backup/repository.env: root-only; read by the manager, and parsed here to refuse before any unit what repositoryInUse refuses
 	// OldEnvFile is where an earlier version of this branch kept the
 	// credential file. It is never read: named, when it is there and
 	// EnvFile is not, so that a box set up by hand is told to run setup
 	// rather than left wondering.
 	OldEnvFile string
-	StateDir   string // /var/lib/hotserve-backup
-	RunDir     string // /run/hotserve-backup
-	Self       string // /usr/bin/hotserve-backup
+	StateDir   string // /var/lib/motel-backup
+	RunDir     string // /run/motel-backup
+	Self       string // /usr/bin/motel-backup
 	Restic     string // /usr/bin/restic
 	// BindsTo is the engine's own service when it has one, so that the
 	// manager ends its units if it dies; empty when run from a shell.
@@ -68,8 +68,8 @@ type Config struct {
 
 // Accounts the units run as.
 const (
-	dataUser   = "hotserve"        // owns the apps' data; the only uid that reads a live database
-	backupUser = "hotserve-backup" // holds the credential while restic runs; runs nothing else
+	dataUser   = "motel"        // owns the apps' data; the only uid that reads a live database
+	backupUser = "motel-backup" // holds the credential while restic runs; runs nothing else
 )
 
 // A command and the helpers it starts are one version, or the helper
@@ -84,7 +84,7 @@ const (
 // OtherVersionStatus having done nothing: 75, which no helper exits
 // otherwise and the manager never does.
 const (
-	RunIdentityEnv     = "HOTSERVE_BACKUP_RUN_IS"
+	RunIdentityEnv     = "MOTEL_BACKUP_RUN_IS"
 	OtherVersionStatus = 75
 )
 
@@ -384,7 +384,7 @@ func open(ctx context.Context, cfg Config, r Runner, say func(string)) (x *run, 
 	running, _ := os.Readlink("/proc/self/exe")
 	program, err := programOf(programPath(cfg.Self, running))
 	if err != nil {
-		return nil, nil, fmt.Errorf("which version of hotserve-backup this is could not be read: %w", err)
+		return nil, nil, fmt.Errorf("which version of motel-backup this is could not be read: %w", err)
 	}
 	// The state dir is where the status record is read from by anyone;
 	// everything else is root's alone. Units reach staging through
@@ -599,7 +599,7 @@ func (x *run) list(ctx context.Context) {
 		_ = os.Remove(kept)
 		return
 	}
-	snaps, _, err := x.snapshots(ctx, "listing", "", "hotserve")
+	snaps, _, err := x.snapshots(ctx, "listing", "", "motel")
 	if ctx.Err() != nil {
 		return
 	}
@@ -721,16 +721,16 @@ func runDirUsable(dir string) error {
 		return fmt.Errorf("whether %s is itself a mount point could not be read: %w", dir, err)
 	}
 	if mounted {
-		return fmt.Errorf("%s is itself a mount point: nothing of hotserve-backup's is mounted there, and what it writes and removes there would be written and removed through the mount; unmount it (umount %s)", dir, dir)
+		return fmt.Errorf("%s is itself a mount point: nothing of motel-backup's is mounted there, and what it writes and removes there would be written and removed through the mount; unmount it (umount %s)", dir, dir)
 	}
 	return nil
 }
 
 // UnitPattern matches the name of every unit a run, a restore, a drill
 // or a setup starts, and no other unit on the box.
-const UnitPattern = "hotserve_backup_*"
+const UnitPattern = "motel_backup_*"
 
-var unitNameRe = regexp.MustCompile(`^hotserve_backup_([a-z]+[0-9]*)(?:_([a-z0-9-]{1,63}))?_[0-9a-f]{12}\.service$`)
+var unitNameRe = regexp.MustCompile(`^motel_backup_([a-z]+[0-9]*)(?:_([a-z0-9-]{1,63}))?_[0-9a-f]{12}\.service$`)
 
 // ParseUnitName reads what a unit does, and to which app's data, back
 // out of a name that name made. A unit of the whole run has no app.
@@ -745,7 +745,7 @@ func ParseUnitName(unit string) (role, app string, ok bool) {
 // name is a unit name no app's unit and no operator's can have (the
 // underscores), unique to this run.
 func (x *run) name(role, app string) string {
-	n := "hotserve_backup_" + role
+	n := "motel_backup_" + role
 	if app != "" {
 		n += "_" + app
 	}
@@ -763,7 +763,7 @@ func (x *run) start(ctx context.Context, s unit.Spec) (unit.Outcome, error) {
 	// ("transaction is destructive" [M62]), so the copies a stopped run
 	// had made stayed until the next run. They hold no credential and
 	// no network, and are over in moments.
-	if strings.HasPrefix(s.Name, "hotserve_backup_clean_") || strings.HasPrefix(s.Name, "hotserve_backup_unstage_") {
+	if strings.HasPrefix(s.Name, "motel_backup_clean_") || strings.HasPrefix(s.Name, "motel_backup_unstage_") {
 		s.BindsTo = ""
 	}
 	// A unit of this program is told which program that is.
@@ -977,7 +977,7 @@ func (x *run) plan(ctx context.Context) (*plan.Plan, error) { return x.planWith(
 func (x *run) planWith(ctx context.Context, stderrFile string) (*plan.Plan, error) {
 	out := filepath.Join(x.dir, "plan.json")
 	o, err := x.start(ctx, unit.Spec{
-		Name: x.name("plan", ""), Description: "hotserve backup: read what each app declares",
+		Name: x.name("plan", ""), Description: "motel backup: read what each app declares",
 		Argv: []string{x.cfg.Self, "plan"},
 		// Not the data user: the config dir holds the apps' env files,
 		// readable by its group. In its own namespaces, since it shares
@@ -1205,7 +1205,7 @@ func (x *run) clean(ctx context.Context, app, staging string) error {
 // "unstage" for what a restore fetched.
 func (x *run) cleanAs(ctx context.Context, role, app, staging string) error {
 	o, err := x.start(ctx, unit.Spec{
-		Name: x.name(role, app), Description: "hotserve backup: remove " + app + "'s plaintext copies",
+		Name: x.name(role, app), Description: "motel backup: remove " + app + "'s plaintext copies",
 		Argv: []string{x.cfg.Self, "clean"},
 		User: dataUser, SameUIDNamespaces: true,
 		Binds: []unit.Bind{{Source: staging, Dest: "/staging", Writable: true}},
@@ -1235,7 +1235,7 @@ func (x *run) dump(ctx context.Context, app, shared, staging, declFile string, d
 	}
 	out := filepath.Join(x.dir, app+".dump.json")
 	o, err := x.start(ctx, unit.Spec{
-		Name: x.name("dump", app), Description: "hotserve backup: copy " + app + "'s databases",
+		Name: x.name("dump", app), Description: "motel backup: copy " + app + "'s databases",
 		Argv: []string{x.cfg.Self, "dump"},
 		User: dataUser, SameUIDNamespaces: true,
 		Binds: []unit.Bind{
@@ -1423,12 +1423,12 @@ func (x *run) upload(ctx context.Context, app string, binds []unit.Bind, masked 
 	out := filepath.Join(x.dir, app+".summary.json")
 	argv := append([]string{x.cfg.Restic, "backup", "--quiet", "--json", "--retry-lock", retryLock}, oneTry...)
 	argv = append(argv, "--exclude-file", excludePath,
-		"--host", "hotserve", "--tag", "hotserve", "--tag", "app:"+app)
+		"--host", "motel", "--tag", "motel", "--tag", "app:"+app)
 	for _, tag := range tags {
 		argv = append(argv, "--tag", tag)
 	}
-	s := resticUnit(x.name("upload", app), "hotserve backup: upload "+app, x.cfg.EnvFile, append(argv, "/backup/"+app), out)
-	// An account of its own, so that the hotserve uid — the server,
+	s := resticUnit(x.name("upload", app), "motel backup: upload "+app, x.cfg.EnvFile, append(argv, "/backup/"+app), out)
+	// An account of its own, so that the motel uid — the server,
 	// every app — can neither read this process's environment nor
 	// signal it; and one capability, to read files that account does not
 	// own, in a view that holds this app and nothing else.
@@ -1492,7 +1492,7 @@ func (x *run) vouch(ctx context.Context, app, id string) {
 		return
 	}
 	out := filepath.Join(x.dir, app+".vouch.json")
-	o, err := x.startWithin(ctx, listClock, resticUnit(x.name("vouch", app), "hotserve backup: record in the repository that "+app+"'s backup ended ok", x.cfg.EnvFile, vouchArgv(x.cfg.Restic, app, id, at), out))
+	o, err := x.startWithin(ctx, listClock, resticUnit(x.name("vouch", app), "motel backup: record in the repository that "+app+"'s backup ended ok", x.cfg.EnvFile, vouchArgv(x.cfg.Restic, app, id, at), out))
 	// Only restic's own word that it failed is "could not": a stop, a
 	// clock, a unit ended from outside or by a signal, an exit 0 that
 	// names nothing — restic may have saved it first, and which is not
@@ -1534,8 +1534,8 @@ func resticUnit(name, description, envFile string, argv []string, stdout string)
 	return unit.Spec{
 		Name: name, Description: description, Argv: argv,
 		User: backupUser, Network: true, EnvironmentFile: envFile,
-		Environment:    []string{"RESTIC_CACHE_DIR=/var/cache/hotserve-backup", "HOME=/nonexistent", "TZ=UTC"},
-		CacheDirectory: "hotserve-backup", StdoutFile: stdout,
+		Environment:    []string{"RESTIC_CACHE_DIR=/var/cache/motel-backup", "HOME=/nonexistent", "TZ=UTC"},
+		CacheDirectory: "motel-backup", StdoutFile: stdout,
 	}
 }
 
@@ -1628,7 +1628,7 @@ func (x *run) verify(ctx context.Context, app, id string, rec *record.App) error
 	// directory part of a declared path, after /backup/<app>/ — and
 	// restic takes each as a path and nothing else: they follow "--",
 	// start with "/", and like every argument are never expanded.
-	o, err := x.startWithin(ctx, x.readClock(), resticUnit(x.name("verify", app), "hotserve backup: check "+app+"'s snapshot", x.cfg.EnvFile,
+	o, err := x.startWithin(ctx, x.readClock(), resticUnit(x.name("verify", app), "motel backup: check "+app+"'s snapshot", x.cfg.EnvFile,
 		append([]string{x.cfg.Restic, "ls", "--json", "--no-lock", "--", id}, parents...), out))
 	if err != nil {
 		return err
@@ -1707,7 +1707,7 @@ func (x *run) lastInRepository(ctx context.Context, app string) (last *record.Sn
 // A listed snapshot is one the repository holds of an app.
 type listed struct {
 	record.Snapshot
-	// Apps are whose it is, by its tags: one, as hotserve writes it —
+	// Apps are whose it is, by its tags: one, as motel writes it —
 	// though a tag can be added off the box — and none for a snapshot
 	// with none.
 	Apps []string
@@ -1737,7 +1737,7 @@ func (x *run) history(ctx context.Context, app string) (snaps []listed, reposito
 
 // snapshots asks the repository for the snapshots of app — of every
 // app, where app is empty — oldest first, of those tagged tag: the
-// app's own, every app's (`hotserve`, which no clean-run record has), or
+// app's own, every app's (`motel`, which no clean-run record has), or
 // the records (cleanTag). --no-lock: it reads, and a check that holds
 // the repository exclusively must not fail it. Given up at listClock.
 func (x *run) snapshots(ctx context.Context, role, app, tag string) (snaps []listed, repositoryWide bool, err error) {
@@ -1756,8 +1756,8 @@ func (x *run) snapshots(ctx context.Context, role, app, tag string) (snaps []lis
 	if app == "" {
 		stderr = filepath.Join(x.dir, "."+role+".err")
 	}
-	s := resticUnit(x.name(role, app), "hotserve backup: ask the repository about "+about, x.cfg.EnvFile,
-		[]string{x.cfg.Restic, "snapshots", "--json", "--no-lock", "--host", "hotserve", "--tag", tag}, out)
+	s := resticUnit(x.name(role, app), "motel backup: ask the repository about "+about, x.cfg.EnvFile,
+		[]string{x.cfg.Restic, "snapshots", "--json", "--no-lock", "--host", "motel", "--tag", tag}, out)
 	s.StderrFile = stderr
 	o, err := x.startWithin(ctx, x.readClock(), s)
 	if err != nil {

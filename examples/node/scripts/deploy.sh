@@ -1,13 +1,13 @@
 #!/bin/sh
-# Deploys a release through hotserve's webhook and prints the result.
+# Deploys a release through motel's webhook and prints the result.
 #
 #   scripts/deploy.sh <artifact URL>     the box fetches it (CI: a release asset)
 #   scripts/deploy.sh <app.tar.gz>       a local file: pushed in the request body
 #   scripts/deploy.sh --rollback <ver>   relaunches a version still on the box's disk
 #
-#   HOTSERVE_URL          the app's webhook, e.g. https://deploy.example.com/example  (required;
+#   MOTEL_URL          the app's webhook, e.g. https://deploy.example.com/example  (required;
 #                         https:// only, since the request carries the token)
-#   HOTSERVE_ALLOW_HTTP   1 (exactly) lets HOTSERVE_URL be http://, sending the
+#   MOTEL_ALLOW_HTTP   1 (exactly) lets MOTEL_URL be http://, sending the
 #                         token in the clear: for a local test box only
 #   VERSION               the release's version: 1 to 64 letters, digits,
 #                         . _ -, not starting with . (the box's alphabet).
@@ -19,9 +19,9 @@
 #                         commit's name on them: set VERSION for an
 #                         uncommitted build (VERSION=wip-3, say). Not used
 #                         by --rollback: that names its version itself
-#   HOTSERVE_TOKEN        a deploy token. Not needed in GitHub Actions: with
+#   MOTEL_TOKEN        a deploy token. Not needed in GitHub Actions: with
 #                         `permissions: id-token: write` one is minted per run.
-#   HOTSERVE_AUDIENCE     the audience the box's deploy_trust expects (default: hotserve)
+#   MOTEL_AUDIENCE     the audience the box's deploy_trust expects (default: motel)
 #   ARTIFACT_AUTH_HEADER  sent by the box as Authorization when it fetches the
 #                         URL: "token <github token>" reads a release asset by
 #                         its API URL, private repo or not (the workflow sends
@@ -92,19 +92,19 @@ if [ -n "${ARTIFACT_SHA256+set}" ]; then
 		exit 1
 	fi
 fi
-url=${HOTSERVE_URL:?set HOTSERVE_URL to the app webhook, e.g. https://deploy.example.com/example}
+url=${MOTEL_URL:?set MOTEL_URL to the app webhook, e.g. https://deploy.example.com/example}
 # The request carries the deploy token, and from the workflow
 # ARTIFACT_AUTH_HEADER (the job's GITHUB_TOKEN) too: over http both
 # would cross the wire in the clear before anything in front of the
 # box could redirect it, and curl guesses a plaintext scheme (http,
 # mostly) for a schemeless URL. So https:// only — the scheme in any
 # case, nothing before it — refused before the mint; the one way past
-# is HOTSERVE_ALLOW_HTTP=1 exactly, for a test box. printf, not echo:
+# is MOTEL_ALLOW_HTTP=1 exactly, for a test box. printf, not echo:
 # the URL is the caller's, and dash's echo would read its backslashes.
 case $url in
 [Hh][Tt][Tt][Pp][Ss]://*) ;;
 *)
-	[ "${HOTSERVE_ALLOW_HTTP:-}" = 1 ] || { printf "deploy.sh: HOTSERVE_URL '%s' is not https://, and the request carries the deploy token; set it to the app webhook, e.g. https://deploy.example.com/example (HOTSERVE_ALLOW_HTTP=1 sends it anyway, for local testing only)\n" "$url" >&2; exit 1; }
+	[ "${MOTEL_ALLOW_HTTP:-}" = 1 ] || { printf "deploy.sh: MOTEL_URL '%s' is not https://, and the request carries the deploy token; set it to the app webhook, e.g. https://deploy.example.com/example (MOTEL_ALLOW_HTTP=1 sends it anyway, for local testing only)\n" "$url" >&2; exit 1; }
 	;;
 esac
 # The app is the URL's last path segment; the box accepts a trailing
@@ -154,13 +154,13 @@ if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
 	# to another step as an output would print it in the job log, and it
 	# can deploy until it expires.
 	token=$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-		"$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${HOTSERVE_AUDIENCE:-hotserve}" |
+		"$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${MOTEL_AUDIENCE:-motel}" |
 		sed -n 's/.*"value" *: *"\([^"]*\)".*/\1/p')
 	[ -n "$token" ] || { echo "deploy.sh: could not mint an OIDC token" >&2; exit 1; }
 	printf '::add-mask::%s\n' "$token"
 	minted=1
 else
-	token=${HOTSERVE_TOKEN:?set HOTSERVE_TOKEN (mint one with: hotserve deploy-token) or run in GitHub Actions with id-token: write}
+	token=${MOTEL_TOKEN:?set MOTEL_TOKEN (mint one with: motel deploy-token) or run in GitHub Actions with id-token: write}
 	minted=
 fi
 
@@ -222,7 +222,7 @@ stream() { # <curl args...>: runs the request, prints it, keeps it
 }
 httpstatus() { sed -n 's/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' "$hdrs" 2>/dev/null | tail -n 1; }
 # The box's own 401, by its sentence: a 401 from something in front of
-# it (a wrong HOTSERVE_URL, say) is not about deploy_trust.
+# it (a wrong MOTEL_URL, say) is not about deploy_trust.
 boxrefused() {
 	[ "$(httpstatus)" = 401 ] || return 1
 	case $(field "$(tail -n 1 "$body")" error) in 'invalid or missing deploy token'*) return 0 ;; esac
@@ -232,7 +232,7 @@ boxrefused() {
 # The first token under an issuer's new signing key is refused while
 # the box fetches that key, without waiting on the fetch (a wait would
 # tell anyone with a token which apps exist), and the retry finds it.
-# That holds for a HOTSERVE_TOKEN too when it is an issuer's (a GitLab
+# That holds for a MOTEL_TOKEN too when it is an issuer's (a GitLab
 # id_token, say). The box refuses before it does anything else, so
 # sending the request again repeats nothing.
 send() { # <curl args...>
@@ -265,16 +265,16 @@ outcome() { # the http_status of a complete last line; else 200 for a whole sing
 refused() {
 	echo "the box refused this token. Most often its deploy_trust for this app does not accept:"
 	if [ -n "$minted" ]; then
-		printf '  %-18s%s\n' 'audience' "${HOTSERVE_AUDIENCE:-hotserve}" 'claim repository' "${GITHUB_REPOSITORY:-?}" 'claim ref' "${GITHUB_REF:-?}"
+		printf '  %-18s%s\n' 'audience' "${MOTEL_AUDIENCE:-motel}" 'claim repository' "${GITHUB_REPOSITORY:-?}" 'claim ref' "${GITHUB_REF:-?}"
 	else
 		echo "  the key this token was minted with (deploy_trust local { public_key ... })"
-		echo "  the audience, subject or claim it pins, against what hotserve deploy-token was given"
+		echo "  the audience, subject or claim it pins, against what motel deploy-token was given"
 	fi
 	echo "Or the URL's app name is not one the box knows: an unknown app answers the same 401."
 	echo "Or the box could not consult the token's issuer (an outage there), or had fetched its keys in the"
 	echo "minute before the issuer changed them: its journal says which, and when a re-run goes through."
 	echo "Check the app's deploy_trust block in the box's Caddyfile. The box's journal"
-	echo "(journalctl -u hotserve, 'webhook auth failed') names the app asked for and the"
+	echo "(journalctl -u motel, 'webhook auth failed') names the app asked for and the"
 	echo "check that refused it, unless the box's budget for logging failed authentications is spent."
 }
 finish() { # <what>: dresses the outcome, exits on failure
@@ -285,7 +285,7 @@ finish() { # <what>: dresses the outcome, exits on failure
 	code=$(outcome)
 	case $code in
 	2??)
-		[ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '**hotserve:** %s live, %s\n\n' "$what" "$took" >>"$GITHUB_STEP_SUMMARY"
+		[ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '**motel:** %s live, %s\n\n' "$what" "$took" >>"$GITHUB_STEP_SUMMARY"
 		return 0 ;;
 	esac
 	last=$(tail -n 1 "$body")
@@ -299,11 +299,11 @@ finish() { # <what>: dresses the outcome, exits on failure
 	# runner from a repository variable, which the box cannot know of.
 	if [ -n "$actions" ] && [ "$code" = 422 ]; then
 		runner=$(printf '%s' "$why" | sed -n 's/.*(runs-on: \([A-Za-z0-9._-]*\)).*/\1/p')
-		[ -z "$runner" ] || echo "The workflow's runner is the repository variable HOTSERVE_RUNS_ON: gh variable set HOTSERVE_RUNS_ON -R ${GITHUB_REPOSITORY:-<owner/repo>} --body $runner (or Settings → Secrets and variables → Actions → Variables), then deploy again."
+		[ -z "$runner" ] || echo "The workflow's runner is the repository variable MOTEL_RUNS_ON: gh variable set MOTEL_RUNS_ON -R ${GITHUB_REPOSITORY:-<owner/repo>} --body $runner (or Settings → Secrets and variables → Actions → Variables), then deploy again."
 	fi
-	[ -n "$actions" ] && printf '::error title=%s::%s\n' "$(prop "hotserve: $what failed")" "$(msg "${phase:+in $phase: }${why:-see the response above}${hint:+; the log says what the box must trust}")"
+	[ -n "$actions" ] && printf '::error title=%s::%s\n' "$(prop "motel: $what failed")" "$(msg "${phase:+in $phase: }${why:-see the response above}${hint:+; the log says what the box must trust}")"
 	if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-		printf '**hotserve:** %s failed%s, %s\n\n%s\n\n' "$what" "${phase:+ in \`$phase\`}" "$took" "${why:-see the log}" >>"$GITHUB_STEP_SUMMARY"
+		printf '**motel:** %s failed%s, %s\n\n%s\n\n' "$what" "${phase:+ in \`$phase\`}" "$took" "${why:-see the log}" >>"$GITHUB_STEP_SUMMARY"
 		# Tildes: a git ref or repository name cannot hold one, so the
 		# run's own values cannot end the fence early.
 		[ -z "$hint" ] || printf '~~~\n%s\n~~~\n\n' "$hint" >>"$GITHUB_STEP_SUMMARY"

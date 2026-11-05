@@ -1,4 +1,4 @@
-# hotserve
+# motel
 
 **Deploy from `git push` to a single cheap server, with zero downtime.**
 One binary that is your reverse proxy, your deploy pipeline, your rate
@@ -9,28 +9,28 @@ Kubernetes, no SSH keys in CI. Powered by
 [Caddy](https://caddyserver.com).
 
 ```
-git push  →  CI builds app.tar.gz  →  webhook  →  hotserve swaps it live. Zero downtime.
+git push  →  CI builds app.tar.gz  →  webhook  →  motel swaps it live. Zero downtime.
 ```
 
 Built in:
 
 | Module | What it does |
 |---|---|
-| **[liveswap](liveswap/)** | Zero-downtime app deploys: webhook from CI, artifact download, migrations, health-gated start, atomic traffic cutover, graceful stop, versioned releases with rollback. Your apps run as systemd units under the hotserve user's own service manager — Node.js, Go, anything that can listen on a unix socket — surviving hotserve restarts and upgrades, with a continuous watchdog that restarts them on crash or sustained health failure (a restart budget and backoff bound the rate; it throttles rather than giving up on anything a retry can fix). |
+| **[liveswap](liveswap/)** | Zero-downtime app deploys: webhook from CI, artifact download, migrations, health-gated start, atomic traffic cutover, graceful stop, versioned releases with rollback. Your apps run as systemd units under the motel user's own service manager — Node.js, Go, anything that can listen on a unix socket — surviving motel restarts and upgrades, with a continuous watchdog that restarts them on crash or sustained health failure (a restart budget and backoff bound the rate; it throttles rather than giving up on anything a retry can fix). |
 | **[penaltybox](penaltybox/)** | Rate limiting driven by your app's `X-Rate-Limit-Level` hint headers — weighted sliding-window budgets, tiers, and a penalty box for clients that cross them. |
 | **[box](examples/box/)** | Config from git: the box's Caddyfile lives in a repository of its own, and each signed push to `main` reaches the box, which checks the commit's signature, validates the file, installs it as root, and rolls back a reload that fails. The apps' secrets ride along, encrypted to the box's own key. CI holds no SSH key. |
 | **cache** | HTTP page caching via [Souin](https://github.com/darkweak/souin) with in-memory [Otter](https://github.com/darkweak/storages) storage. |
-| everything Caddy has | Automatic HTTPS, HTTP/2 + HTTP/3, the Caddyfile, the admin API — hotserve *is* Caddy underneath, with the modules above compiled in. |
+| everything Caddy has | Automatic HTTPS, HTTP/2 + HTTP/3, the Caddyfile, the admin API — motel *is* Caddy underneath, with the modules above compiled in. |
 
 ## Install
 
 A `.deb` for amd64 and arm64 on the
-[releases](https://github.com/smallhoursorg/hotserve/releases) page.
+[releases](https://github.com/smallhoursorg/motel/releases) page.
 [Your first deploy](docs/first-deploy.md) installs it and deploys an
 app, in four steps; [Upgrading](docs/upgrading.md) is every release
-after that. The package gives you `/usr/bin/hotserve`, a systemd
-service running as the `hotserve` user, a starter config at
-`/etc/hotserve/Caddyfile`, a systemd instance for the `hotserve`
+after that. The package gives you `/usr/bin/motel`, a systemd
+service running as the `motel` user, a starter config at
+`/etc/motel/Caddyfile`, a systemd instance for the `motel`
 user that stays up without anyone logging in — the thing your apps
 will run under — and, for a box whose config lives in a repository,
 the root applier that installs each signed push and the box's key
@@ -41,41 +41,41 @@ refuses to install where systemd is older than 257 (Debian 12 and
 earlier, Ubuntu 24.04): each app's sandbox needs it. It installs on other Debian-based
 distributions with systemd 257 or newer, but nothing else is tested.
 On a host that cannot deliver the per-app sandbox — many LXC-based and
-other container-style servers — hotserve refuses a config that runs
+other container-style servers — motel refuses a config that runs
 apps rather than serving something weaker; [liveswap/README.md](liveswap/README.md#sandbox)
 has what a host has to provide.
 
 The package also depends on `libpam-systemd`, `dbus` and
 `openssh-client`, all present on a stock Debian server: liveswap runs
-your apps as systemd units under the `hotserve` user's own service
+your apps as systemd units under the `motel` user's own service
 manager, which needs `pam_systemd` to start and `loginctl` to stay
 alive without a login, and the box checks each config commit's SSH
 signature with `ssh-keygen`. And on `restic` (23 MB), `sqlite3` and
 `ca-certificates`, for [backups](backups/README.md): a box that uses
 none carries the two programs too, so that one whose image installs no
 recommended package (Hetzner's Debian 13) gets them; the CA store is
-what hotserve and restic verify every certificate against.
+what motel and restic verify every certificate against.
 
 <details>
 <summary><b>Without the package</b> — the raw binary, for other systemd hosts</summary>
 
-The `hotserve_<version>_linux_<arch>.tar.gz` archives on the same page
+The `motel_<version>_linux_<arch>.tar.gz` archives on the same page
 hold the **raw binary** (plus LICENSE and a README; and
-`hotserve-backup` with its unit files, for [backups](backups/README.md)),
+`motel-backup` with its unit files, for [backups](backups/README.md)),
 for other systemd
 hosts you wire up yourself — a NixOS-style distro, say. Prefer the
 packages where you can: going this way you take on what the package
 does for you, all of it in [packaging/](packaging/) (`nfpm.yaml` and
-`postinstall.sh` are the whole list): a dedicated `hotserve` user, the
-`Type=notify` unit `hotserve.service`, `loginctl enable-linger
-hotserve` (with `libpam-systemd` installed) so the user manager exists
-for your apps, the config at `/etc/hotserve/Caddyfile`, and, for config
+`postinstall.sh` are the whole list): a dedicated `motel` user, the
+`Type=notify` unit `motel.service`, `loginctl enable-linger
+motel` (with `libpam-systemd` installed) so the user manager exists
+for your apps, the config at `/etc/motel/Caddyfile`, and, for config
 pushed from a box repository, the root applier's units
-(`hotserve-box-apply.path` and `.service`), its directories
-(`hotserve-box.tmpfiles`) and the box's key (`hotserve box key`, as
+(`motel-box-apply.path` and `.service`), its directories
+(`motel-box.tmpfiles`) and the box's key (`motel box key`, as
 root). The sandbox applies here too, so the host
 needs systemd 257 or newer and has to deliver both namespaces (many
-container and LXC hosts cannot) and seccomp. hotserve checks both from
+container and LXC hosts cannot) and seccomp. motel checks both from
 inside a test unit at start and refuses to start rather than run your
 apps without them. One case passes that check: a container host whose
 existing seccomp rules leave the kernel no room for the app units'
@@ -85,10 +85,10 @@ does NOT stop").
 
 **systemd is not optional.** liveswap runs your apps as transient
 units on your user's systemd manager and there is no fallback runner,
-so this is not a path onto a non-systemd host. hotserve would still
+so this is not a path onto a non-systemd host. motel would still
 serve there — Caddy, the cache, penaltybox — but a Caddyfile defining
 any `app` refuses to start. That is also why there is no `.apk`:
-Alpine runs OpenRC, and an Alpine package would install a hotserve
+Alpine runs OpenRC, and an Alpine package would install a motel
 without the feature it exists for.
 
 </details>
@@ -97,14 +97,14 @@ without the feature it exists for.
 
 **Installing and upgrading need root; everyday administering does
 not.** Checking a config
-(`hotserve validate`) needs no privilege, and reading the journal —
-hotserve's and every app's — needs the `adm` group. The config changes
+(`motel validate`) needs no privilege, and reading the journal —
+motel's and every app's — needs the `adm` group. The config changes
 only by a signed push from the box's repository
 ([examples/box](examples/box)), and so do the apps' secrets kept there,
 as values encrypted to the box's own key
-([docs/secrets.md](docs/secrets.md)); hotserve itself runs
+([docs/secrets.md](docs/secrets.md)); motel itself runs
 unprivileged. One thing reaches wider: `adm` reads the
-whole system journal, not only hotserve's lines, so it is a trust
+whole system journal, not only motel's lines, so it is a trust
 grant in its own right. The e2e suite administers its box that way.
 
 ## Getting started
@@ -126,11 +126,11 @@ builds and deploys on every change, so what they say works:
 - **[examples/node](examples/node)** — a single executable (Node's own
   build), so nothing is installed on the box. Largest tarball;
   simplest box. The tutorial's default. Start your own from the
-  template it is published as, [hotserve-example-node](https://github.com/smallhoursorg/hotserve-example-node).
+  template it is published as, [motel-example-node](https://github.com/smallhoursorg/motel-example-node).
 - **[examples/deno](examples/deno)** — `deno run` with a Deno installed
   under `/usr` on the box, and the runtime's permission flags held in
   the box's Caddyfile, where a compromised build cannot widen them.
-  Its template is [hotserve-example-deno](https://github.com/smallhoursorg/hotserve-example-deno).
+  Its template is [motel-example-deno](https://github.com/smallhoursorg/motel-example-deno).
 - **[examples/box](examples/box)** — the box's config, kept in a
   private repo of its own: a Caddyfile per box (which app, which repo
   may deploy it, where the deploy webhook answers, who may sign a
@@ -138,9 +138,9 @@ builds and deploys on every change, so what they say works:
   box checks the signatures and keeps the file it had if the new one
   does not load. The apps' secrets live there too, encrypted, one
   file per value ([docs/secrets.md](docs/secrets.md)). Its template is
-  [hotserve-example-box](https://github.com/smallhoursorg/hotserve-example-box).
+  [motel-example-box](https://github.com/smallhoursorg/motel-example-box).
 
-Both apps serve on the socket hotserve hands them, answer `/health`,
+Both apps serve on the socket motel hands them, answer `/health`,
 migrate before each version starts, stop cleanly, and deploy from
 GitHub Actions with no stored secret.
 
@@ -149,19 +149,19 @@ bucket off the box every hour, proves weekly that a restore would
 work, and puts an app back.
 
 
-## What hotserve is (and isn't)
+## What motel is (and isn't)
 
 - **A server product, distributed like Caddy.** Same CLI, same
-  Caddyfile, same admin API — `hotserve run`, `hotserve reload`,
-  `hotserve validate` all behave exactly as Caddy's do. The config is
+  Caddyfile, same admin API — `motel run`, `motel reload`,
+  `motel validate` all behave exactly as Caddy's do. The config is
   a Caddyfile, though: a JSON config (a `.json` file, or JSON posted
   to the admin API) is unsupported, because Caddy deletes every
-  `"@id"` key from JSON before hotserve's checks can see it.
+  `"@id"` key from JSON before motel's checks can see it.
 - **Made for one cheap server.** Apps run as systemd units under
-  hotserve's own user manager, reached over unix sockets; no container
+  motel's own user manager, reached over unix sockets; no container
   runtime anywhere. That's why there's deliberately no Docker image.
 - **Not a cluster.** Single-node by design. If you outgrow one server,
-  you've outgrown hotserve — a good problem.
+  you've outgrown motel — a good problem.
 
 ## Security
 
@@ -176,25 +176,25 @@ rests on:
   no core dump (`LimitCORE=0`), so a crash cannot leave an app's
   memory on disk.
 - **Every app is sandboxed, with no opt-out.** Apps share the
-  `hotserve` user, so each runs in its own systemd sandbox: it sees
+  `motel` user, so each runs in its own systemd sandbox: it sees
   its own release, its `shared/` data, its instance's socket directory
   (`run/<nonce>/`), a private `/tmp`, and the parts of the OS it needs. Nothing else on the host exists in its view —
-  hotserve's keys and every sibling app are *absent* from its
+  motel's keys and every sibling app are *absent* from its
   filesystem and invisible in its process table, not merely
   unreadable. A host that cannot deliver that refuses to start rather
   than run something weaker. What is shared by design is the network,
-  for outbound calls; nothing hotserve runs listens on a port.
+  for outbound calls; nothing motel runs listens on a port.
   Details: [liveswap/README.md](liveswap/README.md#sandbox).
 - **Deploys are authenticated without a shared secret.** A deploy, and
   a config push, carries a short-lived token — an OIDC token from CI,
   verified against the provider's public keys, or one signed by a
   local key whose public half the box holds. Nothing an attacker can
   steal off the box lets them deploy.
-- **hotserve cannot change its own config.** The Caddyfile is the box's
+- **motel cannot change its own config.** The Caddyfile is the box's
   policy — which repository may deploy each app, each runtime's
   permission flags, who may sign the next change — and only root
   writes it. A push from the box's repository reaches root through
-  hotserve, and root installs the file only if the commit descends
+  motel, and root installs the file only if the commit descends
   from the one the box runs and is signed by a key the running file
   names. Details: [box/DESIGN-box.md](box/DESIGN-box.md).
 
@@ -206,7 +206,7 @@ above for what an app can reach,
 settings, and [DESIGN-threat-model.md](DESIGN-threat-model.md) for why
 each one is there. What is still ahead:
 
-- **Per-app UIDs.** Apps share the unprivileged `hotserve` user; giving
+- **Per-app UIDs.** Apps share the unprivileged `motel` user; giving
   each its own would need a small privileged helper, so it stays a
   later milestone.
 - **A hosted APT repository**, with package signing and auto-updates.
@@ -220,7 +220,7 @@ signal that a release is broken.
 
 ## Questions, bugs and ideas
 
-They go in [Discussions](https://github.com/smallhoursorg/hotserve/discussions);
+They go in [Discussions](https://github.com/smallhoursorg/motel/discussions);
 issues and pull requests are the maintainer's. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -253,18 +253,18 @@ Desktop (macOS/Windows) or Linux with systemd both qualify; the targets
 check and say so up front. That is also how liveswap's systemd runner
 is developed and tested on a Mac: nothing here needs a Linux VM.
 
-What building hotserve costs — Claude Code sessions, runner minutes,
+What building motel costs — Claude Code sessions, runner minutes,
 Copilot reviews, in money, kWh and CO2 — is a committed ledger:
 [docs/footprint.md](docs/footprint.md).
 
 The repo is a Go multi-module workspace: `liveswap/` and `penaltybox/`
 are lean, independently usable Caddy modules
-(`xcaddy build --with github.com/smallhoursorg/hotserve/liveswap`).
+(`xcaddy build --with github.com/smallhoursorg/motel/liveswap`).
 `box/` is a module of its own but part of the product only: it imports
 liveswap through a local `replace`, so it builds only from this repo,
 and it runs only with the package's applier units
 ([box/DESIGN-box.md](box/DESIGN-box.md)). The root module
-builds the product binary from `cmd/hotserve`, and `packaging/` turns
+builds the product binary from `cmd/motel`, and `packaging/` turns
 it into the `.deb`.
 
 ### Dependency policy
@@ -305,21 +305,21 @@ entirely. (Counts exclude the `govulncheck` tool dependency — a
 inherited by importers; it exists in go.mod so Dependabot can bump
 the scanner.)
 
-| Dependency | Pulls in (~modules) | hotserve | liveswap | penaltybox | box | Notes |
+| Dependency | Pulls in (~modules) | motel | liveswap | penaltybox | box | Notes |
 |---|---|:-:|:-:|:-:|:-:|---|
-| [Caddy](https://github.com/caddyserver/caddy) | ~565 | ✓ | ✓ | ✓ | ✓ | The foundation — hotserve *is* a Caddy distribution. Commercially sponsored, strong security track record. Nearly the entire dependency tree is Caddy's. |
+| [Caddy](https://github.com/caddyserver/caddy) | ~565 | ✓ | ✓ | ✓ | ✓ | The foundation — motel *is* a Caddy distribution. Commercially sponsored, strong security track record. Nearly the entire dependency tree is Caddy's. |
 | [Souin](https://github.com/darkweak/souin) (`cache`) | +24 | ✓ | — | — | — | HTTP cache (RFC 7234). Solo-maintained; the e2e suite exercises it directly so drift is caught in CI. The riskiest dependency here, and still better than an in-house HTTP cache. |
 | [darkweak/storages/otter](https://github.com/darkweak/storages) | +6 | ✓ | — | — | — | In-memory storage backend for Souin, wrapping [maypok86/otter](https://github.com/maypok86/otter). |
 | [zap](https://github.com/uber-go/zap) | 0 (already in Caddy's tree) | ✓ | ✓ | ✓ | ✓ | Caddy's module logging API is zap; not optional for a Caddy module. |
 | [go-humanize](https://github.com/dustin/go-humanize) | 0 (already in Caddy's tree) | ✓ | ✓ | — | — | A few formatting helpers in liveswap. |
-| [go-systemd](https://github.com/coreos/go-systemd) (`dbus`) + [godbus](https://github.com/godbus/dbus) | +1 | ✓ | ✓ | — | — | liveswap's runner: apps are transient units created over systemd's D-Bus API on the hotserve user's own manager (no polkit, no root). go-systemd was already in the workspace graph; godbus is its one dependency, pure Go. |
+| [go-systemd](https://github.com/coreos/go-systemd) (`dbus`) + [godbus](https://github.com/godbus/dbus) | +1 | ✓ | ✓ | — | — | liveswap's runner: apps are transient units created over systemd's D-Bus API on the motel user's own manager (no polkit, no root). go-systemd was already in the workspace graph; godbus is its one dependency, pure Go. |
 | [go-oidc](https://github.com/coreos/go-oidc) + [go-jose](https://github.com/go-jose/go-jose) | 0 (already in Caddy's tree) | ✓ | ✓ | — | — | Deploy authentication (`deploy_trust`): OIDC discovery/JWKS verification and JWT signing/verification. Both were already transitive dependencies of Caddy; liveswap now requires them directly, and box's pushes use the same verifier through liveswap. Vetted and widely used — the deliberate alternative to hand-rolling JWT crypto. |
 | [age](https://github.com/FiloSottile/age) (`filippo.io/age`) | +3 | ✓ | — | — | ✓ | Secrets: each value in the box repository is an age file encrypted to the box's own key, which root decrypts on the box into the app's env file. Chosen over SOPS, whose library measured 80 more modules in a binary root runs ([box/DESIGN-box.md](box/DESIGN-box.md), "Decisions and rejected alternatives"). |
 
 A ✓ in the liveswap, penaltybox and box columns means that module's own
 code requires the dependency. A "—" there is not "absent from that
 module's graph" — the rows marked "already in Caddy's tree" arrive via
-Caddy either way. The hotserve column is ✓ throughout: the product
+Caddy either way. The motel column is ✓ throughout: the product
 binary contains every row.
 
 Build and CI tooling never ships to users and is pinned by image tag
@@ -337,7 +337,7 @@ above before it merges.
 
 ## License
 
-Apache-2.0. hotserve is powered by [Caddy](https://caddyserver.com),
+Apache-2.0. motel is powered by [Caddy](https://caddyserver.com),
 [Souin](https://github.com/darkweak/souin),
 [Otter](https://github.com/darkweak/storages), and
 [age](https://github.com/FiloSottile/age).

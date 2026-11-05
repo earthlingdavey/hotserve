@@ -15,8 +15,8 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 // The box's side of the repository's secrets (DESIGN-box.md, "Secrets"):
@@ -26,12 +26,12 @@ import (
 // secrets"); what root does with the files is the install transaction.
 
 // secretsDir holds one env file per app with secrets, written by root
-// and read by hotserve at each launch (DESIGN-box.md, "Paths, owners,
-// and who may touch what"). The box's key is /etc/hotserve/age/identity
+// and read by motel at each launch (DESIGN-box.md, "Paths, owners,
+// and who may touch what"). The box's key is /etc/motel/age/identity
 // ("The box's key"): root's alone, 0600 in a 0700 directory, so that no
-// other account — the hotserve uid, which every app also runs as,
+// other account — the motel uid, which every app also runs as,
 // included — can read it whatever its mode.
-const secretsDir = "/etc/hotserve/secrets" //nolint:gosec // a directory's path, not a credential
+const secretsDir = "/etc/motel/secrets" //nolint:gosec // a directory's path, not a credential
 
 // Caps (DESIGN-box.md, "Caps").
 const (
@@ -55,7 +55,7 @@ var secretNames = proof.Names{App: appName.MatchString, Var: liveswap.ValidEnvKe
 // errNotIdentity is a key file that is there and does not read as the
 // box's (the Console commands table's text); age's own parse error is
 // not passed on, since a line it could not read may be the key itself.
-var errNotIdentity = errors.New("is not an age identity: move it aside, run hotserve box key again, then make rekey BOX_KEY=<the new key> in the repository")
+var errNotIdentity = errors.New("is not an age identity: move it aside, run motel box key again, then make rekey BOX_KEY=<the new key> in the repository")
 
 // readIdentity reads the box's key: a regular file, not followed if a
 // symlink, within maxIdentity, in age-keygen's format, holding exactly
@@ -208,7 +208,7 @@ func openSecrets(id *age.X25519Identity, s *proof.Secrets, caddyfile string) ([]
 // envFileHeader opens every env file the box writes: one constant line,
 // so that the same values always render the same bytes and a rekey (new
 // ciphertext, same values) leaves the file as it is.
-const envFileHeader = "# Written by hotserve from the box's repository; a push that changes these secrets replaces this file.\n"
+const envFileHeader = "# Written by motel from the box's repository; a push that changes these secrets replaces this file.\n"
 
 // ageIntro and ageArmor are how a binary age file and an armored one
 // begin (age-encryption.org/v1).
@@ -286,7 +286,7 @@ func secretsShown(caddyfile string) string {
 // shadows none of them, and no app's env_file names a file in
 // secretsDir the box will not write for it. These are mistakes a push
 // should be told about before the app's next launch, not a boundary:
-// the handler and `hotserve box describe` run them, root does not. An
+// the handler and `motel box describe` run them, root does not. An
 // env_file's value is never quoted back, since it may hold a value the
 // author meant to keep out of the run's output.
 func secretsFit(shape *Shape, s *proof.Secrets, caddyfile string) error {
@@ -308,7 +308,7 @@ func secretsFit(shape *Shape, s *proof.Secrets, caddyfile string) error {
 		for _, v := range a.Vars {
 			switch {
 			case v.Name == "SOCKET":
-				return refused("secret SOCKET for app %s: hotserve sets SOCKET last, so it would never reach the app", a.Name)
+				return refused("secret SOCKET for app %s: motel sets SOCKET last, so it would never reach the app", a.Name)
 			case block.hasEnv(v.Name):
 				return refused("app %s sets %s with env and as a secret; env wins over env_file, so the secret would never reach it", a.Name, v.Name)
 			}

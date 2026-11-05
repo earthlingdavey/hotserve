@@ -20,10 +20,10 @@
 #   SOAK_REQS     requests per client
 set -u
 
-PROXY="http://e2e-hotserve:8080"
-HOOK="http://e2e-hotserve:8081/demo"
-ADMIN="http://e2e-hotserve:2019"
-PB="http://e2e-hotserve:9080"
+PROXY="http://e2e-motel:8080"
+HOOK="http://e2e-motel:8081/demo"
+ADMIN="http://e2e-motel:2019"
+PB="http://e2e-motel:9080"
 ART="http://e2e-artifacts:8080/artifacts"
 . /lib.sh
 wait_for_token

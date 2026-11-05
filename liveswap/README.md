@@ -7,7 +7,7 @@ socket. CI builds a tarball, POSTs a webhook with its URL, and Caddy
 does the rest: download, migrate, start the new version on its own
 socket, health-gate it, atomically cut traffic over, gracefully stop
 the old one. No Kubernetes, no Nomad, no SSH keys in CI, no extra daemons.
-One binary. Part of [hotserve](https://github.com/smallhoursorg/hotserve), from [smallhours](https://github.com/smallhoursorg).
+One binary. Part of [motel](https://github.com/smallhoursorg/motel), from [smallhours](https://github.com/smallhoursorg).
 
 ```
 git push → CI builds app.tar.gz → uploads it → curl webhook → Caddy hot-swaps it
@@ -62,11 +62,11 @@ If you know Nomad, the concept map is:
 Build Caddy with the module:
 
 ```sh
-xcaddy build --with github.com/smallhoursorg/hotserve/liveswap
+xcaddy build --with github.com/smallhoursorg/motel/liveswap
 ```
 
 Or take the prebuilt binary from
-[hotserve](https://github.com/smallhoursorg/hotserve/releases), which
+[motel](https://github.com/smallhoursorg/motel/releases), which
 ships liveswap compiled in — on Debian 13 the `.deb` sets up everything
 below for you.
 
@@ -83,10 +83,10 @@ most container hosts will not give you.
 ```caddyfile
 {
 	# Keep the admin API off TCP: every app can reach localhost. This
-	# is the hotserve package's path (its unit creates /run/hotserve and
+	# is the motel package's path (its unit creates /run/motel and
 	# `systemctl reload` finds the socket here); a self-managed unit
-	# needs RuntimeDirectory=hotserve, or another dir its user owns.
-	admin unix//run/hotserve/admin.sock
+	# needs RuntimeDirectory=motel, or another dir its user owns.
+	admin unix//run/motel/admin.sock
 
 	liveswap {
 		# root /var/lib/liveswap                # where releases/state live (default)
@@ -101,7 +101,7 @@ most container hosts will not give you.
 		app blog {                             # a Node.js app
 			command node server.js             # runs with CWD = the release dir
 			pre_start node migrate.js          # optional; non-zero exit aborts the deploy
-			env_file /etc/hotserve/blog.env    # optional KEY=VALUE file
+			env_file /etc/motel/blog.env    # optional KEY=VALUE file
 			env NODE_ENV production            # inline env, repeatable
 
 			# Who may deploy this app — required (here or globally). A
@@ -109,7 +109,7 @@ most container hosts will not give you.
 			# authorized if any deploy_trust source verifies it. No
 			# shared secret is ever stored on the box.
 			deploy_trust github {                 # preset: GitHub Actions OIDC
-				audience hotserve
+				audience motel
 				claim repository your-org/blog     # pin who may deploy
 				claim ref        refs/heads/main
 			}
@@ -136,7 +136,7 @@ most container hosts will not give you.
 			command ./server --config config.yaml
 			env DATABASE_URL sqlite:{shared_dir}/api.db
 			deploy_trust github {                 # its own repo, its own block
-				audience hotserve
+				audience motel
 				claim repository your-org/api
 				claim ref        refs/heads/main
 			}
@@ -162,7 +162,7 @@ deploy.example.com {
 ```
 
 Apps must listen on the unix socket at the injected `SOCKET` path —
-one per instance, in a `run/<nonce>/` dir of its own; hotserve proxies to
+one per instance, in a `run/<nonce>/` dir of its own; motel proxies to
 it and health-probes it, and nothing listens on a TCP port. Their
 environment is, lowest precedence first: an allowlisted slice of
 Caddy's environment (`PATH`, `LANG`, `TZ`, `LC_*` — nothing else, so
@@ -183,7 +183,7 @@ behind (below, "worker trees never outlive it"), so `env` and
 passed explicitly via `env` or `env_file`. Apps get the user manager's
 resource limits; each unit sets its open-files limit (soft and hard)
 to the manager's ceiling, which the package raises to match
-`hotserve.service` (1048576) via a `user@<uid>.service.d` drop-in —
+`motel.service` (1048576) via a `user@<uid>.service.d` drop-in —
 effective from the manager's next start: an upgrade installs the
 drop-in but deliberately does not restart a running manager (that
 would stop every app), so the ceiling changes at the next boot or
@@ -238,23 +238,23 @@ Framework CLIs that only bind TCP (`next start`, Astro's node adapter)
 need a small custom server that calls the framework's request handler
 from an `http.Server` listening on the socket.
 
-hotserve's health probe arrives as `GET <health_path>` with
+motel's health probe arrives as `GET <health_path>` with
 `Host: localhost`; an app that allowlists hosts (Django's
 `ALLOWED_HOSTS`, Rails' `config.hosts`) must accept it. To poke a
 running app yourself, send the same request from a root shell, as the
-hotserve user (`run/` is `0750 hotserve:hotserve`):
-`runuser -u hotserve -- curl --unix-socket "$SOCKET" http://localhost/health`
+motel user (`run/` is `0750 motel:motel`):
+`runuser -u motel -- curl --unix-socket "$SOCKET" http://localhost/health`
 (the path is `.socket` in the status JSON).
 
 Bind the socket **once** per instance. At the first successful
-connect hotserve hard-links the socket's inode into a directory of
+connect motel hard-links the socket's inode into a directory of
 its own (`<app>/proxy/`, outside the sandbox) and dials that from
 then on — never the name under `run/<nonce>/`, which the app can write — so
-an app that unlinks and re-binds its path is, as far as hotserve is
+an app that unlinks and re-binds its path is, as far as motel is
 concerned, gone: its health probes fail and the watchdog restarts it.
 (With `health_path off` the watchdog only watches the process, so a
 re-bound app stays up and unroutable — another reason not to
-re-bind.) A stale socket file is never your problem either: hotserve removes
+re-bind.) A stale socket file is never your problem either: motel removes
 it with the instance's run dir once the instance is retired, and
 every launch gets a fresh path.
 
@@ -329,8 +329,8 @@ app blog {
 }
 ```
 
-The block is a declaration: hotserve checks it when the config loads
-— so `hotserve validate` refuses a bad one — and does nothing else
+The block is a declaration: motel checks it when the config loads
+— so `motel validate` refuses a bad one — and does nothing else
 with it. Nothing in the server reads, copies or schedules anything
 because of it.
 
@@ -355,47 +355,47 @@ An app that declares a backup needs a literal `root`: with `root
 block, a placeholder `root` loads.
 
 The Caddyfile's own `{$VAR}` is not caught: it is substituted in the
-text wherever the file is adapted, before hotserve is given the
+text wherever the file is adapted, before motel is given the
 config, so the result depends on the environment of whoever adapts
 it. Do not write `root` or a backup path with one in a config that
 declares a backup.
 
 Where a backup is declared matters as much as what. A backup run
-(`hotserve-backup`) reads the Caddyfile inside a view that holds the
+(`motel-backup`) reads the Caddyfile inside a view that holds the
 Caddyfile's own directory and nothing else, as an account that owns
 nothing there: an app whose `app` line, `backup` block or `root` it
 cannot read there is not in its plan, and is not backed up. So once
-any app declares a backup, `hotserve validate` and `hotserve reload`
+any app declares a backup, `motel validate` and `motel reload`
 refuse a Caddyfile in which one of those was read from a file outside
 its directory — an import, or the file a snippet is defined in — or
 from a file others may not read, or under a directory others may not
 enter — a link is followed to where it leads. A refused reload leaves
-the running config serving. `hotserve run` is never refused for it — a
+the running config serving. `motel run` is never refused for it — a
 start that refused would take every site down — and logs the same
-error instead. `hotserve validate` of any file but
-`/etc/hotserve/Caddyfile` does not ask that file for its own mode or
+error instead. `motel validate` of any file but
+`/etc/motel/Caddyfile` does not ask that file for its own mode or
 the directories on its way: a candidate is not the file a run reads
 (the box applier's step 6 validates a copy it staged `0600` in a
 directory of its own), and the reload asks them of the file installed.
 What a candidate imports is asked, and so is every directory from the
 candidate's own down to it.
 
-hotserve-backup reads one Caddyfile, `/etc/hotserve/Caddyfile`. Where
-it is installed (`/usr/bin/hotserve-backup`), `hotserve reload` of any
+motel-backup reads one Caddyfile, `/etc/motel/Caddyfile`. Where
+it is installed (`/usr/bin/motel-backup`), `motel reload` of any
 other Caddyfile that declares a backup is refused as well: the server
 would run what no backup run reads, and an app only in it would never
-be backed up. The refusal names `hotserve-backup validate <file>` for a
-look at what a backup run would make of it, and `/etc/hotserve/Caddyfile`
-as where to put it (a signed push does). Where hotserve-backup is not
-installed, it is a warning. `hotserve validate` of a candidate file —
+be backed up. The refusal names `motel-backup validate <file>` for a
+look at what a backup run would make of it, and `/etc/motel/Caddyfile`
+as where to put it (a signed push does). Where motel-backup is not
+installed, it is a warning. `motel validate` of a candidate file —
 step 6 validates a staged copy before the applier puts it in place — is
-not asked; `hotserve run` logs it and serves.
+not asked; `motel run` logs it and serves.
 
 The check adapts the Caddyfile in the environment the command was
 started in. It does not load `--envfile` first, as Caddy's own
 `validate` and `run` do: a `{$NAME}` set only there, in an import's
 path, is judged here as unset. The packaged service passes no
-`--envfile`, and `hotserve-backup` refuses an import whose path depends
+`--envfile`, and `motel-backup` refuses an import whose path depends
 on a variable.
 ### Resource caps
 
@@ -407,7 +407,7 @@ you set it. What each one does when it is hit:
 
 | Cap hit | What happens | What you see |
 |---|---|---|
-| `memory_max` | The kernel kills the process that asked for the memory — under a `sh -c` or `npm start` command that is a child — and the manager then stops the unit (`Result=oom-kill`); the watchdog restarts the app, on its budget. A `pre_start` that hits it fails the deploy | `journalctl -k` shows the kill — the kernel's line names the unit's cgroup and the process; the app's own journal (`journalctl -t hotserve-<app>`) shows nothing, a killed process prints no last line; the deploy's response or `watchdog.last_restart_cause` says `crash`, and the exit the runner records ends `; the kernel's OOM killer took a process of the unit (its memory_max, or the box's memory), and the unit was stopped for it` |
+| `memory_max` | The kernel kills the process that asked for the memory — under a `sh -c` or `npm start` command that is a child — and the manager then stops the unit (`Result=oom-kill`); the watchdog restarts the app, on its budget. A `pre_start` that hits it fails the deploy | `journalctl -k` shows the kill — the kernel's line names the unit's cgroup and the process; the app's own journal (`journalctl -t motel-<app>`) shows nothing, a killed process prints no last line; the deploy's response or `watchdog.last_restart_cause` says `crash`, and the exit the runner records ends `; the kernel's OOM killer took a process of the unit (its memory_max, or the box's memory), and the unit was stopped for it` |
 | `tasks_max` | A `fork` or thread creation fails with `EAGAIN`. A runtime limps on; a `sh -c` wrapped `command` dies on the first refused fork (dash exits 2), which the watchdog reads as a crash. Every unit starts as such a shell (the sibling), which is why a cap of 1 is refused at config time | the app's own error, in its journal |
 | `cpu_quota` | The unit waits for the next 100 ms period. Nothing is killed | latency; `cpu.stat`'s `nr_throttled` in the unit's cgroup |
 
@@ -417,16 +417,16 @@ Deno server 8, so a `tasks_max` under a few dozen breaks a runtime
 before it breaks a fork bomb. Without `tasks_max` a unit is already
 bounded at the user manager's default, 15% of the kernel's
 `threads-max` (2273 on a 2 GB box), and a fork bomb at that bound left
-the box operable: hotserve answered, a deploy started within 2 s,
+the box operable: motel answered, a deploy started within 2 s,
 stopping the unit took 5 s. What it did do was stall the app's
 **siblings** — a second app's requests ran to 10 s — because every
 app's unit has the same CPU weight; `cpu_quota` on each app is what
 bounds that. Caddy itself is not starved: `system.slice` and
 `user.slice` split CPU 50/50 at the root. A leak without `memory_max`
 is killed by the kernel's global OOM killer, the app first — a
-user-manager unit runs at `oom_score_adj` 200 and hotserve.service at
+user-manager unit runs at `oom_score_adj` 200 and motel.service at
 0, which is systemd's default for user managers and their units, not
-a setting of hotserve's — after the box has spent its free memory on
+a setting of motel's — after the box has spent its free memory on
 it.
 
 A reload that changes a cap sets it on the running instance at once,
@@ -443,19 +443,19 @@ the caps apply at the app's next launch.
 A cap is only as real as the controller behind it: on a host whose
 user manager does not delegate the memory, pids or cpu controller to
 its units (some containers), systemd accepts and reports the cap and
-the kernel bounds nothing. hotserve reads the unit's own
+the kernel bounds nothing. motel reads the unit's own
 `cgroup.controllers` when it starts or reattaches, warns in the
 journal, and lists such caps in status as `caps_unenforced` instead of
 under `caps`. Debian 13 delegates all three (measured, as do Ubuntu
 24.04/26.04 and Fedora 43), so on a supported box the field never
 appears.
 
-To bound every app at once — the whole `hotserve` user against Caddy —
+To bound every app at once — the whole `motel` user against Caddy —
 set the caps on the user's slice instead, from the console:
-`systemctl set-property user-$(id -u hotserve).slice MemoryMax=2G CPUQuota=300%`
+`systemctl set-property user-$(id -u motel).slice MemoryMax=2G CPUQuota=300%`
 applies at once and persists; a drop-in file plus `daemon-reload` is
 **not** re-applied to the live slice on Debian 13's systemd 257
-(measured; 255 and 259 do). It is the box's setting, not hotserve's,
+(measured; 255 and 259 do). It is the box's setting, not motel's,
 so the package does not write it — see
 [hardening step 6](../docs/hardening.md#6-a-ceiling-for-all-the-apps-together-if-you-want-one).
 
@@ -534,27 +534,27 @@ deploy gate alike.
 
 Every instance runs inside systemd's own per-unit sandbox. There is
 one sandbox, no setting that turns it off or widens it, and a host
-either delivers it or hotserve does not start with an app configured:
+either delivers it or motel does not start with an app configured:
 
 | What every unit gets |
 |---|
 | User namespace (`PrivateUsers=`) |
 | PID namespace (`PrivatePIDs=`) — supervisor, user manager and siblings **invisible and unsignalable** |
 | Deny-by-default filesystem: the whole host filesystem replaced by an empty read-only tmpfs, only named paths bound back |
-| hotserve's keys and sockets, other apps, and every path nothing named — **absent**, not merely unreadable |
+| motel's keys and sockets, other apps, and every path nothing named — **absent**, not merely unreadable |
 | Private `/tmp`, minimal `/dev`, read-only cgroupfs, no capabilities, `@system-service` syscall filter less `io_uring_setup`, the native syscall ABI only, `AF_INET`/`AF_INET6`/`AF_UNIX`/`AF_NETLINK` only for `socket()` — the protocol modules under them (`sctp`, `l2tp_ip`, `l2tp_ip6`, `smc`) load for any program unless [hardening step 5](../docs/hardening.md#5-kernel-modules-no-app-needs-if-you-want-them) refuses them (#315) — no nested namespaces |
 
 `PrivatePIDs=` needs systemd 257, which Debian 13 — the supported
 host — ships, and the `.deb` refuses to install on anything older.
 Where the namespaces cannot be had at all (a container, an
 LXC VPS, a kernel built without user namespaces, an LSM that refuses
-them) hotserve refuses to start, naming what the host lacks. It is
+them) motel refuses to start, naming what the host lacks. It is
 deliberately not a ladder, and there is deliberately no mode that runs
 anyway: a weaker sandbox wearing the same name — or none at all — is
 the "looks configured, quietly weaker" failure this design refuses.
 An app with no sandbox would not be alone in paying for it: every app
-runs as the hotserve user, so one bare app could read every sibling's
-data and hotserve's own keys. That is why there is no per-app opt-out
+runs as the motel user, so one bare app could read every sibling's
+data and motel's own keys. That is why there is no per-app opt-out
 either.
 
 **An app sees its release dir, its `shared/`, its instance's
@@ -564,9 +564,9 @@ host exists in its view.**
 That is the whole guarantee. The view is built deny-by-default
 (`TemporaryFileSystem=/:ro` plus explicit binds), so it is a policy
 rather than a list of things to hide: `state.json`, `tmp/` (the upload
-staging dir), other releases, other apps, `/var/lib/hotserve` (TLS
-keys), `/run/hotserve` (admin socket), `/run/user/<uid>` (the manager
-socket), `/etc/hotserve`, `/home`, `/opt`, `/srv` and every operator
+staging dir), other releases, other apps, `/var/lib/motel` (TLS
+keys), `/run/motel` (admin socket), `/run/user/<uid>` (the manager
+socket), `/etc/motel`, `/home`, `/opt`, `/srv` and every operator
 `env_file` are absent — not present-but-unreadable — and no list has
 to be kept current for that to stay true.
 
@@ -590,9 +590,9 @@ inside the release dir, say. Point it somewhere the sandbox does not bind and
 the app gets a `HOME` that does not exist inside its unit; liveswap
 warns at every launch rather than refusing, since you asked for it.
 The network namespace is shared by design — apps make outbound calls
-and reach a same-box database over loopback — but nothing hotserve
+and reach a same-box database over loopback — but nothing motel
 runs listens on a port: each instance binds its own unix socket under
-`run/<nonce>/`, which hotserve reaches at its real path, and a sibling's
+`run/<nonce>/`, which motel reaches at its real path, and a sibling's
 socket is outside the view like everything else of the sibling's.
 
 This closes the routes the threat model ranks first: reading the
@@ -624,7 +624,7 @@ too, and stops at a refusal rather than retrying it (see
 
 **The host is measured at start.** Capability is probed by running a
 throwaway unit and checking the namespaces and seccomp from inside
-(`journalctl -t hotserve-sandbox-probe` shows what it saw). A host
+(`journalctl -t motel-sandbox-probe` shows what it saw). A host
 that cannot deliver the sandbox fails the start — admin socket and
 proxy included — with the probe's reason. That measurement is cached
 per connection to the user manager, so a reload does not repeat it;
@@ -633,27 +633,27 @@ fixing the host does take effect. Restarting the user manager
 re-measures either way.
 
 **The sandbox is an availability dependency.** A host that stops being
-able to deliver it will not start hotserve until the host is fixed,
-and systemd does not retry a start hotserve refused — fix the host,
-then `systemctl start hotserve`; there is no setting that runs apps
+able to deliver it will not start motel until the host is fixed,
+and systemd does not retry a start motel refused — fix the host,
+then `systemctl start motel`; there is no setting that runs apps
 without one. That is deliberate —
 the alternative is a supervisor that silently runs every app with no
 isolation because the kernel changed its mind — so prove a box before
-you restart into it. `hotserve validate` does not measure the host (it
+you restart into it. `motel validate` does not measure the host (it
 never starts an app); a reload does, once: the verdict is held for the
-life of hotserve's connection to the user manager, so the first start
-or reload after hotserve dials the manager is the measurement and a
+life of motel's connection to the user manager, so the first start
+or reload after motel dials the manager is the measurement and a
 later reload reuses it. On a fresh box that first reload is the proof
 you want, and a reload that cannot activate leaves the running config
 serving where a restart does not. A host changed underneath a running
-hotserve — a sysctl, an LSM policy load — is not re-measured until the
+motel — a sysctl, an LSM policy load — is not re-measured until the
 next restart, which is where it can refuse; there is deliberately no
 uncached preflight, because the cache is what keeps a throwaway unit
 off every reload.
 Every launch is sandboxed the same way — a deploy, a crash relaunch,
-boot recovery, a reattach after `systemctl restart hotserve` — so
+boot recovery, a reattach after `systemctl restart motel` — so
 there is nothing per instance to roll out and nothing to watch in
-status: an app is running, or hotserve did not start.
+status: an app is running, or motel did not start.
 
 **What a running instance's sandbox is fixed to.** A unit's view is
 built when it starts and is never rebuilt under it — reloads
@@ -664,11 +664,11 @@ thing that ages now, and it fails safe: a secret belonging to an app
 you add tomorrow is already absent from every unit running today,
 because nothing ever bound it.
 
-**Keep env files outside every app's view.** `/etc/hotserve` is the
+**Keep env files outside every app's view.** `/etc/motel` is the
 documented location and no app may name it. The box writes each app's
-secrets from its repository to `/etc/hotserve/secrets/<app>.env`
+secrets from its repository to `/etc/motel/secrets/<app>.env`
 ([docs/secrets.md](../docs/secrets.md)); a file made by hand elsewhere
-under `/etc/hotserve` works the same way. hotserve refuses a config
+under `/etc/motel` works the same way. motel refuses a config
 in which one app's `env_file` sits inside another app's own dirs,
 or anywhere in the OS base view (`/usr`, the named `/etc` entries) —
 both would put one app's secrets in another app's sandbox, and the
@@ -677,16 +677,16 @@ app's `shared/` is a warning rather than an error: the app receives
 those variables anyway, but under `shared/` it can also rewrite the
 file and so choose its own next launch's environment.
 
-hotserve reads the file itself, as the `hotserve` user, each time the
+motel reads the file itself, as the `motel` user, each time the
 app launches (a deploy, a rollback, a relaunch after a crash or a
 reboot); loading the config does not open it. So it must be readable
 by that user and nobody else: the box writes its files 0640
-`root:hotserve`, and a file made by hand needs the same, as root —
-`install -m 0640 -o root -g hotserve -T /dev/null /etc/hotserve/blog.env`,
+`root:motel`, and a file made by hand needs the same, as root —
+`install -m 0640 -o root -g motel -T /dev/null /etc/motel/blog.env`,
 then edit it — and keep it in place: a missing or unreadable file
 fails that launch.
 A world-readable or world-writable file is warned about — at config
-load (`hotserve validate` shows it when run as an account that can
+load (`motel validate` shows it when run as an account that can
 reach the file, and says so when it cannot) and again at each launch,
 from the file the launch actually read — never refused: the launch
 still runs, and a mode changed between loads is not what takes an app
@@ -732,12 +732,12 @@ Practical consequences worth planning around:
   under a home directory, is not — ship it inside the release instead.
 
 An app's own `releases/<version>`, `shared/` and `run/<nonce>/` must
-**be** the directories they name. hotserve resolves them immediately
+**be** the directories they name. motel resolves them immediately
 before the unit is created and refuses to launch if any points
 somewhere else, because a symlink there cannot be told from one you
 meant. No app can plant one: inside its unit it writes only those
 three. A link in the app dir was put there from outside every
-sandbox, and hotserve refuses it rather than guess. To put an app's
+sandbox, and motel refuses it rather than guess. To put an app's
 data on another disk, bind-mount it at the same path (`mount --bind
 /mnt/blog-data /var/lib/liveswap/blog/shared`, or the equivalent
 fstab entry) — a mount resolves to itself, so it is invisible to that
@@ -745,12 +745,12 @@ check, and an app cannot forge one. Being invisible, its source is not
 checked either: mount only this app's own data there. A source that
 is, contains or sits inside one another app uses (another app's
 directory, one disk path mounted for two apps, a whole app dir mounted
-at another's) gives both apps the same files, writable, and hotserve
+at another's) gives both apps the same files, writable, and motel
 does not refuse it (#308).
 
-The app's directory itself, and the directories hotserve keeps in it
+The app's directory itself, and the directories motel keeps in it
 (`releases/`, `shared/`, `tmp/`, `run/`, `proxy/`, `deploys/`), must
-not be links either, wherever hotserve writes or deletes there:
+not be links either, wherever motel writes or deletes there:
 through a link (`blog -> shop`) they would be another app's. A deploy
 into such a directory is refused (500, naming the path and the
 remedy), and a socket prune, release GC or deploy record write logs
@@ -767,16 +767,16 @@ reopen the box for everyone.
 Debian 13's kernel permits them, which is why it is the supported
 host and why the package ships no LSM policy of its own. Some kernels
 refuse them — an LSM restriction on unprivileged user namespaces, or a
-container or LXC host with them off entirely. hotserve does not work around
+container or LXC host with them off entirely. motel does not work around
 that: it probes, and a host that cannot deliver the namespaces refuses
 to start rather than running apps bare. So does a host where systemd
 skips the units' seccomp settings: a kernel without seccomp,
 `SYSTEMD_SECCOMP=0` in the user manager's environment, or a container
 whose own filter stops systemd installing one. The probe reads the
 seccomp mode inside its unit and checks that `RestrictNamespaces=`
-refuses it a user namespace. `journalctl -t hotserve-sandbox-probe`
+refuses it a user namespace. `journalctl -t motel-sandbox-probe`
 says why it refused (`seccomp 0`, `unshare allowed`). The fix is the
-host's: permit unprivileged user namespaces and seccomp for hotserve's
+host's: permit unprivileged user namespaces and seccomp for motel's
 user manager, or move to Debian 13. There is no way to run there
 without the sandbox. One case the probe cannot see: a container host
 whose existing seccomp rules leave the kernel no room for the units'
@@ -820,7 +820,7 @@ app example {
 ```
 
 [examples/deno](../examples/deno) is a complete app built this way.
-hotserve's e2e suite deploys it with its own flags, on the Deno
+motel's e2e suite deploys it with its own flags, on the Deno
 version pinned in `e2e/Dockerfile`, so a Deno release that changes
 what serving needs fails CI rather than your deploy. The refusals
 below were measured on Deno 2.9.6; re-check with
@@ -901,7 +901,7 @@ Presets:
   provider (CircleCI, Buildkite, k8s, …).
 - `deploy_trust local { public_key <path>; audience <a> }` — a key you
   control, for a laptop or a runner with no OIDC. Generate it with
-  `hotserve deploy-keygen`, mint tokens with `hotserve deploy-token`.
+  `motel deploy-keygen`, mint tokens with `motel deploy-token`.
 
 [docs/outside-github.md](../docs/outside-github.md) walks through the
 `gitlab`, `oidc` and `local` presets end to end: a key's two halves,
@@ -911,7 +911,7 @@ Sub-directives: `audience` (required for OIDC — never trust an
 unaudienced token; for `local`, the name of this box, see below),
 `claim <name> <value>` (exact-match, repeatable — pin `repository`,
 `ref`, `environment`, etc.; a claim named `@id` is refused, because
-Caddy deletes that key from the config before hotserve reads it),
+Caddy deletes that key from the config before motel reads it),
 `subject` (sugar for `claim sub`),
 `issuer` (oidc/gitlab), `public_key` and `max_token_ttl` (local).
 
@@ -920,7 +920,7 @@ nothing on the box revokes one short of removing its key. So a
 `local` block accepts a token only while its lifetime, `exp - iat`, is
 at most `max_token_ttl <duration>` (default `24h`): a token without
 `iat`, or minted to live longer, is refused, and the journal's
-`refused` names the directive. `hotserve deploy-token` mints for
+`refused` names the directive. `motel deploy-token` mints for
 `--ttl` (default `5m`) and warns above an hour. Mint one per deploy;
 a job that cannot raises the bound on its block.
 
@@ -932,7 +932,7 @@ source with only an audience would authorize the whole issuer. Config
 load fails without one.
 
 Two shapes load but are wider than they read, and config load warns
-about each (`hotserve validate` shows it). A `github` or `gitlab`
+about each (`motel validate` shows it). A `github` or `gitlab`
 block that pins an identity but no branch accepts a token minted on
 **any** branch the identity admits — one repository's, or every
 repository's under a pinned owner or namespace — a workflow edited on
@@ -985,12 +985,12 @@ liveswap {
 	# another box that trusts the same key is refused here; mint with
 	# `--audience blog.example.com --subject alice`.
 	deploy_trust local {
-		public_key /etc/hotserve/alice.pub
+		public_key /etc/motel/alice.pub
 		audience blog.example.com
 		subject alice
 	}
 	deploy_trust local {
-		public_key /etc/hotserve/bob.pub
+		public_key /etc/motel/bob.pub
 		audience blog.example.com
 		subject bob
 	}
@@ -1002,12 +1002,12 @@ liveswap {
 ```
 
 A `github` block's `audience` is what the job must ask GitHub for. The
-templates' `scripts/deploy.sh` asks for `hotserve`, so `audience blog`
-above needs `HOTSERVE_AUDIENCE: blog` in the job's `env:`, beside
-`HOTSERVE_URL`, so the rollback step gets it too, or the box answers
+templates' `scripts/deploy.sh` asks for `motel`, so `audience blog`
+above needs `MOTEL_AUDIENCE: blog` in the job's `env:`, beside
+`MOTEL_URL`, so the rollback step gets it too, or the box answers
 401.
 
-Each dev runs `hotserve deploy-keygen` once and hands you the `.pub`
+Each dev runs `motel deploy-keygen` once and hands you the `.pub`
 (public — safe to share); you add a block and reload. Use OIDC in CI
 wherever the runner has it: a `local` key there stores a long-lived
 private key in CI secrets — the thing OIDC exists to avoid. A runner
@@ -1025,17 +1025,17 @@ in [deploy records](#deploy-records):
 
 ```
 oidc:https://token.actions.githubusercontent.com repository=your-org/blog ref=refs/heads/main actor=alice
-local:/etc/hotserve/alice.pub sub=alice
+local:/etc/motel/alice.pub sub=alice
 ```
 
 That is your audit trail. For a `local` block the key path says whose
 key it was; `sub` is whatever the key's holder minted the token with
-(`hotserve deploy-token --subject`), unless the block pins `subject
+(`motel deploy-token --subject`), unless the block pins `subject
 <name>`, which makes it a name the box checked.
 
 A refused token is recorded too — in the journal only. The response
 is the same flat 401 whatever the reason: anyone with a GitHub
-repository can mint a token for audience `hotserve`, so an answer that
+repository can mint a token for audience `motel`, so an answer that
 named the failed check would tell them which apps exist and what each
 block pins. The `webhook auth failed` line carries `refused`: one
 entry per source, in config order, each the source's label and what
@@ -1044,29 +1044,29 @@ it refused — the signature, `exp`, a local token's lifetime over
 the identity the token presented:
 
 ```
-"refused":"oidc:https://token.actions.githubusercontent.com: claim \"repository\" mismatch, presented repository=your-org/other ref=refs/heads/main actor=alice; local:/etc/hotserve/alice.pub: go-jose/go-jose: error in cryptographic primitive"
+"refused":"oidc:https://token.actions.githubusercontent.com: claim \"repository\" mismatch, presented repository=your-org/other ref=refs/heads/main actor=alice; local:/etc/motel/alice.pub: go-jose/go-jose: error in cryptographic primitive"
 ```
 
 A request with no bearer token says so instead, as does an app with
 no source at all. The box failing to consult the issuer — its OIDC
 discovery, or fetching its signing keys — lands here as well: still a
-401 to the caller, with the network error in the journal. hotserve
+401 to the caller, with the network error in the journal. motel
 holds one copy of each issuer's discovery and keys for every source
 that trusts it — every app's, the global ones, the box's — per
 `allow_insecure_http` setting (the box always fetches over https, so
 with that option set on liveswap an issuer is held twice), and no
-token waits on fetching them. When hotserve starts or reloads it runs
+token waits on fetching them. When motel starts or reloads it runs
 each issuer's discovery and fetches its keys again in the background;
 on a reload the keys it already holds stay in use meanwhile, so a
 reload refuses no token it would have accepted before, unless it adds
-an issuer or changes liveswap's `allow_insecure_http` (a copy hotserve
+an issuer or changes liveswap's `allow_insecure_http` (a copy motel
 holds nothing for yet). A token that arrives before an issuer's first
 discovery and fetch have ended — at start, or after such a reload —
 is refused with `oidc discovery for <issuer>: under way,
 so a retry once that ends may go through` (or the key set's `which
 they are being fetched for`) in `refused`. A discovery that failed is tried again by the
 next reload, or by a token at most once a minute. After that the keys
-are fetched only for a token signed under a key hotserve does not
+are fetched only for a token signed under a key motel does not
 hold yet, at most once a minute per copy, and that token is refused
 at once rather than wait: with `the token is another issuer's, or is
 under a new key, which they are being fetched for, so a retry once
@@ -1078,7 +1078,7 @@ too.) So the first deploy after the issuer rotates its key is
 refused, and its retry a few seconds later goes through — unless the
 keys were fetched in the minute before, when the retry is refused too,
 with `… fetched too soon for; a token from <time> on fetches them
-again, as does systemctl reload hotserve now` in `refused`; after an
+again, as does systemctl reload motel now` in `refused`; after an
 outage,
 the first token past the minute is refused with the outage's error and
 the next goes through. The templates' scripts (`scripts/deploy.sh`,
@@ -1091,7 +1091,7 @@ box does hold costs it no request to the issuer, which is also why an
 issuer that replaces a key but keeps its kid is not picked up: tokens
 under the new key are refused, with `signature does not match the key
 held for kid "<kid>": the token is another issuer's, or, if the issuer
-replaced that key, systemctl reload hotserve` in `refused`, until a
+replaced that key, systemctl reload motel` in `refused`, until a
 fetch for another kid or that
 reload fetches the issuer's keys again. Each
 entry's reason
@@ -1183,7 +1183,7 @@ time is its record's: the latest deploy or rollback of it. One whose
 latest deploy failed (a rollback to it that failed) comes after every
 one whose latest succeeded: it never served from that deploy, and
 takes no place from a version that did. A release with no record —
-deployed by a hotserve older than records, or its record could not
+deployed by a motel older than records, or its record could not
 be written — sorts after every recorded one, ordered among those by
 its directory's modification time (which the app running from it can
 change), and `ordered_by_mtime` names it: it is the first release GC
@@ -1200,7 +1200,7 @@ existing on-disk release, so a version you can roll back to can't be
 silently replaced — re-deploying an existing version with other bytes
 is a `422`. Use a new version, or roll back to relaunch an existing
 one. (A deploy that *fails* before cutover is cleaned up, so that
-version stays retriable — one a hotserve restart cuts short too, at
+version stays retriable — one a motel restart cuts short too, at
 the next start.) The running version is the one exception,
 relaunched rather than refused when the artifact is the same — see
 [Relaunching the running version](#relaunching-the-running-version).
@@ -1235,19 +1235,19 @@ half-changed, so it runs to its end, still bounded by `deadline`, and
 the deploy then fails before any traffic moves. Until then a retry,
 a rollback included, gets the 409. To end a migration that hangs
 sooner than its `deadline`, stop its unit yourself; it is named
-`hotserve-<app>.<version>.<nonce>.prestart.service`. For example, as root:
-`runuser -u hotserve -- env XDG_RUNTIME_DIR=/run/user/$(id -u hotserve) systemctl --user stop 'hotserve-blog.*.prestart.service'`. The deploy
+`motel-<app>.<version>.<nonce>.prestart.service`. For example, as root:
+`runuser -u motel -- env XDG_RUNTIME_DIR=/run/user/$(id -u motel) systemctl --user stop 'motel-blog.*.prestart.service'`. The deploy
 then fails as a failed `pre_start`.
 
-A hotserve stop or restart (a crash, `systemctl restart hotserve`, an
+A motel stop or restart (a crash, `systemctl restart motel`, an
 upgrade) does not stop a running `pre_start` either: the manager runs
-it on, bounded by `deadline` on its unit, and the hotserve that comes
+it on, bounded by `deadline` on its unit, and the motel that comes
 back leaves it to finish. Until it has, that app takes no deploy (the
 refusal names the migration) and no relaunch; the running version
-serves on. The deploy itself ends with the hotserve that ran it (its
+serves on. The deploy itself ends with the motel that ran it (its
 client sees the connection drop): the next start, or the next deploy,
 removes the release it extracted and records it failed — `the deploy
-was cut short: hotserve stopped or restarted during it` — so the same
+was cut short: motel stopped or restarted during it` — so the same
 version can be deployed again. Re-run the job.
 
 **A failed deploy says why, from the app's side.** The 5xx body's
@@ -1276,11 +1276,11 @@ launch happened, `detail`:
   its lines out: a wrapper script that runs the app without `exec` and
   prints nothing itself, when the app prints its error and exits; a
   `pre_start` that succeeded, when journald read all of it late.
-  `journalctl -t hotserve-<app>` on the box has every line.
+  `journalctl -t motel-<app>` on the box has every line.
   `journalctl` reads the tail; journald keeps a system user's output
-  in the system journal, so the packaged unit gives hotserve's own
+  in the system journal, so the packaged unit gives motel's own
   process the `systemd-journal` group
-  (`SupplementaryGroups=` in `hotserve.service` — the process, not
+  (`SupplementaryGroups=` in `motel.service` — the process, not
   the account, so the apps do not get it). A raw-binary install
   without that grant gets `log_tail_error` instead of a tail.
 
@@ -1289,7 +1289,7 @@ where an `env_file` value was, and `redacted_env` naming the keys —
 because the response lands in a CI log, and `deploy_log_lines 0`
 keeps the app's output on the box entirely: no `log_tail`, and no
 `probe.body` either (the probe's `status` and `location`, and `exit`,
-are hotserve's own observations and stay). See
+are motel's own observations and stay). See
 [Secrets and logs](#secrets-and-logs). A success carries `phases` and
 no `detail`.
 
@@ -1358,7 +1358,7 @@ same artifact" is decided by digest, with nothing fetched: a URL
 deploy's `sha256` pin, or the digest of a push's upload, must equal
 the `sha256` in the version's deploy record. A request without a
 digest, a version whose record has none (an unpinned pull, or a push
-made by a hotserve older than this one, before pushes were hashed), or
+made by a motel older than this one, before pushes were hashed), or
 a different digest is a `422` saying so and naming the way in — a
 rollback to the running version needs no digest, since it is the same
 release by definition. A URL deploy's `url` still has to pass the
@@ -1398,7 +1398,7 @@ every recorded version's outcome in `deploys`, newest first:
 the deploy was pinned to, and the times. `sha256` is what the
 deployer asserted and the download was checked against, or the digest
 of the bytes a push uploaded; absent for an unpinned pull (and for a
-push made by a hotserve older than this one). A rollback copies the
+push made by a motel older than this one). A rollback copies the
 pin from the record it replaces: a version's release cannot be
 replaced while it is on disk, and its record is normally written
 with it. Not always — a version whose release GC pruned can be
@@ -1431,7 +1431,7 @@ What liveswap does for you:
 - **Every webhook response is filtered before it leaves the box.** A
   response lands in a CI log — readable by everyone with read access
   to the repository, retained, public for a public repo — so nothing
-  reaches it unfiltered. hotserve knows the app's secrets by value (it
+  reaches it unfiltered. motel knows the app's secrets by value (it
   built the environment from `env_file`), so the first layer is exact:
   every `env_file` value of 8+ characters, as written, JSON-escaped,
   base64, hex or URL-escaped (and a URL value's password on its own),
@@ -1495,7 +1495,7 @@ What's yours to handle:
   it belongs on the machine that mints tokens. The box needs only the
   `.pub`. (CI OIDC avoids a stored key entirely.)
 - Your app's **stdout/stderr go to the journal** under the identifier
-  `hotserve-<app>` (`journalctl -t hotserve-blog`, or by unit name —
+  `motel-<app>` (`journalctl -t motel-blog`, or by unit name —
   the status endpoint reports it). If your app prints its own secrets
   at startup, they end up in the journal — that one's on the app.
 - **A failed deploy's response carries the app's last lines** (up to
@@ -1514,7 +1514,7 @@ What's yours to handle:
 ### GitHub Actions
 
 No deploy secret to store — the job mints an OIDC token per run
-(matching a `deploy_trust github { audience hotserve; claim repository
+(matching a `deploy_trust github { audience motel; claim repository
 your-org/blog; claim ref refs/heads/main }` block on the box):
 
 ```yaml
@@ -1541,7 +1541,7 @@ steps:
     GH_TOKEN: ${{ github.token }}
   run: |
     JWT=$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-      "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=hotserve" | jq -er .value)
+      "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=motel" | jq -er .value)
     echo "::add-mask::$JWT"
     SHA256=$(sha256sum blog.tar.gz | cut -d' ' -f1)
     curl --fail-with-body --max-time 900 -X POST \
@@ -1607,8 +1607,8 @@ a new version.
 deploy:
   stage: deploy
   id_tokens:
-    HOTSERVE_JWT:               # verified by `deploy_trust gitlab { audience hotserve; claim project_path your-org/blog; claim ref_path refs/heads/main }`
-      aud: hotserve
+    MOTEL_JWT:               # verified by `deploy_trust gitlab { audience motel; claim project_path your-org/blog; claim ref_path refs/heads/main }`
+      aud: motel
   script:
     - tar -czf blog.tar.gz -C dist .
     - |
@@ -1618,7 +1618,7 @@ deploy:
     - |
       SHA256=$(sha256sum blog.tar.gz | cut -d' ' -f1)
       curl --fail-with-body --max-time 900 -X POST \
-        -H "Authorization: Bearer $HOTSERVE_JWT" \
+        -H "Authorization: Bearer $MOTEL_JWT" \
         -d "{
           \"url\": \"$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/blog/$CI_COMMIT_SHORT_SHA/blog.tar.gz\",
           \"version\": \"$CI_COMMIT_SHORT_SHA\",
@@ -1647,7 +1647,7 @@ and on failure the previous version, if there was one, never stopped serving. Th
 `status.last_deploy.detail` says why from the app's side — the exit
 status, the last health probe's answer, the last lines the app and
 its `pre_start` wrote (see [Webhook API](#webhook-api)); the whole
-journal stays on the box, `journalctl -t hotserve-blog`.
+journal stays on the box, `journalctl -t motel-blog`.
 
 `--max-time 900` is the budget [Webhook API](#webhook-api) gives, with
 the defaults and a `pre_start`, plus the artifact's transfer: the
@@ -1681,11 +1681,11 @@ its socket (see [Sandbox](#sandbox)).
 
 ## Semantics and trade-offs (read this)
 
-- **Apps are systemd units, not children of hotserve.** Each instance
-  is a transient service under the hotserve user's own systemd manager
+- **Apps are systemd units, not children of motel.** Each instance
+  is a transient service under the motel user's own systemd manager
   (`user@<uid>.service`, kept alive by lingering — the package sets
   this up; self-managed installs need `loginctl enable-linger
-  hotserve` and `libpam-systemd`, and hotserve refuses to start apps
+  motel` and `libpam-systemd`, and motel refuses to start apps
   without that manager). Config reloads never touch them (deploy state
   lives outside the config, reference-counted across reloads — proven
   by an e2e scenario that reloads mid-traffic and asserts the app's
@@ -1693,25 +1693,25 @@ its socket (see [Sandbox](#sandbox)).
   to the running instance; it applies at the next launch (a deploy, a
   rollback, a relaunch after a crash, a sustained health failure, or a reboot), which is why status
   reports the `command` the instance is actually running — and
-  neither do **hotserve restarts and upgrades**:
+  neither do **motel restarts and upgrades**:
   on start, liveswap reattaches to the unit recorded in `state.json`
   and serves it without relaunching it (what visitors see while
-  hotserve itself restarts: [Upgrading](../docs/upgrading.md));
+  motel itself restarts: [Upgrading](../docs/upgrading.md));
   only if that unit is gone (reboot, or it died meanwhile) is the
-  current version relaunched. Stopping hotserve
-  therefore leaves apps running until the next start, and a hotserve
+  current version relaunched. Stopping motel
+  therefore leaves apps running until the next start, and a motel
   that crashes is started again by systemd a second later and
   reattaches the same way (a start it refuses is not retried); removing
   the package stops them. Removing an app (or the whole `liveswap` block)
   via a **reload** stops its units, once any deploy of it already in
   flight has finished (the reload waits for it); if you instead edit the file and
-  *restart* hotserve with the whole block gone, nothing is left to
+  *restart* motel with the whole block gone, nothing is left to
   judge the old units and they keep running — decommission them
   explicitly, as root:
-  `runuser -u hotserve -- env XDG_RUNTIME_DIR=/run/user/$(id -u hotserve) systemctl --user stop 'hotserve-*'`. Units are created with `Restart=no` — the
+  `runuser -u motel -- env XDG_RUNTIME_DIR=/run/user/$(id -u motel) systemctl --user stop 'motel-*'`. Units are created with `Restart=no` — the
   watchdog is the only restarter of apps — and stopping a version kills its
   whole cgroup, so worker trees never outlive it. Each unit shows a
-  `sleep infinity` beside the app in `systemctl --user status`: hotserve
+  `sleep infinity` beside the app in `systemctl --user status`: motel
   starts every app behind a shell that forks that sibling and becomes
   the app, because systemd 257 waits an app's `grace` on a stop only
   when its process is not alone in the cgroup (#380). To the app it is
@@ -1743,14 +1743,14 @@ its socket (see [Sandbox](#sandbox)).
 
 ## Development
 
-liveswap lives in the [hotserve](../) monorepo; the make targets at the
+liveswap lives in the [motel](../) monorepo; the make targets at the
 repo root cover it (no local Go toolchain needed — everything runs in
 Docker):
 
 ```sh
 make test              # unit tests, all modules (race + coverage)
 make test-integration  # real Caddy + real systemd units via caddytest (privileged systemd container)
-make e2e               # both module suites against the hotserve binary
+make e2e               # both module suites against the motel binary
 make lint vet tidy
 ```
 

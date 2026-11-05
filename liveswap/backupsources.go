@@ -13,7 +13,7 @@ import (
 // defined in; the main Caddyfile's as the adapter was given it.
 //
 // A backup run reads the Caddyfile in a view that holds its directory
-// and nothing else, as an account that owns nothing there; hotserve's
+// and nothing else, as an account that owns nothing there; motel's
 // validate and reload hold each of these files to that.
 type BackupSource struct {
 	App  string

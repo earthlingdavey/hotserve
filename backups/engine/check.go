@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // The repository's own check: its structure, and one fifty-second of
@@ -114,7 +114,7 @@ func (x *run) checkRepository(ctx context.Context, group string, at time.Time) *
 	}
 	name := x.name("repocheck", "")
 	out := filepath.Join(x.dir, "repocheck.json")
-	o, err := x.start(ctx, resticUnit(name, "hotserve backup: check the repository, and data group "+c.Group, x.cfg.EnvFile, checkArgv(x.cfg.Restic, c.Group), out))
+	o, err := x.start(ctx, resticUnit(name, "motel backup: check the repository, and data group "+c.Group, x.cfg.EnvFile, checkArgv(x.cfg.Restic, c.Group), out))
 	switch {
 	case err != nil && errors.Is(err, unit.ErrEndedFromOutside):
 		// Stopped by someone, or with the drill's service — maybe before
@@ -178,7 +178,7 @@ func (x *run) probe(ctx context.Context) (class record.CheckClass, detail string
 	// Its answer, the repository's config decrypted, into root's run
 	// directory: never the journal.
 	name := x.name("probe", "")
-	o, err := x.startWithin(ctx, probeClock, resticUnit(name, "hotserve backup: whether the repository answers, and the password opens it", x.cfg.EnvFile,
+	o, err := x.startWithin(ctx, probeClock, resticUnit(name, "motel backup: whether the repository answers, and the password opens it", x.cfg.EnvFile,
 		[]string{x.cfg.Restic, "cat", "config", "--no-lock", "--cleanup-cache"}, filepath.Join(x.dir, "probe.json")))
 	switch {
 	case err != nil && (ctx.Err() != nil || errors.Is(err, unit.ErrEndedFromOutside)):
@@ -270,10 +270,10 @@ func (x *run) startWithin(ctx context.Context, within time.Duration, s unit.Spec
 // is given UTC — so that a forget policy that keeps a snapshot for a
 // period keeps the record that falls in the same one.
 func vouchArgv(restic, app, id string, at time.Time) []string {
-	return []string{restic, "backup", "--quiet", "--json", "--retry-lock", vouchRetryLock, "--host", "hotserve",
+	return []string{restic, "backup", "--quiet", "--json", "--retry-lock", vouchRetryLock, "--host", "motel",
 		"--time", at.UTC().Format(time.DateTime),
 		"--tag", cleanTag, "--tag", vouchesTag + id,
-		"--stdin-from-command", "--stdin-filename", "hotserve-clean-" + app, "--", "/usr/bin/echo", id}
+		"--stdin-from-command", "--stdin-filename", "motel-clean-" + app, "--", "/usr/bin/echo", id}
 }
 
 // vouchRetryLock is how long a record waits for a lock something else
@@ -283,6 +283,6 @@ const vouchRetryLock = "20m"
 
 // The tags of a clean-run record.
 const (
-	cleanTag   = "hotserve-clean"
+	cleanTag   = "motel-clean"
 	vouchesTag = "vouches:"
 )

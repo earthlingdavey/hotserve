@@ -47,8 +47,8 @@ The account's key, which the guide's recovery uses, was not; that is
 restic's own `b2:` backend is refused, by `setup` and by every run,
 restore and drill: the B2 library Debian 13's restic is built with
 retries a failed upload without end, and held a run for 27 hours with
-nothing said ([#177](https://github.com/smallhoursorg/hotserve/issues/177),
-[#354](https://github.com/smallhoursorg/hotserve/issues/354)). restic's
+nothing said ([#177](https://github.com/smallhoursorg/motel/issues/177),
+[#354](https://github.com/smallhoursorg/motel/issues/354)). restic's
 own documentation points B2 users to the S3 endpoint "due to issues
 with error handling in the current B2 library that restic uses"
 ([Backblaze B2](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html#backblaze-b2),
@@ -65,8 +65,8 @@ CA certificates with it, which it does not with `restic` or `rclone`
 ```sh
 apt-get update && apt-get install -y backblaze-b2
 backblaze-b2 authorize-account     # asks for the master key's id, then the key
-backblaze-b2 create-key --bucket my-backups hotserve-box listBuckets,listFiles,readFiles,writeFiles
-backblaze-b2 create-key --bucket my-backups hotserve-laptop listBuckets,listFiles,readFiles,writeFiles
+backblaze-b2 create-key --bucket my-backups motel-box listBuckets,listFiles,readFiles,writeFiles
+backblaze-b2 create-key --bucket my-backups motel-laptop listBuckets,listFiles,readFiles,writeFiles
 backblaze-b2 clear-account         # forgets the master key authorize-account stored on this machine
 ```
 
@@ -305,14 +305,14 @@ Each line below says which run it is. What is still to be read says
   Read Only key, and every run then failed after 14½ minutes of retries
   (`b2_get_upload_url: 401:`, from restic's own `b2:` backend), as did
   the drill after it, after 14 minutes.
-- **A rebuilt box** with another uid and gid for `hotserve`: through
-  the S3 endpoint, the guide's way back — `hotserve init` from the box
+- **A rebuilt box** with another uid and gid for `motel`: through
+  the S3 endpoint, the guide's way back — `motel init` from the box
   repo's file, `setup` on the same URL, and the restore before the
   first deploy — put back 501 MiB in 17 s, every file the new ids'. The
   first run and the drill after the deploy were `ok` and proven.
   Through the native API, `v0.3.0-rc1`, a box with no box repo, its
   Caddyfile copied over, restored in 10 s
-  ([check 7](../release-candidate.md#7-restore-onto-a-second-box-with-another-uid-for-hotserve)).
+  ([check 7](../release-candidate.md#7-restore-onto-a-second-box-with-another-uid-for-motel)).
 - **A box moved off `b2:`**: the candidate refused its runs, restores
   and drills in the words above, and `setup` on the S3 URL found the
   same repository, its id unchanged, and went on from the last backup
@@ -354,7 +354,7 @@ Each line below says which run it is. What is still to be read says
     `status` is red from the third hour, naming the unit still running.
 
   These last ones are accepted
-  ([#177](https://github.com/smallhoursorg/hotserve/issues/177),
+  ([#177](https://github.com/smallhoursorg/motel/issues/177),
   closed with their scores).
 
 **On AWS S3 and Hetzner** none of this has been run, and every line

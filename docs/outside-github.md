@@ -7,7 +7,7 @@ takes more than that: a token from any other CI's OpenID Connect
 a key, from a runner that has no OIDC at all, or from a laptop. This
 page walks through those: choosing the trust, a key end to end, an
 app's deploy and the box's own config from another runner, and
-minting a token where there is no Linux `hotserve` to mint it with.
+minting a token where there is no Linux `motel` to mint it with.
 
 Everything here is the box's `deploy_trust` block, whose reference is
 in [liveswap/README.md](../liveswap/README.md#deploy-authentication-deploy_trust).
@@ -24,7 +24,7 @@ and the box accepts it if a `deploy_trust` block for that app (or the
 | `github` | GitHub Actions, per run | nothing | `audience`, and `claim repository` with `claim ref` |
 | `gitlab` | GitLab CI, per job (`id_tokens:`); `issuer https://gitlab.example.com` for a self-hosted instance, `https://gitlab.com` otherwise | nothing | `audience`, and `claim project_path` with `claim ref_path` |
 | `oidc` | any other OIDC issuer: `issuer <url>` | nothing | `audience`, `issuer`, and `subject` (the issuer's own form of `sub`) |
-| `local` | you, with `hotserve deploy-token` and a private key | the public half of your key, a file on the box | `public_key`, and `audience` (the box's name) |
+| `local` | you, with `motel deploy-token` and a private key | the public half of your key, a file on the box | `public_key`, and `audience` (the box's name) |
 
 What each costs:
 
@@ -57,11 +57,11 @@ not, and for a laptop.
 
 ## 2. A key, end to end
 
-On a Linux machine with `hotserve` on it, or in a container
-([section 5](#5-minting-without-a-linux-hotserve)):
+On a Linux machine with `motel` on it, or in a container
+([section 5](#5-minting-without-a-linux-motel)):
 
 ```sh
-hotserve deploy-keygen --out example.key
+motel deploy-keygen --out example.key
 ```
 
 ```
@@ -76,7 +76,7 @@ so a second key gets a second `--out`.
 it goes to the box over SSH, as root, before the config that names it:
 
 ```sh
-scp example.key.pub root@box.example.com:/etc/hotserve/example.pub
+scp example.key.pub root@box.example.com:/etc/motel/example.pub
 ```
 
 Then, in the box's repository, the app's block trusts it:
@@ -85,7 +85,7 @@ Then, in the box's repository, the app's block trusts it:
 app example {
 	# …
 	deploy_trust local {
-		public_key /etc/hotserve/example.pub
+		public_key /etc/motel/example.pub
 		audience deploy.example.com
 	}
 }
@@ -102,7 +102,7 @@ variable of type *File*, say), or stays in a directory of your own on
 the laptop. Nowhere else: not in the app's repository, not on the
 box.
 
-**The check job.** The box repository's `make check` runs `hotserve
+**The check job.** The box repository's `make check` runs `motel
 validate` on each box's file as it stands in the checkout, and
 validating loads every `public_key` from the path the file names. On
 the runner that path is empty, and the check fails naming it. The
@@ -110,7 +110,7 @@ public key is public, so commit a copy beside the file and put it in
 place in the check job before `make check`:
 
 ```sh
-sudo install -D -m 644 deploy.example.com/example.pub /etc/hotserve/example.pub
+sudo install -D -m 644 deploy.example.com/example.pub /etc/motel/example.pub
 ```
 
 (A GitLab job on the Docker executor runs as root in an image with no
@@ -119,7 +119,7 @@ sudo install -D -m 644 deploy.example.com/example.pub /etc/hotserve/example.pub
 **Minting.** One token per run, as late as the step that uses it:
 
 ```sh
-HOTSERVE_TOKEN=$(hotserve deploy-token --key example.key --audience deploy.example.com)
+MOTEL_TOKEN=$(motel deploy-token --key example.key --audience deploy.example.com)
 ```
 
 The token lives for `--ttl` from now, five minutes unless you say
@@ -147,13 +147,13 @@ remove its block and push.
 
 The app templates deploy with `scripts/deploy.sh`, which runs anywhere
 there is `sh`, `curl` and git. Outside GitHub
-Actions it reads the token from `HOTSERVE_TOKEN` and otherwise behaves
+Actions it reads the token from `MOTEL_TOKEN` and otherwise behaves
 as the first page describes. What it takes:
 
 | Variable | What it is |
 |---|---|
-| `HOTSERVE_URL` | the app's webhook, `https://deploy.example.com/example`; `https://` only, since the request carries the token |
-| `HOTSERVE_TOKEN` | the token (section 2's, or the CI's own OIDC token) |
+| `MOTEL_URL` | the app's webhook, `https://deploy.example.com/example`; `https://` only, since the request carries the token |
+| `MOTEL_TOKEN` | the token (section 2's, or the CI's own OIDC token) |
 | `VERSION` | the release's version; the commit's first 12 characters unless set. Versions are immutable on the box, so the default deploys once per commit |
 
 There are two ways to hand the box the release:
@@ -201,10 +201,10 @@ deploy:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
   id_tokens:
-    HOTSERVE_TOKEN:
-      aud: hotserve
+    MOTEL_TOKEN:
+      aud: motel
   variables:
-    HOTSERVE_URL: https://deploy.example.com/example
+    MOTEL_URL: https://deploy.example.com/example
   script:
     - npm run bundle
     - scripts/deploy.sh app.tar.gz
@@ -214,7 +214,7 @@ and the app's block on the box:
 
 ```caddyfile
 deploy_trust gitlab {
-	audience hotserve
+	audience motel
 	claim project_path your-group/example
 	claim ref_path refs/heads/main
 }
@@ -223,7 +223,7 @@ deploy_trust gitlab {
 That shape is written from GitLab's documentation of its ID tokens,
 its claims and its runners, and from the box's code. It has not been
 run against a real GitLab project; if you do, say so in
-[Q&A](https://github.com/smallhoursorg/hotserve/discussions/new?category=q-a). The
+[Q&A](https://github.com/smallhoursorg/motel/discussions/new?category=q-a). The
 same job publishing the tarball to GitLab's package registry for the
 box to fetch, with `curl` in place of the script, is in
 [liveswap/README.md](../liveswap/README.md#gitlab-ci).
@@ -237,7 +237,7 @@ only an audience, every workload on the issuer could deploy.
 ```caddyfile
 deploy_trust oidc {
 	issuer https://oidc.circleci.com/org/<org-id>
-	audience hotserve
+	audience motel
 	subject <the provider's sub for this project>
 }
 ```
@@ -246,35 +246,35 @@ With a **key** on a runner without OIDC, the job mints its own token
 and the rest is the same:
 
 ```sh
-HOTSERVE_TOKEN=$(hotserve deploy-token --key "$DEPLOY_KEY" --audience deploy.example.com) \
-HOTSERVE_URL=https://deploy.example.com/example scripts/deploy.sh app.tar.gz
+MOTEL_TOKEN=$(motel deploy-token --key "$DEPLOY_KEY" --audience deploy.example.com) \
+MOTEL_URL=https://deploy.example.com/example scripts/deploy.sh app.tar.gz
 ```
 
 where `DEPLOY_KEY` is the path the secret store wrote the private key
-to, and `hotserve` is on the runner's `PATH`
-([section 5](#5-minting-without-a-linux-hotserve) has how it gets there).
+to, and `motel` is on the runner's `PATH`
+([section 5](#5-minting-without-a-linux-motel) has how it gets there).
 One token serves the one request, so the default five minutes is
 enough: the box checks it when the request arrives, however long the
 deploy then takes.
 
 A **401** from any of these means the box's block for the app does
 not accept the token, or the URL names an app the box does not have (a
-typo in `HOTSERVE_URL` answers the same 401). The script says what the
+typo in `MOTEL_URL` answers the same 401). The script says what the
 box holds the token against: the key, the audience, the subject and
 claims the block pins. Outside GitHub Actions it cannot print the
 values the token carries, which are the issuer's, or whatever
 `deploy-token` was given, so hold those against the block yourself.
-`HOTSERVE_AUDIENCE` changes none of this: it names the audience only
+`MOTEL_AUDIENCE` changes none of this: it names the audience only
 for the token the script mints in GitHub Actions, and here the token
 already has one, from `--audience` or a GitLab job's `aud:`.
 With an issuer's token there is a third cause, and a key's token never
 meets it: the box could not consult the token's issuer (an outage
 there), or had fetched its keys in the minute before the issuer
 changed them, and no token waits on an issuer, so the first OIDC token
-after a hotserve restart or reload can reach a box that holds no keys
+after a motel restart or reload can reach a box that holds no keys
 yet. The box's journal says which, and a re-run goes through. The
 box's own answer says no more, by design; its journal names the check
-that refused it (`journalctl -u hotserve`, the `webhook auth failed`
+that refused it (`journalctl -u motel`, the `webhook auth failed`
 lines).
 
 ## 4. The box's config from another runner
@@ -288,16 +288,16 @@ Actions job does can run it:
   bundles them from the checkout; a shallow clone is refused with a
   message saying so. On GitLab, that is the project's *Git shallow
   clone* setting, or `GIT_DEPTH` set to `0` on the job.
-- **`hotserve` on `PATH`.** `bin/apply` runs `hotserve box webhook` to
-  read each box's address from its file. `bin/install-hotserve
+- **`motel` on `PATH`.** `bin/apply` runs `motel box webhook` to
+  read each box's address from its file. `bin/install-motel
   default` installs the latest release's binary on a Linux runner with
   `curl`, `sha256sum`, `tar` and `sudo` on it; a GitLab job on the
   Docker executor has no `sudo`, so `apt-get install -y sudo` first,
   or take the release tarball yourself as
-  [section 5](#5-minting-without-a-linux-hotserve) does and put the
-  binary on `PATH`. `HOTSERVE=/path/to/hotserve` names it when it is
+  [section 5](#5-minting-without-a-linux-motel) does and put the
+  binary on `PATH`. `MOTEL=/path/to/motel` names it when it is
   not on `PATH`.
-- **`HOTSERVE_TOKEN`**, a token the `box` block's `deploy_trust`
+- **`MOTEL_TOKEN`**, a token the `box` block's `deploy_trust`
   accepts, carrying a `sha` claim that names the commit being sent.
   The box refuses a bundle for any other commit. `bin/apply` sends
   this one token with every request, the result polls included, and a
@@ -308,7 +308,7 @@ With a key, the `box` block trusts it like an app's would, and the
 job mints:
 
 ```sh
-HOTSERVE_TOKEN=$(hotserve deploy-token --key "$BOX_KEY" --audience hotserve --ttl 1h --claims sha=$(git rev-parse HEAD)) bin/apply
+MOTEL_TOKEN=$(motel deploy-token --key "$BOX_KEY" --audience motel --ttl 1h --claims sha=$(git rev-parse HEAD)) bin/apply
 ```
 
 The audience here is not one box's name, as an app's is in
@@ -318,7 +318,7 @@ so the `box` blocks of those boxes share one name. A token for one
 box is then accepted by the others that trust the key, which is what
 the run is for.
 
-hotserve's own end-to-end suite runs `bin/apply`, unchanged, this
+motel's own end-to-end suite runs `bin/apply`, unchanged, this
 way: a `deploy_trust local` block on the box, a token naming the
 commit, every answer the real box's.
 
@@ -328,7 +328,7 @@ tokens carry the pipeline's commit as `sha`, so a `box` block of
 ```caddyfile
 box {
 	deploy_trust gitlab {
-		audience hotserve
+		audience motel
 		claim project_path your-group/boxes
 		claim ref_path refs/heads/main
 	}
@@ -336,8 +336,8 @@ box {
 }
 ```
 
-and a job with `id_tokens: { HOTSERVE_TOKEN: { aud: hotserve } }`, a
-full clone, `hotserve` installed, and `bin/apply` as its script, is
+and a job with `id_tokens: { MOTEL_TOKEN: { aud: motel } }`, a
+full clone, `motel` installed, and `bin/apply` as its script, is
 the Actions job on GitLab. One more line it needs: GitLab sets the
 token's expiry to the job's `timeout:`, or to five minutes when the
 job sets none ([GitLab's ID token documentation](https://docs.gitlab.com/ci/secrets/id_token_authentication/)),
@@ -350,13 +350,13 @@ commit no listed key signed is refused, and so is a merge button that
 rewrites one. The runner sends config; the signatures decide whether
 it lands.
 
-## 5. Minting without a Linux `hotserve`
+## 5. Minting without a Linux `motel`
 
-hotserve is built for Linux on amd64 and arm64, and nothing else:
-`hotserve deploy-token` does not run on a Mac. Two ways round it.
+motel is built for Linux on amd64 and arm64, and nothing else:
+`motel deploy-token` does not run on a Mac. Two ways round it.
 
 **A Linux container.** Each release's bare binary is on its releases
-page as `hotserve_<version>_linux_<arch>.tar.gz`, beside a
+page as `motel_<version>_linux_<arch>.tar.gz`, beside a
 `checksums.txt`, and runs in any Debian 13 container. To mint, with
 the private key in the current directory, which the container sees
 read-only at `/w` and writes nothing into:
@@ -365,21 +365,21 @@ read-only at `/w` and writes nothing into:
 docker run --rm -v "$PWD:/w:ro" -w /tmp debian:13-slim sh -c '
   apt-get -qq update && apt-get -qq install -y curl ca-certificates >/dev/null &&
   v=0.3.1 && arch=$(dpkg --print-architecture) &&
-  curl -fsSLO https://github.com/smallhoursorg/hotserve/releases/download/v$v/hotserve_${v}_linux_$arch.tar.gz &&
-  curl -fsSLO https://github.com/smallhoursorg/hotserve/releases/download/v$v/checksums.txt &&
+  curl -fsSLO https://github.com/smallhoursorg/motel/releases/download/v$v/motel_${v}_linux_$arch.tar.gz &&
+  curl -fsSLO https://github.com/smallhoursorg/motel/releases/download/v$v/checksums.txt &&
   sha256sum -c --ignore-missing checksums.txt >/dev/null &&
-  tar -xzf hotserve_${v}_linux_$arch.tar.gz hotserve &&
-  ./hotserve deploy-token --key /w/example.key --audience deploy.example.com'
+  tar -xzf motel_${v}_linux_$arch.tar.gz motel &&
+  ./motel deploy-token --key /w/example.key --audience deploy.example.com'
 ```
 
 Set `v` to the release the box runs, from its releases page. The same
 command makes a key: mount the directory writable, `-v "$PWD:/w"`, and
-end with `./hotserve deploy-keygen --out /w/example.key` in place of
+end with `./motel deploy-keygen --out /w/example.key` in place of
 the last line; the pair lands in the current directory, the private
 half mode 0600. Each run downloads the release again; a token a day is
 fine that way, a token an hour wants the binary kept in an image of
 your own. The same tarball is how a runner that is not Debian gets its
-`hotserve`: unpack it and put the binary on `PATH`.
+`motel`: unpack it and put the binary on `PATH`.
 
 **Any JWT library.** A `local` token is a plain JSON Web Token, so
 anything that signs one can mint it, in any language on any machine:

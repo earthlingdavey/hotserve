@@ -244,7 +244,7 @@ func TestRecoveryThroughALinkedAppDirLeavesTheSiblingServing(t *testing.T) {
 	must(t, os.MkdirAll(shop.release("v1"), 0o750))
 	must(t, (&fileStateStore{path: shop.state}).save(appState{
 		CurrentVersion: "v1", Nonce: linkTestNonce,
-		Handle: handleState{Unit: "hotserve-shop.v1." + linkTestNonce + ".service"},
+		Handle: handleState{Unit: "motel-shop.v1." + linkTestNonce + ".service"},
 	}))
 	state, err := os.ReadFile(shop.state)
 	must(t, err)

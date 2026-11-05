@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// A deploy of v2 that a hotserve stop cut short (#318): what it left
+// A deploy of v2 that a motel stop cut short (#318): what it left
 // is a marker naming v2 and its start, and a release under that name.
 // These are what the dead deploy would have left on disk.
 func leaveInterruptedDeploy(t *testing.T, rig *testRig) {
@@ -116,7 +116,7 @@ func TestPreStartCarriesTheDeadlineAndTheInstanceDoesNot(t *testing.T) {
 	}
 }
 
-func TestRecoveryRemovesTheReleaseOfADeployNoHotserveFinished(t *testing.T) {
+func TestRecoveryRemovesTheReleaseOfADeployNoMotelFinished(t *testing.T) {
 	rig := newTestRig(t)
 	rig.store.state = appState{CurrentVersion: "v1", Nonce: recordedNonce, Handle: handleState{PID: 1}}
 	rig.store.ok = true
@@ -125,7 +125,7 @@ func TestRecoveryRemovesTheReleaseOfADeployNoHotserveFinished(t *testing.T) {
 
 	must(t, rig.ma.ensureRunning())
 	if releasePresent(t, rig, "v2") {
-		t.Fatal("the release of the deploy hotserve did not finish must be removed")
+		t.Fatal("the release of the deploy motel did not finish must be removed")
 	}
 	if !releasePresent(t, rig, "v1") {
 		t.Fatal("the serving release must stay")
@@ -134,7 +134,7 @@ func TestRecoveryRemovesTheReleaseOfADeployNoHotserveFinished(t *testing.T) {
 		t.Fatal("a settled marker must be removed")
 	}
 	rec := recordOfV2(t, rig)
-	if rec.Status != "failed" || !strings.Contains(rec.Error, "hotserve") || !rec.StartedAt.Equal(interruptedAt) {
+	if rec.Status != "failed" || !strings.Contains(rec.Error, "motel") || !rec.StartedAt.Equal(interruptedAt) {
 		t.Fatalf("the cut-short deploy must be recorded failed, naming why, at its own start: %+v", rec)
 	}
 	if last := rig.ma.status().LastDeploy; last == nil || last.Version != "v2" || last.Status != "failed" {
@@ -149,7 +149,7 @@ func TestRecoveryRemovesTheReleaseOfADeployNoHotserveFinished(t *testing.T) {
 }
 
 func TestAMarkerForTheServingVersionIsOnlyCleared(t *testing.T) {
-	// A deploy that reached the cutover before hotserve stopped: its
+	// A deploy that reached the cutover before motel stopped: its
 	// version is the one serving, and is never removed.
 	rig := newTestRig(t)
 	rig.store.state = appState{CurrentVersion: "v2", Nonce: recordedNonce, Handle: handleState{PID: 1}}
@@ -193,7 +193,7 @@ func TestAnUnconfirmedSweepRemovesNothingAMarkerNames(t *testing.T) {
 	// of the release: nothing is removed until a sweep confirms.
 	rig := newTestRig(t)
 	leaveInterruptedDeploy(t, rig)
-	rig.runner.sweepErr = &migrationRunningError{unit: "hotserve-demo.v2.5555555555555555.prestart.service", version: "v2"}
+	rig.runner.sweepErr = &migrationRunningError{unit: "motel-demo.v2.5555555555555555.prestart.service", version: "v2"}
 	err := rig.ma.ensureRunning()
 	if !transientRecovery(err) || !strings.Contains(err.Error(), "pre_start of v2") {
 		t.Fatalf("recovery must retry, naming the migration it waits for, got %v", err)
@@ -352,8 +352,8 @@ func TestAMarkerThatIsNotAFileIsRemovedAndActedOnForNothing(t *testing.T) {
 }
 
 func TestADirectoryAtTheMarkerFailsExtractingDeploysNamingIt(t *testing.T) {
-	// Only root or the hotserve user by hand can put one there. It is
-	// never deleted (what it holds is not hotserve's): each extracting
+	// Only root or the motel user by hand can put one there. It is
+	// never deleted (what it holds is not motel's): each extracting
 	// deploy fails naming the path, and the journal says what was and
 	// was not done, until it is removed by hand. Accepted residual.
 	rig := newTestRig(t)

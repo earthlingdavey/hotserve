@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // check_next is the group the next check reads; where it is not one —
@@ -255,7 +255,7 @@ func TestTheCheckTakesNoLockAndReadsItsWeeksGroup(t *testing.T) {
 		t.Errorf("the probe's stdout goes to %q, not a file under %s", out, b.cfg.RunDir)
 	}
 	for _, s := range []unit.Spec{check, b.spec("probe")} {
-		if s.User != backupUser || !s.Network || s.EnvironmentFile != b.cfg.EnvFile || s.CacheDirectory != "hotserve-backup" || len(s.Binds) != 0 || len(s.Capabilities) != 0 {
+		if s.User != backupUser || !s.Network || s.EnvironmentFile != b.cfg.EnvFile || s.CacheDirectory != "motel-backup" || len(s.Binds) != 0 || len(s.Capabilities) != 0 {
 			t.Errorf("%s is not a query of the repository as the backup account, shown nothing: %+v", s.Name, s)
 		}
 		if slices.Contains(s.Argv, "--retry-lock") {
@@ -370,10 +370,10 @@ func TestAnOKBackupIsVouchedForInTheRepository(t *testing.T) {
 	// snapshot keeps its record, which falls in the same period.
 	// It waits for a lock less long than its clock: a lock is said as
 	// one, not as a storage that did not answer.
-	want := []string{"/usr/bin/restic", "backup", "--quiet", "--json", "--retry-lock", "20m", "--host", "hotserve",
+	want := []string{"/usr/bin/restic", "backup", "--quiet", "--json", "--retry-lock", "20m", "--host", "motel",
 		"--time", "2026-09-02 07:08:09",
-		"--tag", "hotserve-clean", "--tag", "vouches:" + snapA,
-		"--stdin-from-command", "--stdin-filename", "hotserve-clean-blog", "--", "/usr/bin/echo", snapA}
+		"--tag", "motel-clean", "--tag", "vouches:" + snapA,
+		"--stdin-from-command", "--stdin-filename", "motel-clean-blog", "--", "/usr/bin/echo", snapA}
 	s := b.spec("vouch")
 	if !slices.Equal(s.Argv, want) {
 		t.Errorf("the record's command:\n%q\nwant\n%q", s.Argv, want)
@@ -434,9 +434,9 @@ func TestOnlyAnOKRunIsVouchedForAndARecordNotWrittenIsSaid(t *testing.T) {
 		// saved it first.
 		"the record's unit ended from outside": {
 			set: func(b *box) {
-				b.err["vouch"] = errors.New("hotserve_backup_vouch_blog_x.service: ended from outside before its command finished")
+				b.err["vouch"] = errors.New("motel_backup_vouch_blog_x.service: ended from outside before its command finished")
 			},
-			class: record.OK, vouch: true, warn: "blog: snapshot aaaaaaaa is a complete backup, and the record that says so may not have been written: hotserve_backup_vouch_blog_x.service: ended from outside",
+			class: record.OK, vouch: true, warn: "blog: snapshot aaaaaaaa is a complete backup, and the record that says so may not have been written: motel_backup_vouch_blog_x.service: ended from outside",
 		},
 		"the record ended by a signal": {
 			set:   func(b *box) { b.outcome["vouch"] = unit.Outcome{Result: "signal"} },
@@ -568,7 +568,7 @@ func TestARestoreOnARebuiltBoxSaysWhatVouches(t *testing.T) {
 	vouching := func(ids ...string) string {
 		var out []string
 		for _, id := range ids {
-			out = append(out, `{"id":"`+snapC+`","time":"2026-09-02T00:00:01Z","tags":["hotserve-clean","vouches:`+id+`"]}`)
+			out = append(out, `{"id":"`+snapC+`","time":"2026-09-02T00:00:01Z","tags":["motel-clean","vouches:`+id+`"]}`)
 		}
 		return "[" + strings.Join(out, ",") + "]"
 	}
@@ -657,7 +657,7 @@ func TestARestoreOnARebuiltBoxSaysWhatVouches(t *testing.T) {
 			}
 			if tc.asked {
 				s := b.spec("vouches")
-				if want := []string{"/usr/bin/restic", "snapshots", "--json", "--no-lock", "--host", "hotserve", "--tag", "hotserve-clean"}; !slices.Equal(s.Argv, want) || s.StderrFile == "" {
+				if want := []string{"/usr/bin/restic", "snapshots", "--json", "--no-lock", "--host", "motel", "--tag", "motel-clean"}; !slices.Equal(s.Argv, want) || s.StderrFile == "" {
 					t.Errorf("the records' listing: %q", s.Argv)
 				}
 			}
@@ -852,7 +852,7 @@ func TestTheRunsListingLeavesTheRecordsOut(t *testing.T) {
 	if _, err := Run(context.Background(), b.cfg, b); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := b.spec("listing").Argv, []string{"/usr/bin/restic", "snapshots", "--json", "--no-lock", "--host", "hotserve", "--tag", "hotserve"}; !slices.Equal(got, want) {
+	if got, want := b.spec("listing").Argv, []string{"/usr/bin/restic", "snapshots", "--json", "--no-lock", "--host", "motel", "--tag", "motel"}; !slices.Equal(got, want) {
 		t.Errorf("the listing: %q\nwant %q", got, want)
 	}
 }
@@ -884,10 +884,10 @@ func TestWhatAVerdictDoesToTheNextGroup(t *testing.T) {
 		"first, killed":        {reads: "39/52", after: "39/52", set: func(b *box) { b.outcome["repocheck"] = unit.Outcome{Result: "signal"} }},
 		"not a group, clean":   {next: "x", reads: "39/52", after: "40/52", set: func(*box) {}},
 		"first, ended from outside": {after: "", set: func(b *box) {
-			b.err["repocheck"] = fmt.Errorf("hotserve_backup_repocheck_x.service: %w", unit.ErrEndedFromOutside)
+			b.err["repocheck"] = fmt.Errorf("motel_backup_repocheck_x.service: %w", unit.ErrEndedFromOutside)
 		}},
 		"told 41, ended from outside": {next: "41/52", reads: "41/52", after: "41/52", set: func(b *box) {
-			b.err["repocheck"] = fmt.Errorf("hotserve_backup_repocheck_x.service: %w", unit.ErrEndedFromOutside)
+			b.err["repocheck"] = fmt.Errorf("motel_backup_repocheck_x.service: %w", unit.ErrEndedFromOutside)
 		}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1027,7 +1027,7 @@ func TestAChecksGroupAndTimeAreOneReadingOfTheClock(t *testing.T) {
 // upload, a fetch and the check have no backstop of ours because restic
 // has one (D4).
 func TestWhatEveryResticUnitIsGiven(t *testing.T) {
-	if s := resticUnit("hotserve_backup_x_000000000000.service", "", "/env", []string{"/usr/bin/restic"}, ""); !slices.Contains(s.Environment, "TZ=UTC") {
+	if s := resticUnit("motel_backup_x_000000000000.service", "", "/env", []string{"/usr/bin/restic"}, ""); !slices.Contains(s.Environment, "TZ=UTC") {
 		t.Errorf("resticUnit: %q", s.Environment)
 	}
 	b := restoreBox(t)
@@ -1120,7 +1120,7 @@ func TestACheckEndedFromOutsideIsNoVerdict(t *testing.T) {
 			b := restoreBox(t)
 			must(t, os.MkdirAll(b.cfg.StateDir, 0o755))
 			must(t, record.Write(filepath.Join(b.cfg.StateDir, "status.json"), &record.Status{Apps: map[string]*record.App{}, LastCheck: last}))
-			b.err[role] = fmt.Errorf("hotserve_backup_%s_x.service: %w (start job \"canceled\")", role, unit.ErrEndedFromOutside)
+			b.err[role] = fmt.Errorf("motel_backup_%s_x.service: %w (start job \"canceled\")", role, unit.ErrEndedFromOutside)
 			st, checked, _ := Drill(context.Background(), b.cfg, b)
 			if checked != nil || st.LastCheck == nil || *st.LastCheck != *last {
 				t.Errorf("a check ended from outside came to %+v; the record holds %+v", checked, st.LastCheck)

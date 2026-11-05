@@ -12,10 +12,10 @@ import (
 )
 
 // The account's lookups, as tables: the account every restic unit
-// runs as is hotserve's own, and what says so is what the account
+// runs as is motel's own, and what says so is what the account
 // database answers, through a program that can be slow, fail, or not
 // know. The rows of which account is accepted are in
-// TestAnAccountHotserveDidNotMakeIsRefused; these are the rows of how
+// TestAnAccountMotelDidNotMakeIsRefused; these are the rows of how
 // it is asked.
 
 // The lookups as they are, kept from before any box stands in for them.
@@ -49,15 +49,15 @@ func databases(t *testing.T, answers map[string]said) {
 // program that did not run — each is an error, in the lookup's own
 // words, and never an account taken as found, as absent, or as right.
 func TestALookupThatFailsRefuses(t *testing.T) {
-	const cmd = "/usr/bin/getent passwd hotserve-backup"
+	const cmd = "/usr/bin/getent passwd motel-backup"
 	for _, tc := range []struct {
 		name string
 		said said
 		want string
 	}{
 		{"exit 1", said{exit: 1}, cmd + ": exit status 1"},
-		{"five fields", said{out: "hotserve-backup:x:995:995:/nonexistent\n"}, "not a passwd line"},
-		{"a uid that is no number", said{out: "hotserve-backup:x:nine:995:made-by-hotserve:/nonexistent:/usr/sbin/nologin\n"}, "not a passwd line"},
+		{"five fields", said{out: "motel-backup:x:995:995:/nonexistent\n"}, "not a passwd line"},
+		{"a uid that is no number", said{out: "motel-backup:x:nine:995:made-by-motel:/nonexistent:/usr/sbin/nologin\n"}, "not a passwd line"},
 		{"nothing, and exit 0", said{}, "not a passwd line"},
 		{"did not run", said{err: errors.New("fork/exec /usr/bin/getent: no such file or directory")}, "no such file or directory"},
 		{"did not answer", said{err: errors.New(cmd + " did not answer within 10s")}, "did not answer within 10s"},
@@ -76,9 +76,9 @@ func TestALookupThatFailsRefuses(t *testing.T) {
 	if acct, err := realAccount(context.Background(), backupUser); err != nil || acct.exists {
 		t.Fatalf("an account that is not there: %+v, %v", acct, err)
 	}
-	databases(t, map[string]said{cmd: {out: "hotserve-backup:x:995:995:made-by-hotserve:/nonexistent:/usr/sbin/nologin\n"}})
+	databases(t, map[string]said{cmd: {out: "motel-backup:x:995:995:made-by-motel:/nonexistent:/usr/sbin/nologin\n"}})
 	if acct, err := realAccount(context.Background(), backupUser); err != nil || acct.comment != accountMark || acct.uid != 995 {
-		t.Fatalf("hotserve's account: %+v, %v", acct, err)
+		t.Fatalf("motel's account: %+v, %v", acct, err)
 	}
 }
 
@@ -185,14 +185,14 @@ func TestTheAccountIsOneAnswer(t *testing.T) {
 	// The data user the same: the account the box resolves, a
 	// directory's if it is one, as postinstall found it with getent.
 	databases(t, map[string]said{
-		"/usr/bin/getent passwd hotserve": {out: "hotserve:*:5151:5152::/var/lib/hotserve:/usr/sbin/nologin\n"},
+		"/usr/bin/getent passwd motel": {out: "motel:*:5151:5152::/var/lib/motel:/usr/sbin/nologin\n"},
 	})
 	uid, gid, err := realDataOwner(context.Background())
 	if err != nil || uid != 5151 || gid != 5152 {
 		t.Fatalf("the data user's ids = %d, %d, %v; the lookup said 5151, 5152", uid, gid, err)
 	}
-	databases(t, map[string]said{"/usr/bin/getent passwd hotserve": {exit: 2}})
-	if _, _, err := realDataOwner(context.Background()); err == nil || !strings.Contains(err.Error(), "the hotserve account is not there") {
+	databases(t, map[string]said{"/usr/bin/getent passwd motel": {exit: 2}})
+	if _, _, err := realDataOwner(context.Background()); err == nil || !strings.Contains(err.Error(), "the motel account is not there") {
 		t.Fatalf("with no data user: err = %v", err)
 	}
 }
@@ -205,7 +205,7 @@ func TestAFailedLookupStopsACommandThatWouldNotHaveUsedIt(t *testing.T) {
 	b := newBox(t)
 	b.plan = fmt.Sprintf(`{"root":%q,"apps":{}}`, b.root)
 	dataOwner = func(context.Context) (int, int, error) {
-		return 0, 0, errors.New("/usr/bin/getent passwd hotserve did not answer within 10s")
+		return 0, 0, errors.New("/usr/bin/getent passwd motel did not answer within 10s")
 	}
 	st, err := Run(context.Background(), b.cfg, b)
 	if err == nil || !strings.Contains(err.Error(), "did not answer within 10s") {

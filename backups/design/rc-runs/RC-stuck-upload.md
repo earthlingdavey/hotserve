@@ -1,9 +1,9 @@
 # RC finding, 2026-10-06: a run's upload stuck 27 h on B2 (the owner's box, pasted by the owner)
 
-systemctl list-timers hotserve-backup.timer (before):
+systemctl list-timers motel-backup.timer (before):
   NEXT - | LEFT - | LAST Mon 2026-10-05 09:01:26 UTC | PASSED 1 day 3h ago
 
-hotserve-backup status (before), exit 1:
+motel-backup status (before), exit 1:
   last run 2026-10-05 08:01 UTC
   no run has finished since 2026-10-05 08:01 UTC, more than 3 hours ago: what follows is as of then
   last drill 2026-10-04 13:43 UTC
@@ -12,22 +12,22 @@ hotserve-backup status (before), exit 1:
   dev: stale: the last complete backup is from 2026-10-05 08:01 UTC, more than 3 hours ago, snapshot 0a9fbe4e
   dev: restore last proven: 2026-10-04 13:44 UTC, snapshot 167d2290
   running: upload of dev, since 2026-10-05 09:01 UTC
-  hotserve-backup: not every app has a fresh backup and a restore proven lately
+  motel-backup: not every app has a fresh backup and a restore proven lately
 
-systemctl list-units 'hotserve*' --all:
-  hotserve-backup.service                          activating start  hotserve backup run
-  hotserve_backup_upload_dev_b87ecc0bb618.service  activating start  hotserve backup: upload dev
-  hotserve-backup.timer                            active     running
-  hotserve-backup-drill.timer                      active     waiting
+systemctl list-units 'motel*' --all:
+  motel-backup.service                          activating start  motel backup run
+  motel_backup_upload_dev_b87ecc0bb618.service  activating start  motel backup: upload dev
+  motel-backup.timer                            active     running
+  motel-backup-drill.timer                      active     waiting
 
-journal (hotserve_backup_* and hotserve-backup.service since 2026-10-05 08:55): plan, clean, dump finished
-09:01:26-27; "Starting hotserve_backup_upload_dev_b87ecc0bb618.service" 09:01:27; then NOTHING for 27 h
+journal (motel_backup_* and motel-backup.service since 2026-10-05 08:55): plan, clean, dump finished
+09:01:26-27; "Starting motel_backup_upload_dev_b87ecc0bb618.service" 09:01:27; then NOTHING for 27 h
 (restic's stderr goes to the journal: StandardError=journal, backups/unit/unit.go:607).
-Also: "hotserve_backup_plan_…/clean_…: Supervising process N which is not our child. We'll most likely
+Also: "motel_backup_plan_…/clean_…: Supervising process N which is not our child. We'll most likely
 not notice when it exits." (both then "Deactivated successfully") — separate, to look at.
 
 ps: 51386 Ssl 1-03:11:40 futex_wait_queue /usr/bin/restic backup --quiet --json --retry-lock 2h
-    --exclude-file /backup-exclude --host hotserve --tag hotserve --tag app:dev /backup/dev
+    --exclude-file /backup-exclude --host motel --tag motel --tag app:dev /backup/dev
 ss -tnpo | grep restic: nothing at that moment.
 /proc/51386/fd: 0 /dev/null, 1 …/dev.summary.json, 2 socket (journal), 4 eventpoll, 5 eventfd.
 

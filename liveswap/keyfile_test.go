@@ -12,8 +12,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // TestLocalKeyFileRoundtrip proves the on-disk PEM formats produced by
@@ -43,12 +43,12 @@ func TestLocalKeyFileRoundtrip(t *testing.T) {
 		t.Fatalf("load private key: %v", err)
 	}
 	sources, err := deploytrust.Build([]deploytrust.TrustConfig{{
-		Kind: "local", PublicKey: pubPath, Audience: "hotserve", Claims: map[string]string{"repository": "org/app"},
+		Kind: "local", PublicKey: pubPath, Audience: "motel", Claims: map[string]string{"repository": "org/app"},
 	}}, nil)
 	if err != nil {
 		t.Fatalf("load public key: %v", err)
 	}
-	tok := trusttest.Mint(t, loadedPriv, "hotserve", map[string]string{"repository": "org/app"})
+	tok := trusttest.Mint(t, loadedPriv, "motel", map[string]string{"repository": "org/app"})
 	req := httptest.NewRequest(http.MethodGet, "/demo", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	who, ref := deploytrust.NewLimiter(newFakeClock()).Authenticate(req, deploytrust.Verifiers(sources, nil), zap.NewNop(), "", "")

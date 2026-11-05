@@ -1,9 +1,9 @@
 // The box subsystem: config by signed push, applied on the box
 // (box/DESIGN-box.md). Its own module, as liveswap and penaltybox are,
 // so the proof core and the reading of the signed file are built,
-// tested and fuzzed on their own; cmd/hotserve imports it for the
-// `box` option, `box_webhook` and `hotserve box`.
-module github.com/smallhoursorg/hotserve/box
+// tested and fuzzed on their own; cmd/motel imports it for the
+// `box` option, `box_webhook` and `motel box`.
+module github.com/smallhoursorg/motel/box
 
 // The Go toolchain is pinned by the golang image in docker-compose.yml —
 // no toolchain directive needed here.
@@ -12,12 +12,12 @@ go 1.27.1
 // The box imports liveswap's deploy trust and response filter (the
 // allowed direction, DESIGN-box.md); built only from this repo, so the
 // replace is fine, as in the root module.
-replace github.com/smallhoursorg/hotserve/liveswap => ../liveswap
+replace github.com/smallhoursorg/motel/liveswap => ../liveswap
 
 require (
 	filippo.io/age v1.3.2
 	github.com/caddyserver/caddy/v2 v2.11.7
-	github.com/smallhoursorg/hotserve/liveswap v0.0.0-00010101000000-000000000000
+	github.com/smallhoursorg/motel/liveswap v0.0.0-00010101000000-000000000000
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.58.0

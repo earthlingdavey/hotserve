@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // Deploy-auth test keys, generated once per test binary. appTest* backs
@@ -37,7 +37,7 @@ func localSource(t *testing.T, pub ed25519.PublicKey, audience string) deploytru
 // subject ci.
 func oidcSource(t *testing.T, issuer string) deploytrust.Source {
 	t.Helper()
-	return mustBuild(t, []deploytrust.TrustConfig{{Kind: "oidc", Issuer: issuer, Audience: "hotserve", Subject: "ci"}})[0]
+	return mustBuild(t, []deploytrust.TrustConfig{{Kind: "oidc", Issuer: issuer, Audience: "motel", Subject: "ci"}})[0]
 }
 
 // primed is vs once each OIDC source's discovery and key fetch have
@@ -67,5 +67,5 @@ func mustBuild(t *testing.T, configs []deploytrust.TrustConfig) []deploytrust.So
 // (Build validates OIDC presets without touching the network or the
 // filesystem; verifier construction is lazy).
 func githubTrust() []deploytrust.TrustConfig {
-	return []deploytrust.TrustConfig{{Kind: "github", Audience: "hotserve", Claims: map[string]string{"repository": "org/blog"}}}
+	return []deploytrust.TrustConfig{{Kind: "github", Audience: "motel", Claims: map[string]string{"repository": "org/blog"}}}
 }

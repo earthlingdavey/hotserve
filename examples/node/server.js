@@ -1,4 +1,4 @@
-// A minimal hotserve app, built into one executable by scripts/bundle.sh
+// A minimal motel app, built into one executable by scripts/bundle.sh
 // (Node's single-executable build), so the box needs no Node installed.
 // On the box, liveswap starts it and hands it a unix socket in $SOCKET:
 // it never listens on a TCP port there. Locally, `npm run dev` has no

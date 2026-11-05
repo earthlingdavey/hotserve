@@ -8,29 +8,29 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/liveswap"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 // stubHost is the box_webhook host the stub tests validate for.
 const stubHost = "deploy.example.com"
 
-// reachableAdaptation is what the stub `hotserve adapt` prints unless a
+// reachableAdaptation is what the stub `motel adapt` prints unless a
 // test says otherwise: one server, the box site routing / to
 // box_webhook.
 const reachableAdaptation = `{"apps":{"http":{"servers":{"srv0":{"routes":[{"match":[{"host":["deploy.example.com"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"handler":"box_webhook"}]}]}],"terminal":true}]}}}}}`
 
-// stubValidator is the real child runner over stub programs: hotserve
-// is the body of a /bin/sh script standing for `hotserve validate`,
-// backup, unless "", for `hotserve-backup`; `hotserve adapt` prints
+// stubValidator is the real child runner over stub programs: motel
+// is the body of a /bin/sh script standing for `motel validate`,
+// backup, unless "", for `motel-backup`; `motel adapt` prints
 // reachableAdaptation. Each script records its arguments, one line per
 // run, and the staged file beside itself.
-func stubValidator(t *testing.T, hotserve, backup string, env ...string) (*childValidator, string) {
+func stubValidator(t *testing.T, motel, backup string, env ...string) (*childValidator, string) {
 	t.Helper()
-	return stubChildren(t, hotserve, "printf '%s' '"+reachableAdaptation+"'; exit 0", backup, env...)
+	return stubChildren(t, motel, "printf '%s' '"+reachableAdaptation+"'; exit 0", backup, env...)
 }
 
-// stubAdapt is stubValidator with `hotserve validate` passing and adapt
-// the body of the script standing for `hotserve adapt`.
+// stubAdapt is stubValidator with `motel validate` passing and adapt
+// the body of the script standing for `motel adapt`.
 func stubAdapt(t *testing.T, adapt string, env ...string) (*childValidator, string) {
 	t.Helper()
 	return stubChildren(t, "exit 0", adapt, "", env...)
@@ -42,16 +42,16 @@ func stubChildren(t *testing.T, validate, adapt, backup string, env ...string) (
 	stage := filepath.Join(dir, "stage")
 	must(t, os.Mkdir(stage, 0o700))
 	// One program answers both subcommands, as the real one does.
-	hotserve := "case \"$1\" in adapt)\n" + adapt + "\n;; esac\n" + validate
+	motel := "case \"$1\" in adapt)\n" + adapt + "\n;; esac\n" + validate
 	// The box's own deadline: a child a test means to finish must not
 	// race the machine's load (#289). Tests of the deadline set their
 	// own.
 	c := &childValidator{
-		stage: stage, hotserve: script(t, dir, "hotserve", hotserve), backup: filepath.Join(dir, "absent"),
+		stage: stage, motel: script(t, dir, "motel", motel), backup: filepath.Join(dir, "absent"),
 		env: env, timeout: validateTimeout, redactor: liveswap.NewRedactor(secretCandidates(env), nil),
 	}
 	if backup != "" {
-		c.backup = script(t, dir, "hotserve-backup", backup)
+		c.backup = script(t, dir, "motel-backup", backup)
 	}
 	return c, dir
 }
@@ -75,12 +75,12 @@ func TestValidateChild(t *testing.T) {
 		if msg != "" || err != nil {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
-		args, _ := os.ReadFile(filepath.Join(dir, "hotserve.args"))
+		args, _ := os.ReadFile(filepath.Join(dir, "motel.args"))
 		staged := filepath.Join(c.stage, stagedConfig("0123456789abcdef0123456789abcdef"))
 		if strings.TrimSpace(string(args)) != "validate --adapter caddyfile --config "+staged+"\nadapt --adapter caddyfile --config "+staged {
 			t.Fatalf("args %q", args)
 		}
-		if got, _ := os.ReadFile(filepath.Join(dir, "hotserve.args.file")); string(got) != string(file) {
+		if got, _ := os.ReadFile(filepath.Join(dir, "motel.args.file")); string(got) != string(file) {
 			t.Fatalf("the child read %q", got)
 		}
 		if exists(staged) {
@@ -90,7 +90,7 @@ func TestValidateChild(t *testing.T) {
 	t.Run("refuses with the error line", func(t *testing.T) {
 		c, _ := stubValidator(t, `echo '{"level":"info","msg":"using config"}' >&2; echo 'Error: adapting config using caddyfile: Caddyfile:2: unrecognized directive: respnd' >&2; exit 1`, "")
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if err != nil || msg != "hotserve validate: adapting config using caddyfile: Caddyfile:2: unrecognized directive: respnd" {
+		if err != nil || msg != "motel validate: adapting config using caddyfile: Caddyfile:2: unrecognized directive: respnd" {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
@@ -103,7 +103,7 @@ func TestValidateChild(t *testing.T) {
 			must(t, os.WriteFile(out, []byte(`{"level":"info","msg":"using config from file"}`+"\n"+line+"\n"), 0o600))
 			c, _ := stubValidator(t, "cat '"+out+"' >&2; exit 1", "")
 			msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-			if err != nil || !strings.HasPrefix(msg, "hotserve validate: ...") || !strings.HasSuffix(msg, caddyReason) || len(msg) > len("hotserve validate: ...")+300 {
+			if err != nil || !strings.HasPrefix(msg, "motel validate: ...") || !strings.HasSuffix(msg, caddyReason) || len(msg) > len("motel validate: ...")+300 {
 				t.Fatalf("%s: msg %q err %v", name, msg, err)
 			}
 		}
@@ -111,14 +111,14 @@ func TestValidateChild(t *testing.T) {
 	t.Run("keeps the head of an adapter error", func(t *testing.T) {
 		// The adapter says why first and where after; an import chain of
 		// staged paths can outrun the bound.
-		staged := "/var/lib/hotserve-box/stage/." + strings.Repeat("a", 32) + ".Caddyfile"
+		staged := "/var/lib/motel-box/stage/." + strings.Repeat("a", 32) + ".Caddyfile"
 		why := "adapting config using caddyfile: parsing caddyfile tokens for 'reverse_proxy': wrong argument count or unexpected line ending after 'to'"
 		line := caddyLine(why + ", at " + staged + ":12 import chain ['" + staged + ":3 (import a)','" + staged + ":7 (import b)','" + staged + ":9 (import c)']")
 		out := filepath.Join(t.TempDir(), "out")
 		must(t, os.WriteFile(out, []byte(line+"\n"), 0o600))
 		c, _ := stubValidator(t, "cat '"+out+"' >&2; exit 1", "")
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if err != nil || !strings.HasPrefix(msg, "hotserve validate: "+why) || !strings.HasSuffix(msg, "...") {
+		if err != nil || !strings.HasPrefix(msg, "motel validate: "+why) || !strings.HasSuffix(msg, "...") {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 		// The end is chosen from the line as the child wrote it: a known
@@ -135,7 +135,7 @@ func TestValidateChild(t *testing.T) {
 		must(t, os.WriteFile(out, []byte(caddyLine("provision liveswap: app x: listen "+secret+" is not a number")+"\n"), 0o600))
 		c, _ := stubValidator(t, "cat '"+out+"'; exit 1", "", "DB_PASS="+secret)
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if err != nil || strings.Contains(msg, secret) || !strings.HasPrefix(msg, "hotserve validate: provision liveswap: app x: listen ") {
+		if err != nil || strings.Contains(msg, secret) || !strings.HasPrefix(msg, "motel validate: provision liveswap: app x: listen ") {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
@@ -143,33 +143,33 @@ func TestValidateChild(t *testing.T) {
 		secret := "pg-pass-" + strings.Repeat("q7", 10)
 		// Quoted bare, as an expanded placeholder is: only the layer
 		// primed with the environment can know it.
-		// The service's own words stay: USER is hotserve, and the staged
+		// The service's own words stay: USER is motel, and the staged
 		// file's path names it.
-		c, _ := stubValidator(t, `echo "Error: /var/lib/hotserve-box/stage/x.Caddyfile:2: parsing port: $DB_PASS is not a number"; exit 1`, "",
-			"DB_PASS="+secret, "HOME=/var/lib/hotserve", "USER=hotserve", "LOGNAME=hotserve")
+		c, _ := stubValidator(t, `echo "Error: /var/lib/motel-box/stage/x.Caddyfile:2: parsing port: $DB_PASS is not a number"; exit 1`, "",
+			"DB_PASS="+secret, "HOME=/var/lib/motel", "USER=motel", "LOGNAME=motel")
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if err != nil || strings.Contains(msg, secret) || !strings.HasPrefix(msg, "hotserve validate: /var/lib/hotserve-box/stage/x.Caddyfile:2: parsing port: ") {
+		if err != nil || strings.Contains(msg, secret) || !strings.HasPrefix(msg, "motel validate: /var/lib/motel-box/stage/x.Caddyfile:2: parsing port: ") {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
 	t.Run("bounds the line", func(t *testing.T) {
 		c, _ := stubValidator(t, `printf 'Error: '; head -c 2000 /dev/zero | tr '\0' 'x'; echo; exit 1`, "")
 		msg, _ := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if len(msg) > len("hotserve validate: ")+300+len("...") { // proof.Bound's cap
+		if len(msg) > len("motel validate: ")+300+len("...") { // proof.Bound's cap
 			t.Fatalf("%d bytes", len(msg))
 		}
 	})
 	t.Run("keeps the tail of a long output", func(t *testing.T) {
 		c, _ := stubValidator(t, `head -c 100000 /dev/zero | tr '\0' 'y'; echo; echo 'Error: the end'; exit 1`, "")
 		msg, _ := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if msg != "hotserve validate: the end" {
+		if msg != "motel validate: the end" {
 			t.Fatalf("msg %q", msg)
 		}
 	})
 	t.Run("no output", func(t *testing.T) {
 		c, _ := stubValidator(t, "exit 3", "")
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if err != nil || msg != "hotserve validate: exit status 3" {
+		if err != nil || msg != "motel validate: exit status 3" {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
@@ -178,7 +178,7 @@ func TestValidateChild(t *testing.T) {
 		// the deadline. The answer is the child's line, not a timeout.
 		c, _ := stubValidator(t, "sleep 60 & echo 'Error: said why'; exit 1", "")
 		c.timeout = 800 * time.Millisecond // the shell's exit well inside it, WaitDelay (1 s) past it
-		if msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "hotserve validate: said why" || err != nil {
+		if msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "motel validate: said why" || err != nil {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
@@ -187,7 +187,7 @@ func TestValidateChild(t *testing.T) {
 		c.timeout = 200 * time.Millisecond
 		start := time.Now()
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if err != nil || msg != "hotserve validate: did not finish within 200ms" || time.Since(start) > 10*time.Second {
+		if err != nil || msg != "motel validate: did not finish within 200ms" || time.Since(start) > 10*time.Second {
 			t.Fatalf("msg %q err %v after %s", msg, err, time.Since(start))
 		}
 	})
@@ -197,7 +197,7 @@ func TestValidateChild(t *testing.T) {
 		c, _ := stubValidator(t, "sleep 60 & echo 'Error: gone'; exit 1", "")
 		start := time.Now()
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if err != nil || msg != "hotserve validate: gone" || time.Since(start) > 10*time.Second {
+		if err != nil || msg != "motel validate: gone" || time.Since(start) > 10*time.Second {
 			t.Fatalf("msg %q err %v after %s", msg, err, time.Since(start))
 		}
 	})
@@ -215,7 +215,7 @@ func TestValidateChild(t *testing.T) {
 	})
 	t.Run("a program that cannot start is the box's", func(t *testing.T) {
 		c, _ := stubValidator(t, "exit 0", "")
-		c.hotserve = filepath.Join(t.TempDir(), "missing")
+		c.motel = filepath.Join(t.TempDir(), "missing")
 		if msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "" || err == nil {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
@@ -236,10 +236,10 @@ func TestValidateBackup(t *testing.T) {
 		c, dir := stubValidator(t, "exit 0", "echo 'Error: backup app is not declared' >&2; exit 2")
 		id := randomID(t)
 		msg, err := c.validate(context.Background(), id, file, stubHost, nil)
-		if err != nil || msg != "hotserve-backup validate: backup app is not declared" {
+		if err != nil || msg != "motel-backup validate: backup app is not declared" {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
-		args, _ := os.ReadFile(filepath.Join(dir, "hotserve-backup.args"))
+		args, _ := os.ReadFile(filepath.Join(dir, "motel-backup.args"))
 		if strings.TrimSpace(string(args)) != "validate "+filepath.Join(c.stage, stagedConfig(id)) {
 			t.Fatalf("args %q", args)
 		}
@@ -248,7 +248,7 @@ func TestValidateBackup(t *testing.T) {
 		// Its errors quote the adapter, which says why first.
 		c, _ := stubValidator(t, "exit 0", `printf 'Error: the why, at '; head -c 2000 /dev/zero | tr '\0' 'x'; echo; exit 1`)
 		msg, _ := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if !strings.HasPrefix(msg, "hotserve-backup validate: the why, at x") || !strings.HasSuffix(msg, "...") {
+		if !strings.HasPrefix(msg, "motel-backup validate: the why, at x") || !strings.HasSuffix(msg, "...") {
 			t.Fatalf("msg %q", msg)
 		}
 	})
@@ -258,13 +258,13 @@ func TestValidateBackup(t *testing.T) {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
-	t.Run("not after hotserve refused", func(t *testing.T) {
+	t.Run("not after motel refused", func(t *testing.T) {
 		c, dir := stubValidator(t, "echo 'Error: no'; exit 1", "exit 0")
-		if msg, _ := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "hotserve validate: no" {
+		if msg, _ := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "motel validate: no" {
 			t.Fatalf("msg %q", msg)
 		}
-		if exists(filepath.Join(dir, "hotserve-backup.args")) {
-			t.Fatal("backup validate ran after hotserve's refusal")
+		if exists(filepath.Join(dir, "motel-backup.args")) {
+			t.Fatal("backup validate ran after motel's refusal")
 		}
 	})
 	t.Run("not installed, as test -x reads it", func(t *testing.T) {
@@ -274,7 +274,7 @@ func TestValidateBackup(t *testing.T) {
 		if msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "" || err != nil {
 			t.Fatalf("EACCES: msg %q err %v", msg, err)
 		}
-		c.backup = filepath.Join(dir, "hotserve.args", "x") // a component that is not a directory
+		c.backup = filepath.Join(dir, "motel.args", "x") // a component that is not a directory
 		if msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "" || err != nil {
 			t.Fatalf("ENOTDIR: msg %q err %v", msg, err)
 		}
@@ -357,7 +357,7 @@ func TestTailBuffer(t *testing.T) {
 }
 
 func TestSecretCandidates(t *testing.T) {
-	got := secretCandidates([]string{"PATH=/usr/bin:/bin", "HOME=/var/lib/hotserve", "USER=hotserve", "LOGNAME=hotserve",
+	got := secretCandidates([]string{"PATH=/usr/bin:/bin", "HOME=/var/lib/motel", "USER=motel", "LOGNAME=motel",
 		"INVOCATION_ID=0123456789abcdef", "LC_ALL=C.UTF-8", "XDG_RUNTIME_DIR=/run/user/999", "TOKEN=abc", "SLASHED=/Zq3+secret", "EMPTY=", "NOEQUALS"})
 	if strings.Join(got, ",") != "TOKEN=abc,SLASHED=/Zq3+secret,EMPTY=" {
 		t.Fatalf("%v", got)

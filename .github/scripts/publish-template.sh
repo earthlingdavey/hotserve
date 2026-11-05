@@ -3,7 +3,7 @@
 #
 #   .github/scripts/publish-template.sh <runtime> <tag> [owner/repo]
 #
-# `node v0.2.0` makes smallhoursorg/hotserve-example-node's main hold
+# `node v0.2.0` makes smallhoursorg/motel-example-node's main hold
 # exactly what examples/node holds at v0.2.0 (the tree `git archive`
 # gives, nothing added) and tags it v0.2.0. release.yml's templates job
 # runs it on each release. From a laptop: a checkout with its tags,
@@ -22,7 +22,7 @@ set -eu
 
 rt=${1:?the example: node, deno or box}
 tag=${2:?the release tag, e.g. v0.2.0}
-repo=${3:-smallhoursorg/hotserve-example-$rt}
+repo=${3:-smallhoursorg/motel-example-$rt}
 src=examples/$rt
 
 case $tag in
@@ -71,9 +71,9 @@ else
 	git -C "$m" -c user.name='github-actions[bot]' \
 		-c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
 		commit -q -F - <<EOF
-hotserve $tag: $src
+motel $tag: $src
 
-Generated from https://github.com/smallhoursorg/hotserve/tree/$tag/$src
+Generated from https://github.com/smallhoursorg/motel/tree/$tag/$src
 ($sha). Nothing here is edited by hand: changes go there.
 EOF
 fi

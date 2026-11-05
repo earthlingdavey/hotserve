@@ -15,17 +15,17 @@
 ## the bucket under rc-attack, every version:
      23 hide
      24 upload
-bob@rcbox:~$ sudo systemctl start hotserve-backup.service
-^@[0;1;31mJob for hotserve-backup.service failed because the control process exited with error code.[0m
-[0;1;31mSee "systemctl status hotserve-backup.service" and "journalctl -xeu hotserve-backup.service" for details.[0m
+bob@rcbox:~$ sudo systemctl start motel-backup.service
+^@[0;1;31mJob for motel-backup.service failed because the control process exited with error code.[0m
+[0;1;31mSee "systemctl status motel-backup.service" and "journalctl -xeu motel-backup.service" for details.[0m
 [exit 1, 1.46715s, 2026-10-04T13:25:00Z]
-bob@rcbox:~$ hotserve-backup status
+bob@rcbox:~$ motel-backup status
 last run 2026-10-04 13:24 UTC
 last drill 2026-10-04 13:19 UTC
 repository last checked 2026-10-04 13:19 UTC: its structure, and data group 40/52: clean
-demo: failed: there is no repository at the configured location (exit 10); `journalctl -u hotserve_backup_upload_demo_f6ced011cdab.service` has restic's own words (data at /var/lib/liveswap/demo/shared)
+demo: failed: there is no repository at the configured location (exit 10); `journalctl -u motel_backup_upload_demo_f6ced011cdab.service` has restic's own words (data at /var/lib/liveswap/demo/shared)
 demo: last complete backup 2026-10-04 13:20 UTC, snapshot f7da9025
 demo: restore last proven: 2026-10-04 13:19 UTC, snapshot 66815c80
 no unit of a run, a restore or a drill is running
-hotserve-backup: not every app has a fresh backup and a restore proven lately
+motel-backup: not every app has a fresh backup and a restore proven lately
 [exit 1, 0.023056s, 2026-10-04T13:25:00Z]

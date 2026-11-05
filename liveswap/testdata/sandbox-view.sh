@@ -26,7 +26,7 @@
 #
 # Each lane wraps it in its own ./server, which SOURCES this file and
 # then becomes whatever that lane needs (a sleep, the demo app,
-# `hotserve respond`). Sourced rather than run as a child so that `$$`
+# `motel respond`). Sourced rather than run as a child so that `$$`
 # below is the unit's main pid — which is the assertion that the PID
 # namespace is in effect at all.
 #
@@ -37,11 +37,11 @@
 #
 #   MGR_PID         the user manager's pid, as seen on the host
 #   PROBE_DNS_NAME  a name to resolve, proving DNS works from inside
-#   HOTSERVE_UID    the uid hotserve runs as
+#   MOTEL_UID    the uid motel runs as
 #
-# HOTSERVE_UID is the one with a defensible default: apps run as the
-# hotserve user and PrivateUsers= maps that uid to itself, so `id -u`
-# in here IS hotserve's uid. Rather than trust that, the probe emits
+# MOTEL_UID is the one with a defensible default: apps run as the
+# motel user and PrivateUsers= maps that uid to itself, so `id -u`
+# in here IS motel's uid. Rather than trust that, the probe emits
 # the value it actually used as `uid`, and the lane compares it against
 # the uid it looked up from outside — proving the manager-socket path
 # below is the real one rather than merely absent.
@@ -84,12 +84,12 @@ exists current open closed "$app/current"
 writable release "$release/.probe-w"
 writable root "$root/.probe-w"
 
-# ── hotserve's own state, sockets and config ──────────────────────
-exists hotserve_lib open closed /var/lib/hotserve
-exists run_hotserve open closed /run/hotserve
-exists etc_hotserve open closed /etc/hotserve
-exists admin_socket open closed /run/hotserve/admin.sock
-probe_uid=${HOTSERVE_UID:-$(id -u)}
+# ── motel's own state, sockets and config ──────────────────────
+exists motel_lib open closed /var/lib/motel
+exists run_motel open closed /run/motel
+exists etc_motel open closed /etc/motel
+exists admin_socket open closed /run/motel/admin.sock
+probe_uid=${MOTEL_UID:-$(id -u)}
 emit uid "$probe_uid"
 exists mgr_socket open closed "/run/user/$probe_uid/systemd/private"
 
@@ -124,7 +124,7 @@ for d in /opt /srv /home /root /mnt /media /var/lib /etc/liveswap; do
 done
 # /etc named entry by entry, never bound whole: an app that could list
 # all of /etc would see every other app's env_file. /var/lib holds
-# nothing but the path to this app's own dirs — hotserve's TLS keys
+# nothing but the path to this app's own dirs — motel's TLS keys
 # sit next door on the host.
 emit etc_listing "$(ls /etc 2>/dev/null | tr '\n' ' ')"
 emit varlib_listing "$(ls /var/lib 2>/dev/null | tr '\n' ' ')"
@@ -134,11 +134,11 @@ emit varlib_listing "$(ls /var/lib 2>/dev/null | tr '\n' ' ')"
 # by a unit that has nothing in it at all.
 [ -x /bin/sh ] && emit binsh ok || emit binsh MISSING
 [ -x /usr/bin/env ] && emit usrbinenv ok || emit usrbinenv MISSING
-[ -x /usr/bin/hotserve ] && emit hsbin ok || emit hsbin MISSING
+[ -x /usr/bin/motel ] && emit hsbin ok || emit hsbin MISSING
 [ -e /etc/ssl/certs ] && emit etcssl ok || emit etcssl MISSING
 # The trust store is named, not the tree that contains it: /etc/ssl
 # also holds /etc/ssl/private, which nothing in an app needs and which
-# is where hotserve's TLS keys would be.
+# is where motel's TLS keys would be.
 exists sslprivate present absent /etc/ssl/private
 [ -r /etc/resolv.conf ] && emit resolvconf ok || emit resolvconf MISSING
 # On systemd-resolved hosts /etc/resolv.conf points into
@@ -259,7 +259,7 @@ if command -v perl >/dev/null 2>&1; then
 else
 	emit io_uring_setup skipped
 fi
-# A secret seeded into the supervisor's own environment: hotserve
+# A secret seeded into the supervisor's own environment: motel
 # builds the unit's environment rather than passing its own on, and
 # the app must never see it.
 [ -n "$ACME_TEST_TOKEN" ] && emit acme_token leaked || emit acme_token absent
@@ -270,6 +270,6 @@ fi
 # above pass by testing a path that cannot exist — so the lane
 # compares these against the real values it meant to pass.
 emit saw_mgr_pid "$MGR_PID"
-emit saw_uid "$HOTSERVE_UID"
+emit saw_uid "$MOTEL_UID"
 
 emit done 1

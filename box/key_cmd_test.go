@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// `hotserve box key` (DESIGN-box.md, "The box's key"; Console commands):
+// `motel box key` (DESIGN-box.md, "The box's key"; Console commands):
 // root only; the key made once and never replaced; standard output the
 // recipient alone; age.pub written when missing or another key's, and
 // left as it is otherwise.
@@ -35,7 +35,7 @@ func TestBoxKey(t *testing.T) {
 	if !strings.HasPrefix(recipient, "age1") || strings.Count(out, "\n") != 1 {
 		t.Fatalf("stdout %q: want the recipient alone", out)
 	}
-	if want := "box key: made /etc/hotserve/age/identity; its key above is the first line of deploy.example.com/secrets/recipients\n"; errOut != want {
+	if want := "box key: made /etc/motel/age/identity; its key above is the first line of deploy.example.com/secrets/recipients\n"; errOut != want {
 		t.Errorf("stderr %q, want %q", errOut, want)
 	}
 	id, err := readIdentity(b.path(identityFile))
@@ -68,7 +68,7 @@ func TestBoxKey(t *testing.T) {
 	if err := os.WriteFile(b.path(agePubFile), []byte("age1other\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stale := filepath.Join(b.path("etc/hotserve"), ".age.pub.box-123")
+	stale := filepath.Join(b.path("etc/motel"), ".age.pub.box-123")
 	if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestBoxKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err = run(b, 0)
-	if err == nil || !strings.HasSuffix(err.Error(), "/etc/hotserve/age/identity "+errNotIdentity.Error()) {
+	if err == nil || !strings.HasSuffix(err.Error(), "/etc/motel/age/identity "+errNotIdentity.Error()) {
 		t.Fatalf("a bad identity: %v", err)
 	}
 	if got, _ := os.ReadFile(b.path(identityFile)); !bytes.Equal(got, garbage) {
@@ -147,7 +147,7 @@ func TestInitKeyLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "init: could not make the box's key for secrets: ") || !strings.HasSuffix(out, "; hotserve box key, as root, makes it\n") {
+	if !strings.Contains(out, "init: could not make the box's key for secrets: ") || !strings.HasSuffix(out, "; motel box key, as root, makes it\n") {
 		t.Errorf("printed %q", out)
 	}
 	if !bytes.Equal(b.installed(), file) || b.applied().SHA != sha {

@@ -1,5 +1,5 @@
-bob@rcbox:~$ sudo hotserve-backup setup b2:hs-lifecycle-test:rc-readonly
-account hotserve-backup: present
+bob@rcbox:~$ sudo motel-backup setup b2:hs-lifecycle-test:rc-readonly
+account motel-backup: present
 a run would back up demo, under /var/lib/liveswap
 Storage key id (B2_ACCOUNT_ID): <keyID>
 Storage secret key (B2_ACCOUNT_KEY): 
@@ -7,10 +7,10 @@ looking for a repository at b2:hs-lifecycle-test:rc-readonly (up to 10s)
 the repository exists; its password is needed
 Repository password: 
 repository ready: b2:hs-lifecycle-test:rc-readonly (existing, id 30abb7df)
-credentials: /etc/hotserve-backup/repository.env (root, 0600)
-next: the first backup runs within the hour and ten minutes (systemctl list-timers hotserve-backup.timer); to run one now, sudo systemctl start hotserve-backup.service; then hotserve-backup status
+credentials: /etc/motel-backup/repository.env (root, 0600)
+next: the first backup runs within the hour and ten minutes (systemctl list-timers motel-backup.timer); to run one now, sudo systemctl start motel-backup.service; then motel-backup status
 [exit 0]
-bob@rcbox2:~$ sudo hotserve-backup restore demo
+bob@rcbox2:~$ sudo motel-backup restore demo
 demo: restore snapshot 21011cf9, made 2026-10-04 13:52 UTC, into /var/lib/liveswap/demo/shared?
 Its databases are replaced and its files overwritten, with no backup first; what the snapshot does not hold is left.
 Type the app's name, demo, to go on: demo
@@ -35,13 +35,13 @@ bob@rcbox2:~$ sudo sqlite3 /var/lib/liveswap/demo/shared/app.db "select body fro
 first
 second
 [exit 0, 0.0231462s, 2026-10-04T14:13:41Z]
-bob@rcbox2:~$ sudo systemctl start hotserve-backup.service
+bob@rcbox2:~$ sudo systemctl start motel-backup.service
 ^@[exit 0, 16.2432s, 2026-10-04T14:14:16Z]
-bob@rcbox2:~$ sudo hotserve-backup drill
+bob@rcbox2:~$ sudo motel-backup drill
 demo: restore proven: snapshot 8a24ace9, on 2026-10-04 14:14 UTC
 repository: its structure, and data group 40/52: clean
 [exit 0, 11.6368s, 2026-10-04T14:14:28Z]
-bob@rcbox2:~$ hotserve-backup status
+bob@rcbox2:~$ motel-backup status
 last run 2026-10-04 14:14 UTC
 last drill 2026-10-04 14:14 UTC
 repository last checked 2026-10-04 14:14 UTC: its structure, and data group 40/52: clean

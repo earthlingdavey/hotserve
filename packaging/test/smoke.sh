@@ -4,13 +4,13 @@
 #
 # Fail-fast by design: each stage depends on the previous one, so the
 # first broken assertion is the diagnosis. The Makefile dumps the
-# hotserve journal on any failure.
+# motel journal on any failure.
 #
 # Stage 2 is the one that earns its keep: a real liveswap deploy under
 # the shipped systemd unit proves that download + extract work in
-# /var/lib/liveswap as the sandboxed hotserve user and that the app
+# /var/lib/liveswap as the sandboxed motel user and that the app
 # comes up as a transient unit under that user's own systemd manager —
-# the exact packaging interaction (ProtectSystem=full, User=hotserve,
+# the exact packaging interaction (ProtectSystem=full, User=motel,
 # lingering, the user@<uid> drop-in) no other test layer exercises.
 # Stage 3 then proves the app survives the upgrade restart, and stage
 # 3c that an upgrade restart the new binary refuses is reported, and
@@ -64,7 +64,7 @@ done
 echo "systemd is $state after ${i}s"
 
 arch=$(dpkg --print-architecture)
-set -- /dist/hotserve_*_"$arch".deb
+set -- /dist/motel_*_"$arch".deb
 [ $# -eq 1 ] && [ -f "$1" ] || die "expected exactly one $arch .deb in /dist, found: $*"
 deb=$1
 echo "package under test: $deb"
@@ -104,38 +104,38 @@ cat /tmp/install.out
 # Root runs the package, so the commands it prints name no sudo, which a
 # box may not have (#323). apt runs the scripts on a pty, which ends
 # each line CR LF [measured].
-tr -d '\r' </tmp/install.out | grep -A1 -x 'hotserve installed. Start it with:' | grep -qx '  systemctl enable --now hotserve' \
-	|| die "a fresh install did not print the 'systemctl enable --now hotserve' hint, with no sudo"
+tr -d '\r' </tmp/install.out | grep -A1 -x 'motel installed. Start it with:' | grep -qx '  systemctl enable --now motel' \
+	|| die "a fresh install did not print the 'systemctl enable --now motel' hint, with no sudo"
 
-id hotserve >/dev/null || die "postinstall did not create the hotserve user"
+id motel >/dev/null || die "postinstall did not create the motel user"
 # Every packaged file's mode is pinned in nfpm.yaml rather than
 # inherited from the build host's umask; check the one that matters.
-bmode=$(stat -c '%U:%G %a' /usr/bin/hotserve)
+bmode=$(stat -c '%U:%G %a' /usr/bin/motel)
 [ "$bmode" = "root:root 755" ] \
-	|| die "/usr/bin/hotserve is '$bmode', want 'root:root 755' — an unpinned mode follows the builder's umask"
-getent group hotserve >/dev/null || die "postinstall did not create the hotserve group"
-# The package's directories are group-hotserve, so postinstall must
+	|| die "/usr/bin/motel is '$bmode', want 'root:root 755' — an unpinned mode follows the builder's umask"
+getent group motel >/dev/null || die "postinstall did not create the motel group"
+# The package's directories are group-motel, so postinstall must
 # ESTABLISH the account's membership rather than assume it — an account
 # an admin or another package created keeps whatever groups it had.
-id -nG hotserve | tr ' ' '\n' | grep -qx hotserve \
-	|| die "the hotserve user is not in the hotserve group; postinstall must add it, not assume it"
-for d in /var/lib/hotserve /var/lib/liveswap; do
+id -nG motel | tr ' ' '\n' | grep -qx motel \
+	|| die "the motel user is not in the motel group; postinstall must add it, not assume it"
+for d in /var/lib/motel /var/lib/liveswap; do
 	got=$(stat -c '%U:%G %a' "$d")
-	[ "$got" = "hotserve:hotserve 750" ] || die "$d is '$got', want 'hotserve:hotserve 750'"
+	[ "$got" = "motel:motel 750" ] || die "$d is '$got', want 'motel:motel 750'"
 done
 echo "user/group and data dir ownership OK"
 
 # The starter config is no conffile, so no upgrade can ask about it:
 # postinstall installs it from /usr/share and records its digest where
 # only root can write (stage 5 follows it through upgrades).
-STARTER=/usr/share/hotserve/Caddyfile
+STARTER=/usr/share/motel/Caddyfile
 # The starter's reload line names no sudo either (#323).
-grep -qx '#   systemctl reload hotserve' "$STARTER" \
+grep -qx '#   systemctl reload motel' "$STARTER" \
 	|| die "the starter does not give its reload line, with no sudo"
-CONFIG=/etc/hotserve/Caddyfile
-RECORD=/var/lib/hotserve-package/starter.sha256
+CONFIG=/etc/motel/Caddyfile
+RECORD=/var/lib/motel-package/starter.sha256
 sha() { sha256sum <"$1" | cut -d' ' -f1; }
-conffiles=$(dpkg-query -W -f='${Conffiles}' hotserve)
+conffiles=$(dpkg-query -W -f='${Conffiles}' motel)
 [ -z "$conffiles" ] || die "the package lists conffiles, which an upgrade can ask about: $conffiles"
 for f in "$STARTER" "$CONFIG" "$RECORD"; do
 	got=$(stat -c '%U:%G %a %F' "$f")
@@ -145,72 +145,72 @@ cmp -s "$STARTER" "$CONFIG" || die "a fresh install's $CONFIG is not the starter
 got=$(stat -c '%U:%G %a' "${RECORD%/*}")
 [ "$got" = "root:root 700" ] || die "${RECORD%/*} is '$got', want 'root:root 700'"
 [ "$(cat "$RECORD")" = "$(sha "$STARTER")" ] || die "the record is not the starter's sha256: $(cat "$RECORD")"
-runuser -u hotserve -- sh -c ": >>$RECORD" 2>/dev/null \
-	&& die "the hotserve user can write the record: a compromised hotserve could make an upgrade overwrite the box's config"
-runuser -u hotserve -- touch "${RECORD%/*}/smoke" 2>/dev/null \
-	&& die "the hotserve user can create files beside the record"
+runuser -u motel -- sh -c ": >>$RECORD" 2>/dev/null \
+	&& die "the motel user can write the record: a compromised motel could make an upgrade overwrite the box's config"
+runuser -u motel -- touch "${RECORD%/*}/smoke" 2>/dev/null \
+	&& die "the motel user can create files beside the record"
 echo "starter installed, no conffiles, the record root's alone"
 
 # A bug report quotes this line (SECURITY.md), so it names the release
 # ahead of the Caddy it was built with (the Makefile's GO_LDFLAGS). The
 # package carries the same release, with nfpm's "~" for a prerelease's
 # "-", which makes dpkg sort it before the release.
-want="v$(dpkg-query -W -f='${Version}' hotserve | tr '~' '-')"
-got=$(/usr/bin/hotserve version) || die "hotserve version failed"
+want="v$(dpkg-query -W -f='${Version}' motel | tr '~' '-')"
+got=$(/usr/bin/motel version) || die "motel version failed"
 echo "$got"
-case "$got" in "$want "*) : ;; *) die "hotserve version printed '$got', want it to start with '$want ' (the package's release)" ;; esac
+case "$got" in "$want "*) : ;; *) die "motel version printed '$got', want it to start with '$want ' (the package's release)" ;; esac
 for m in liveswap http.handlers.liveswap_webhook \
 	http.reverse_proxy.upstreams.liveswap http.handlers.hint_penaltybox \
 	http.handlers.cache storages.cache.otter; do
-	/usr/bin/hotserve list-modules | grep -qx "$m" || die "module $m not linked in"
+	/usr/bin/motel list-modules | grep -qx "$m" || die "module $m not linked in"
 done
 echo "all product modules linked"
 
 # Type=notify, but Caddy sends READY=1 before it knows whether the
 # config loaded, so enable --now returning 0 is not the readiness
 # assertion — the curl below is.
-timeout 300 systemctl enable --now hotserve || die "systemctl enable --now hotserve failed"
-curl -fsS --max-time 5 http://127.0.0.1:80/ | grep -q "hotserve is running" \
+timeout 300 systemctl enable --now motel || die "systemctl enable --now motel failed"
+curl -fsS --max-time 5 http://127.0.0.1:80/ | grep -q "motel is running" \
 	|| die "starter Caddyfile not serving on :80"
 echo "unit started and starter config answers on :80"
 
-uid=$(id -u hotserve)
+uid=$(id -u motel)
 systemctl is-active --quiet "user@$uid.service" \
-	|| die "hotserve's systemd user manager (user@$uid) is not active — postinstall linger/drop-in broken (is libpam-systemd installed?)"
-[ -f /var/lib/systemd/linger/hotserve ] || die "lingering not enabled for hotserve"
-[ -f /etc/systemd/system/hotserve.service.d/10-user-manager.conf ] || die "user-manager drop-in missing"
+	|| die "motel's systemd user manager (user@$uid) is not active — postinstall linger/drop-in broken (is libpam-systemd installed?)"
+[ -f /var/lib/systemd/linger/motel ] || die "lingering not enabled for motel"
+[ -f /etc/systemd/system/motel.service.d/10-user-manager.conf ] || die "user-manager drop-in missing"
 [ -S "/run/user/$uid/systemd/private" ] || die "user manager private socket missing"
 echo "user manager user@$uid active with lingering"
 
 # ExecReload connects through the admin unix socket — this call IS the
 # socket's functional test.
-systemctl reload hotserve || die "systemctl reload (ExecReload via admin unix socket) failed"
-systemctl is-active --quiet hotserve || die "service not active after reload"
+systemctl reload motel || die "systemctl reload (ExecReload via admin unix socket) failed"
+systemctl is-active --quiet motel || die "service not active after reload"
 # The admin API must NOT answer on TCP: localhost includes every
 # deployed app, and an SSRF bug in one could otherwise reconfigure the
 # server. The unix socket is the whole point.
 curl -s --max-time 2 -o /dev/null http://127.0.0.1:2019/config/ \
 	&& die "admin API answers on TCP :2019 — it must live only on the unix socket" || true
-[ -S /run/hotserve/admin.sock ] || die "admin unix socket missing from /run/hotserve"
-curl -fsS --max-time 5 http://127.0.0.1:80/ | grep -q "hotserve is running" \
+[ -S /run/motel/admin.sock ] || die "admin unix socket missing from /run/motel"
+curl -fsS --max-time 5 http://127.0.0.1:80/ | grep -q "motel is running" \
 	|| die "not serving after reload"
-[ "$(systemctl show -p NRestarts --value hotserve)" = "0" ] \
-	|| die "hotserve restarted itself during install/reload (NRestarts != 0): it came up, died and systemd brought it back — see the journal"
+[ "$(systemctl show -p NRestarts --value motel)" = "0" ] \
+	|| die "motel restarted itself during install/reload (NRestarts != 0): it came up, died and systemd brought it back — see the journal"
 # The unit's restart policy, read off the loaded unit: a crashed
-# hotserve comes back, a start it refused (exit 1) is never retried.
-[ "$(systemctl show -p Restart --value hotserve)" = "on-failure" ] \
-	|| die "unit Restart is '$(systemctl show -p Restart --value hotserve)', want on-failure: a crashed hotserve would stay down"
-[ "$(systemctl show -p RestartPreventExitStatus --value hotserve)" = "1" ] \
-	|| die "unit RestartPreventExitStatus is '$(systemctl show -p RestartPreventExitStatus --value hotserve)', want 1: a refused start would loop"
-[ "$(systemctl show -p RestartUSec --value hotserve)" = "1s" ] \
-	|| die "unit RestartSec is '$(systemctl show -p RestartUSec --value hotserve)', want 1s"
-[ "$(systemctl show -p TimeoutStartUSec --value hotserve)" = "4min" ] \
-	|| die "unit TimeoutStartSec is '$(systemctl show -p TimeoutStartUSec --value hotserve)', want 4min: the start's bounded probe path (190s) must finish inside it, with margin"
+# motel comes back, a start it refused (exit 1) is never retried.
+[ "$(systemctl show -p Restart --value motel)" = "on-failure" ] \
+	|| die "unit Restart is '$(systemctl show -p Restart --value motel)', want on-failure: a crashed motel would stay down"
+[ "$(systemctl show -p RestartPreventExitStatus --value motel)" = "1" ] \
+	|| die "unit RestartPreventExitStatus is '$(systemctl show -p RestartPreventExitStatus --value motel)', want 1: a refused start would loop"
+[ "$(systemctl show -p RestartUSec --value motel)" = "1s" ] \
+	|| die "unit RestartSec is '$(systemctl show -p RestartUSec --value motel)', want 1s"
+[ "$(systemctl show -p TimeoutStartUSec --value motel)" = "4min" ] \
+	|| die "unit TimeoutStartSec is '$(systemctl show -p TimeoutStartUSec --value motel)', want 4min: the start's bounded probe path (190s) must finish inside it, with margin"
 # 'permission denied' / 'read-only file system' would mean the unit's
-# XDG dirs point somewhere the sandboxed hotserve user cannot write —
+# XDG dirs point somewhere the sandboxed motel user cannot write —
 # that breaks ACME cert persistence in production even though the
 # service superficially runs.
-journalctl -u hotserve --no-pager \
+journalctl -u motel --no-pager \
 	| grep -Ei 'panic|SIGSEGV|permission denied|read-only file system' \
 	&& die "crash or writability error in the journal (see lines above)" || true
 echo "reload OK, journal clean"
@@ -220,15 +220,15 @@ stage "stage 1b: the box applier's units and exchange tree"
 # files to the design; this stage holds the manager's reading of them,
 # what postinstall did with them, and what the service may do inside
 # its sandbox — the one lane that runs the units as the package ships
-# them, first with a stub for the applier, then with `hotserve box
+# them, first with a stub for the applier, then with `motel box
 # apply` itself; pushes that apply are the e2e lane's.
-B=/var/lib/hotserve-box
-[ "$(systemctl is-enabled hotserve-box-apply.path)" = enabled ] \
-	|| die "postinstall did not enable hotserve-box-apply.path ($(systemctl is-enabled hotserve-box-apply.path))"
-systemctl is-active --quiet hotserve-box-apply.path \
-	|| die "postinstall did not start hotserve-box-apply.path: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
-[ "$(systemctl is-enabled hotserve-box-apply.service)" = static ] \
-	|| die "hotserve-box-apply.service is '$(systemctl is-enabled hotserve-box-apply.service)', want static: the path unit is its only start"
+B=/var/lib/motel-box
+[ "$(systemctl is-enabled motel-box-apply.path)" = enabled ] \
+	|| die "postinstall did not enable motel-box-apply.path ($(systemctl is-enabled motel-box-apply.path))"
+systemctl is-active --quiet motel-box-apply.path \
+	|| die "postinstall did not start motel-box-apply.path: $(systemctl show -p ActiveState,Result motel-box-apply.path | tr '\n' ' ')"
+[ "$(systemctl is-enabled motel-box-apply.service)" = static ] \
+	|| die "motel-box-apply.service is '$(systemctl is-enabled motel-box-apply.service)', want static: the path unit is its only start"
 [ "$(command -v ssh-keygen)" = /usr/bin/ssh-keygen ] || die "ssh-keygen is not installed: the openssh-client Depends did not resolve"
 # The declaration, one entry per line, matched whole: a substring
 # match would also accept `libpam-systemd (>= 257)`. The floor is what
@@ -244,10 +244,10 @@ for p in 'systemd (>= 257)' restic sqlite3 ca-certificates; do
 		|| die "the package does not depend on $p: $(printf '%s' "$deps" | tr '\n' ',')"
 done
 [ -s /etc/ssl/certs/ca-certificates.crt ] \
-	|| die "ca-certificates did not come with the package, installed without recommended packages: restic and hotserve would verify no certificate"
+	|| die "ca-certificates did not come with the package, installed without recommended packages: restic and motel would verify no certificate"
 # The tree as the shipped tmpfiles.d file says, read back off the disk
 # (the file itself is held to the Paths table by box/units_test.go).
-conf=/usr/lib/tmpfiles.d/hotserve-box.conf
+conf=/usr/lib/tmpfiles.d/motel-box.conf
 [ -f "$conf" ] || die "$conf is not installed"
 n=0
 while read -r typ path mode user group _; do
@@ -260,16 +260,16 @@ done <"$conf"
 [ "$n" -eq 7 ] || die "$conf made $n directories, want the 7 of the Paths table"
 # The box's key for secrets, made by postinstall on this running system
 # (box/DESIGN-box.md, "The box's key"): the identity root's alone, its
-# recipient in age.pub, and `hotserve box key` printing that recipient
+# recipient in age.pub, and `motel box key` printing that recipient
 # alone on stdout.
-[ "$(stat -c '%a %U:%G' /etc/hotserve/age/identity)" = "600 root:root" ] \
-	|| die "postinstall did not make /etc/hotserve/age/identity 0600 root:root: $(stat -c '%a %U:%G' /etc/hotserve/age/identity 2>&1)"
-[ "$(stat -c '%a %U:%G' /etc/hotserve/age.pub)" = "644 root:root" ] \
-	|| die "/etc/hotserve/age.pub is not 0644 root:root: $(stat -c '%a %U:%G' /etc/hotserve/age.pub 2>&1)"
-box_key=$(hotserve box key 2>/dev/null) || die "hotserve box key failed"
-case "$box_key" in age1*) : ;; *) die "hotserve box key printed '$box_key', want the age1… recipient alone" ;; esac
-[ "$box_key" = "$(cat /etc/hotserve/age.pub)" ] || die "age.pub is not the key hotserve box key prints"
-grep -qx "# public key: $box_key" /etc/hotserve/age/identity || die "the identity does not hold the key age.pub names"
+[ "$(stat -c '%a %U:%G' /etc/motel/age/identity)" = "600 root:root" ] \
+	|| die "postinstall did not make /etc/motel/age/identity 0600 root:root: $(stat -c '%a %U:%G' /etc/motel/age/identity 2>&1)"
+[ "$(stat -c '%a %U:%G' /etc/motel/age.pub)" = "644 root:root" ] \
+	|| die "/etc/motel/age.pub is not 0644 root:root: $(stat -c '%a %U:%G' /etc/motel/age.pub 2>&1)"
+box_key=$(motel box key 2>/dev/null) || die "motel box key failed"
+case "$box_key" in age1*) : ;; *) die "motel box key printed '$box_key', want the age1… recipient alone" ;; esac
+[ "$box_key" = "$(cat /etc/motel/age.pub)" ] || die "age.pub is not the key motel box key prints"
+grep -qx "# public key: $box_key" /etc/motel/age/identity || die "the identity does not hold the key age.pub names"
 # The manager's own reading of the units: what box/units_test.go reads
 # from the files is what systemd took from them.
 show() { systemctl show -p "$2" --value "$1"; }
@@ -277,11 +277,11 @@ expect_show() { # <unit> <property> <want>
 	got=$(show "$1" "$2")
 	[ "$got" = "$3" ] || die "$1 $2 is '$got', want '$3'"
 }
-svc=hotserve-box-apply.service
+svc=motel-box-apply.service
 expect_show $svc Type oneshot
 expect_show $svc CapabilityBoundingSet "cap_dac_override cap_fowner cap_kill cap_setgid cap_setuid"
 expect_show $svc ProtectSystem strict
-expect_show $svc ReadWritePaths "/etc/hotserve /var/lib/hotserve-box"
+expect_show $svc ReadWritePaths "/etc/motel /var/lib/motel-box"
 expect_show $svc PrivateDevices yes
 expect_show $svc ProtectKernelTunables yes
 expect_show $svc ProtectControlGroups yes
@@ -301,38 +301,38 @@ case "$filter" in
 esac
 expect_show $svc TimeoutStartUSec infinity
 expect_show $svc StartLimitIntervalUSec 0
-expect_show hotserve-box-apply.path StartLimitIntervalUSec 0
+expect_show motel-box-apply.path StartLimitIntervalUSec 0
 expect_show $svc User ""
-expect_show hotserve-box-apply.path TriggerLimitIntervalUSec 10s
-expect_show hotserve-box-apply.path TriggerLimitBurst 20
-case " $(show hotserve-box-apply.path After) " in *" hotserve.service "*) : ;; *) die "the path unit is not After=hotserve.service" ;; esac
+expect_show motel-box-apply.path TriggerLimitIntervalUSec 10s
+expect_show motel-box-apply.path TriggerLimitBurst 20
+case " $(show motel-box-apply.path After) " in *" motel.service "*) : ;; *) die "the path unit is not After=motel.service" ;; esac
 # Every path the shipped file names, as the manager took it: one
 # "path (Type)" line each, so a spec the manager dropped shows here.
-want_paths=$(sed -n 's/^\(DirectoryNotEmpty\|PathExists\|PathExistsGlob\)=\(.*\)$/\2 (\1)/p' /lib/systemd/system/hotserve-box-apply.path | sort)
+want_paths=$(sed -n 's/^\(DirectoryNotEmpty\|PathExists\|PathExistsGlob\)=\(.*\)$/\2 (\1)/p' /lib/systemd/system/motel-box-apply.path | sort)
 [ "$(printf '%s\n' "$want_paths" | wc -l)" -eq 9 ] || die "the shipped path unit names $(printf '%s\n' "$want_paths" | wc -l) paths, want 9"
-got_paths=$(show hotserve-box-apply.path Paths | sort)
+got_paths=$(show motel-box-apply.path Paths | sort)
 [ "$got_paths" = "$want_paths" ] || die "the manager watches
 $got_paths
 and the unit file names
 $want_paths"
-# A path unit's default Before=paths.target, beside After=hotserve.service,
+# A path unit's default Before=paths.target, beside After=motel.service,
 # is an ordering cycle the manager breaks by deleting paths.target's
-# start job at boot and hotserve's stop job at shutdown.
-case " $(show hotserve-box-apply.path Before) " in *" paths.target "*) die "the path unit is Before=paths.target: with After=hotserve.service that is an ordering cycle" ;; esac
+# start job at boot and motel's stop job at shutdown.
+case " $(show motel-box-apply.path Before) " in *" paths.target "*) die "the path unit is Before=paths.target: with After=motel.service that is an ordering cycle" ;; esac
 cycle=$(systemd-analyze verify default.target 2>&1 | grep -i 'ordering cycle' || true)
 [ -z "$cycle" ] || die "the boot transaction has an ordering cycle: $cycle"
-# The hotserve uid's reach into the tree, path by path: its own stage/
+# The motel uid's reach into the tree, path by path: its own stage/
 # and nothing else it can write but in/ (below); the base, work/ and
 # out/ are root's.
-as_hotserve() { su -s /bin/sh hotserve -c "$1" 2>/dev/null; }
-as_hotserve "touch $B/stage/smoke && rm $B/stage/smoke" || die "the hotserve uid cannot write $B/stage"
+as_motel() { su -s /bin/sh motel -c "$1" 2>/dev/null; }
+as_motel "touch $B/stage/smoke && rm $B/stage/smoke" || die "the motel uid cannot write $B/stage"
 for p in "$B/smoke" "$B/out/smoke" "$B/work/smoke"; do
-	as_hotserve "touch $p" && die "the hotserve uid could create $p"
+	as_motel "touch $p" && die "the motel uid could create $p"
 done
-as_hotserve "ls $B/work" && die "the hotserve uid can list $B/work"
+as_motel "ls $B/work" && die "the motel uid can list $B/work"
 # The units run: the service's ExecStart swapped for a stub by a runtime
 # drop-in, everything else as shipped. In the first run the stub probes
-# the sandbox — reloads hotserve, verifies a signature as uid 65534
+# the sandbox — reloads motel, verifies a signature as uid 65534
 # under its PrivateTmp, kills a child of that uid, writes where it may
 # and not elsewhere; in every run it moves whatever is in in/ to work/,
 # empties work/ and removes the record, as the applier does.
@@ -342,14 +342,14 @@ ssh-keygen -q -t ed25519 -N '' -C smoke -f "$sig/key"
 printf 'box smoke payload\n' >"$sig/payload"
 ssh-keygen -q -Y sign -f "$sig/key" -n git "$sig/payload" || die "could not sign the smoke payload"
 printf 'smoke namespaces="git" %s\n' "$(cut -d' ' -f1,2 "$sig/key.pub")" >"$sig/allowed"
-cat >/run/hotserve-box-smoke.sh <<'EOF'
+cat >/run/motel-box-smoke.sh <<'EOF'
 #!/bin/sh
-B=/var/lib/hotserve-box
+B=/var/lib/motel-box
 out=$B/smoke-result
 : >"$out"
 r() { echo "$1=$2" >>"$out"; }
-if [ -e /run/hotserve-box-smoke.probe ]; then
-	systemctl reload hotserve; r reload $?
+if [ -e /run/motel-box-smoke.probe ]; then
+	systemctl reload motel; r reload $?
 	d=$(mktemp -d /tmp/box-verify-smoke.XXXXXX)
 	cp /root/box-smoke/payload.sig /root/box-smoke/allowed "$d/" && chmod 755 "$d" && chmod 644 "$d"/*
 	setpriv --reuid=65534 --regid=65534 --clear-groups env -i PATH=/usr/bin:/bin \
@@ -368,8 +368,8 @@ if [ -e /run/hotserve-box-smoke.probe ]; then
 	done
 	r childuid "$(awk '/^Uid:/ {print $2}' /proc/$child/status 2>/dev/null)"
 	if kill "$child"; then r kill 0; wait "$child"; else r kill 1; fi
-	touch /etc/hotserve/.smoke-box && rm /etc/hotserve/.smoke-box; r etc $?
-	touch /var/lib/hotserve/.smoke-box 2>/dev/null; r varlibhotserve $?
+	touch /etc/motel/.smoke-box && rm /etc/motel/.smoke-box; r etc $?
+	touch /var/lib/motel/.smoke-box 2>/dev/null; r varlibmotel $?
 	r blockdevs "$(find /dev -type b 2>/dev/null | wc -l)"
 	v=$(cat /proc/sys/kernel/printk_ratelimit)
 	(echo "$v" >/proc/sys/kernel/printk_ratelimit) 2>/dev/null; r sysctl $?
@@ -381,7 +381,7 @@ rm -f "$B/txn.json"
 r left "$(find "$B/in" "$B/work" -mindepth 1 | wc -l)"
 EOF
 mkdir -p /run/systemd/system/$svc.d
-printf '[Service]\nExecStart=\nExecStart=/bin/sh /run/hotserve-box-smoke.sh\n' >/run/systemd/system/$svc.d/smoke.conf
+printf '[Service]\nExecStart=\nExecStart=/bin/sh /run/motel-box-smoke.sh\n' >/run/systemd/system/$svc.d/smoke.conf
 systemctl daemon-reload
 res() { sed -n "s/^$1=//p" "$B/smoke-result"; }
 # One round: an entry made, a run that clears it — judged from inside
@@ -390,17 +390,17 @@ res() { sed -n "s/^$1=//p" "$B/smoke-result"; }
 # at the entry's first step) and starts it again, so it finds the entry
 # at once; any other round makes the entry while the path unit waits,
 # so its watch is what fires.
-box_round() { # <what> <maker: hotserve|root> <command> <stopped|waiting>
-	[ "$4" = stopped ] && systemctl stop hotserve-box-apply.path
+box_round() { # <what> <maker: motel|root> <command> <stopped|waiting>
+	[ "$4" = stopped ] && systemctl stop motel-box-apply.path
 	rm -f "$B/smoke-result"
-	if [ "$2" = root ]; then sh -c "$3"; else as_hotserve "$3"; fi || die "could not make $1"
+	if [ "$2" = root ]; then sh -c "$3"; else as_motel "$3"; fi || die "could not make $1"
 	if [ "$4" = stopped ]; then
-		systemctl start hotserve-box-apply.path || die "$1: the path unit did not start: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
+		systemctl start motel-box-apply.path || die "$1: the path unit did not start: $(systemctl show -p ActiveState,Result motel-box-apply.path | tr '\n' ' ')"
 	fi
 	i=0
 	until [ -s "$B/smoke-result" ] && grep -q '^left=' "$B/smoke-result" && [ "$(show $svc ActiveState)" = inactive ]; do
 		i=$((i + 1))
-		[ "$i" -ge 90 ] && die "$1: no run of the service within 45s: path $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' '), service $(systemctl show -p ActiveState,Result $svc | tr '\n' ' ')"
+		[ "$i" -ge 90 ] && die "$1: no run of the service within 45s: path $(systemctl show -p ActiveState,Result motel-box-apply.path | tr '\n' ' '), service $(systemctl show -p ActiveState,Result $svc | tr '\n' ' ')"
 		sleep 0.5
 	done
 	[ -z "$(res move)" ] && [ "$(res clear)" = 0 ] && [ "$(res left)" = 0 ] \
@@ -412,40 +412,40 @@ box_round() { # <what> <maker: hotserve|root> <command> <stopped|waiting>
 # The path unit back to waiting, its last trigger a success.
 wait_path_waiting() { # <what>
 	i=0
-	until [ "$(show hotserve-box-apply.path SubState)" = waiting ] && [ "$(show hotserve-box-apply.path Result)" = success ]; do
+	until [ "$(show motel-box-apply.path SubState)" = waiting ] && [ "$(show motel-box-apply.path Result)" = success ]; do
 		i=$((i + 1))
-		[ "$i" -ge 20 ] && die "$1: the path unit is not waiting after the run: $(systemctl show -p ActiveState,SubState,Result hotserve-box-apply.path | tr '\n' ' ')"
+		[ "$i" -ge 20 ] && die "$1: the path unit is not waiting after the run: $(systemctl show -p ActiveState,SubState,Result motel-box-apply.path | tr '\n' ' ')"
 		sleep 0.5
 	done
 }
 # The probe, and the two capabilities that let a run clear what the
-# hotserve uid makes: a 000 directory (CAP_DAC_OVERRIDE) and a sticky
+# motel uid makes: a 000 directory (CAP_DAC_OVERRIDE) and a sticky
 # directory holding its file (CAP_FOWNER).
-: >/run/hotserve-box-smoke.probe
-box_round "a 000 directory in in/" hotserve "mkdir $B/in/x000 && touch $B/in/x000/f && chmod 000 $B/in/x000" stopped
-rm -f /run/hotserve-box-smoke.probe
+: >/run/motel-box-smoke.probe
+box_round "a 000 directory in in/" motel "mkdir $B/in/x000 && touch $B/in/x000/f && chmod 000 $B/in/x000" stopped
+rm -f /run/motel-box-smoke.probe
 echo "inside the unit:"; sed 's/^/  /' "$B/smoke-result"
-[ "$(res reload)" = 0 ] || die "systemctl reload hotserve failed inside the applier's unit"
+[ "$(res reload)" = 0 ] || die "systemctl reload motel failed inside the applier's unit"
 [ "$(res verify)" = 0 ] || die "ssh-keygen -Y verify as uid 65534 under the unit's PrivateTmp failed"
 [ "$(res childuid)" = 65534 ] || die "the child to kill was uid '$(res childuid)', not 65534: the kill check would prove nothing"
 [ "$(res kill)" = 0 ] || die "the unit could not kill a uid-65534 child (CAP_KILL)"
-[ "$(res etc)" = 0 ] || die "the unit cannot write /etc/hotserve"
-[ "$(res varlibhotserve)" != 0 ] || die "the unit could write /var/lib/hotserve: ProtectSystem=strict is not in force"
+[ "$(res etc)" = 0 ] || die "the unit cannot write /etc/motel"
+[ "$(res varlibmotel)" != 0 ] || die "the unit could write /var/lib/motel: ProtectSystem=strict is not in force"
 # The host's block devices, which the unit must not see: without one
 # out here, "none in there" would prove nothing.
 [ -n "$(find /dev -type b 2>/dev/null | head -1)" ] || die "this host has no block device under /dev; the PrivateDevices check would prove nothing"
 [ "$(res blockdevs)" = 0 ] || die "the unit sees $(res blockdevs) block devices: PrivateDevices=yes is not in force, and root opens a device it owns with no capability"
 [ "$(res sysctl)" != 0 ] || die "the unit could write a sysctl: ProtectKernelTunables=yes is not in force"
 [ "$(res cgroup)" != 0 ] || die "the unit could open the cgroup tree for writing: ProtectControlGroups=yes is not in force"
-[ "$(stat -c %G "$B/smoke-result")" = hotserve ] || die "a file root made in $B is not group hotserve: the setgid bit is missing"
-box_round "a sticky directory in in/" hotserve "mkdir $B/in/sticky && chmod 1777 $B/in/sticky && touch $B/in/sticky/f" stopped
+[ "$(stat -c %G "$B/smoke-result")" = motel ] || die "a file root made in $B is not group motel: the setgid bit is missing"
+box_round "a sticky directory in in/" motel "mkdir $B/in/sticky && chmod 1777 $B/in/sticky && touch $B/in/sticky/f" stopped
 # Then one round for every path the manager says the path unit watches,
 # its entry renamed into place while the path unit waits, as the
 # handler and the applier write: for each glob, a name no other line of
 # its directory counts (systemd's DirectoryNotEmpty= skips names it takes
 # for hidden or backup files); the record itself; and a plain name for
 # DirectoryNotEmpty= — which <dir>/* counts too, so those two rounds
-# show the pair, not the line alone. in/ is filled by the hotserve uid
+# show the pair, not the line alone. in/ is filled by the motel uid
 # through stage/, the rest by root.
 n=0
 while read -r spec kind; do
@@ -464,18 +464,18 @@ while read -r spec kind; do
 	*) die "a path spec of a kind this stage has no round for: $spec $kind" ;;
 	esac
 	maker=root tmp=$B/.smoke-entry
-	[ "$dir" = "$B/in" ] && maker=hotserve tmp=$B/stage/smoke-entry
+	[ "$dir" = "$B/in" ] && maker=motel tmp=$B/stage/smoke-entry
 	box_round "$spec $kind" "$maker" "touch '$tmp' && mv '$tmp' '$entry'" waiting
 	n=$((n + 1))
 done <<<"$got_paths"
 [ "$n" -eq 9 ] || die "$n rounds, want one for each of the path unit's 9 paths"
-systemctl is-active --quiet hotserve || die "hotserve is not active after the reload inside the applier's unit"
-rm -f /run/systemd/system/$svc.d/smoke.conf "$B/smoke-result" /run/hotserve-box-smoke.sh
+systemctl is-active --quiet motel || die "motel is not active after the reload inside the applier's unit"
+rm -f /run/systemd/system/$svc.d/smoke.conf "$B/smoke-result" /run/motel-box-smoke.sh
 rmdir /run/systemd/system/$svc.d
 systemctl daemon-reload
 wait_path_waiting "the path unit, its stub removed"
-echo "box applier: path unit enabled and waiting; tree as tmpfiles.d says; the unit reloads hotserve, verifies as 65534, kills its child; every path the unit watches starts a run that clears it"
-# The real applier in the unit as shipped, no stub: what the hotserve
+echo "box applier: path unit enabled and waiting; tree as tmpfiles.d says; the unit reloads motel, verifies as 65534, kills its child; every path the unit watches starts a run that clears it"
+# The real applier in the unit as shipped, no stub: what the motel
 # uid drops that is not a bundle — a hidden 000 directory, a sticky
 # directory holding its file, a plain file — is taken and removed with
 # an error line and no result; an empty file named as a bundle is
@@ -483,11 +483,11 @@ echo "box applier: path unit enabled and waiting; tree as tmpfiles.d says; the u
 # Paths table says. The run exits 0, and the path unit waits again.
 bad_id=0123456789abcdef0123456789abcdef
 real_journal() { journalctl -u $svc --since "$since" --no-pager -o cat; }
-systemctl stop hotserve-box-apply.path
+systemctl stop motel-box-apply.path
 since=$(date '+%Y-%m-%d %H:%M:%S')
-as_hotserve "mkdir $B/in/.x000 && touch $B/in/.x000/f && chmod 000 $B/in/.x000 && mkdir $B/in/sticky && chmod 1777 $B/in/sticky && touch $B/in/sticky/f $B/in/junk $B/in/$bad_id.tar" \
+as_motel "mkdir $B/in/.x000 && touch $B/in/.x000/f && chmod 000 $B/in/.x000 && mkdir $B/in/sticky && chmod 1777 $B/in/sticky && touch $B/in/sticky/f $B/in/junk $B/in/$bad_id.tar" \
 	|| die "could not drop the real applier's entries into $B/in"
-systemctl start hotserve-box-apply.path || die "the path unit did not start: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
+systemctl start motel-box-apply.path || die "the path unit did not start: $(systemctl show -p ActiveState,Result motel-box-apply.path | tr '\n' ' ')"
 # Done when the tree is clear and the service has stopped, either way:
 # a failed run is reported below, not as a timeout. The journal is
 # synced before it is counted, so a line still on its way is not missed.
@@ -505,18 +505,18 @@ removed=$(real_journal | grep -c 'removing an entry that is not a bundle' || tru
 [ "$removed" -eq 3 ] || die "the real applier named $removed entries that are not bundles, want 3: $(real_journal | tail -20)"
 [ "$(ls -A "$B/out")" = "$bad_id.json" ] || die "out/ holds $(ls -A "$B/out" | tr '\n' ' '), want only $bad_id.json: an entry that is not a bundle gets no result"
 got=$(stat -c '%a %U:%G' "$B/out/$bad_id.json")
-[ "$got" = "640 root:hotserve" ] || die "the real applier's result is '$got', want '640 root:hotserve' (Paths table)"
+[ "$got" = "640 root:motel" ] || die "the real applier's result is '$got', want '640 root:motel' (Paths table)"
 grep -Eq '"phase": *"(failed|refused)"' "$B/out/$bad_id.json" || die "the result of a bundle that is not one is not terminal: $(cat "$B/out/$bad_id.json")"
 echo "  its result: $(cat "$B/out/$bad_id.json")"
 wait_path_waiting "the real applier's run"
 rm -f "$B/out/$bad_id.json"
-echo "the real applier, in the unit as shipped: three entries that are not bundles removed with no result, one bad bundle settled in out/ (640 root:hotserve), exit 0"
+echo "the real applier, in the unit as shipped: three entries that are not bundles removed with no result, one bad bundle settled in out/ (640 root:motel), exit 0"
 
 # An unreadable record, with the real applier: each run journals it,
 # takes nothing, ends with the left-on-disk line (the restart remedy)
 # and exits 0, so the path unit starts the next at once
 # and ends at its trigger limit; removing the record does not start it
-# again, and `systemctl restart hotserve-box-apply.path`, once the
+# again, and `systemctl restart motel-box-apply.path`, once the
 # limit's ten seconds have passed, does (DESIGN-box.md, "Why the path
 # unit cannot loop"). The record is written the way root writes one, by
 # rename.
@@ -524,9 +524,9 @@ since=$(date '+%Y-%m-%d %H:%M:%S')
 t0=$(date +%s)
 printf 'not a record\n' >"$B/.smoke-txn" && mv "$B/.smoke-txn" "$B/txn.json"
 i=0
-until [ "$(show hotserve-box-apply.path Result)" = trigger-limit-hit ]; do
+until [ "$(show motel-box-apply.path Result)" = trigger-limit-hit ]; do
 	i=$((i + 1))
-	[ "$i" -ge 120 ] && die "an unreadable record did not end at the trigger limit within 60s: path $(systemctl show -p ActiveState,SubState,Result hotserve-box-apply.path | tr '\n' ' '); $(real_journal | tail -5)"
+	[ "$i" -ge 120 ] && die "an unreadable record did not end at the trigger limit within 60s: path $(systemctl show -p ActiveState,SubState,Result motel-box-apply.path | tr '\n' ' '); $(real_journal | tail -5)"
 	sleep 0.5
 done
 t1=$(date +%s)
@@ -534,23 +534,23 @@ journalctl --sync
 runs=$(real_journal | grep -c 'txn.json cannot be read' || true)
 [ "$runs" -ge 1 ] || die "the path unit hit its trigger limit, but no run journaled the unreadable record"
 real_journal | grep 'box apply leaves work on disk' | grep -qF '"left":["txn.json"]' || die "no run ended with the left-on-disk line counting the record"
-real_journal | grep -q 'once the console has cleared the cause, systemctl restart hotserve-box-apply.path, and again ten seconds later if that fails' || die "the left-on-disk line does not name the restart the console needs, and when"
+real_journal | grep -q 'once the console has cleared the cause, systemctl restart motel-box-apply.path, and again ten seconds later if that fails' || die "the left-on-disk line does not name the restart the console needs, and when"
 echo "an unreadable record: $runs runs, then trigger-limit-hit, within $((t1 - t0 + 1))s"
 rm -f "$B/txn.json"
 sleep 2
-[ "$(show hotserve-box-apply.path ActiveState)" = failed ] \
-	|| die "the path unit left trigger-limit-hit with no restart: $(systemctl show -p ActiveState,SubState,Result hotserve-box-apply.path | tr '\n' ' ')"
+[ "$(show motel-box-apply.path ActiveState)" = failed ] \
+	|| die "the path unit left trigger-limit-hit with no restart: $(systemctl show -p ActiveState,SubState,Result motel-box-apply.path | tr '\n' ' ')"
 while [ "$(date +%s)" -le $((t1 + 11)) ]; do sleep 1; done
-systemctl restart hotserve-box-apply.path || die "systemctl restart hotserve-box-apply.path failed past the limit's ten seconds"
+systemctl restart motel-box-apply.path || die "systemctl restart motel-box-apply.path failed past the limit's ten seconds"
 wait_path_waiting "the path unit, restarted after the record was removed"
 echo "removing the record left the path unit failed; systemctl restart started it again"
 
 stage "stage 2: liveswap deploy under the systemd sandbox"
 # Generate a local deploy keypair; the app trusts the public half, and
 # we mint the deploy bearer with the private half. The service (User=
-# hotserve) reads the 0644 public key; the 0600 private key stays with
+# motel) reads the 0644 public key; the 0600 private key stays with
 # root here, standing in for the operator's token-minting machine.
-hotserve deploy-keygen --out /etc/hotserve/deploy.key
+motel deploy-keygen --out /etc/motel/deploy.key
 
 # The user manager's PID, handed to the app so it can try the routes
 # the sandbox is supposed to close. Captured before the config is
@@ -560,9 +560,9 @@ mgr_pid=$(systemctl show -p MainPID --value "user@$uid.service")
 
 # Overwriting the starter makes this a configured box, whose file
 # stages 3 and 5 prove no upgrade touches.
-cat > /etc/hotserve/Caddyfile <<'EOF'
+cat > /etc/motel/Caddyfile <<'EOF'
 {
-	admin unix//run/hotserve/admin.sock
+	admin unix//run/motel/admin.sock
 	auto_https off
 
 	liveswap {
@@ -570,14 +570,14 @@ cat > /etc/hotserve/Caddyfile <<'EOF'
 		allow_insecure_http
 		artifact_allowlist 127.0.0.1:8200
 		deploy_trust local {
-			public_key /etc/hotserve/deploy.key.pub
+			public_key /etc/motel/deploy.key.pub
 			audience smoke
 		}
 
 		app demo {
 			command ./server
 			env MGR_PID __MGR_PID__
-			env HOTSERVE_UID __HOTSERVE_UID__
+			env MOTEL_UID __MOTEL_UID__
 			health_interval 250ms
 			health_timeout 1s
 			soak 1s
@@ -601,16 +601,16 @@ EOF
 # {...} placeholders — so the two runtime values are substituted here.
 # Without this the app receives the literal strings and every /proc
 # probe below tests a path that cannot exist, passing vacuously.
-sed -i "s|__MGR_PID__|$mgr_pid|; s|__HOTSERVE_UID__|$uid|" /etc/hotserve/Caddyfile
-grep -q '__MGR_PID__\|__HOTSERVE_UID__' /etc/hotserve/Caddyfile \
+sed -i "s|__MGR_PID__|$mgr_pid|; s|__MOTEL_UID__|$uid|" /etc/motel/Caddyfile
+grep -q '__MGR_PID__\|__MOTEL_UID__' /etc/motel/Caddyfile \
 	&& die "placeholder substitution failed; the sandbox probes would test nothing"
 
 systemctl daemon-reload
-timeout 300 systemctl restart hotserve || die "restart with liveswap config failed"
+timeout 300 systemctl restart motel || die "restart with liveswap config failed"
 
 # Mint the deploy bearer with the private key (audience must match the
 # deploy_trust block).
-TOKEN=$(hotserve deploy-token --key /etc/hotserve/deploy.key --audience smoke --ttl 10m) \
+TOKEN=$(motel deploy-token --key /etc/motel/deploy.key --audience smoke --ttl 10m) \
 	|| die "deploy-token failed"
 
 i=0
@@ -621,7 +621,7 @@ until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK
 done
 
 # Build a deployable artifact on the fly: the "app" is a wrapper around
-# `hotserve respond`, honoring liveswap's SOCKET contract and answering
+# `motel respond`, honoring liveswap's SOCKET contract and answering
 # 200 on every path (which satisfies the health gate).
 workdir=$(mktemp -d)
 # Besides the NOFILE contract the wrapper records what its sandbox
@@ -638,13 +638,13 @@ cat > "$workdir/server" <<'EOF'
 . ./sandbox-view.sh
 echo "smoke app starting on $SOCKET"
 # Caddy's unix//abs/path spelling: "unix/" + the absolute socket path.
-exec /usr/bin/hotserve respond --listen "unix/$SOCKET" "hello smoke"
+exec /usr/bin/motel respond --listen "unix/$SOCKET" "hello smoke"
 EOF
 chmod +x "$workdir/server"
 mkdir -p /srv/art
 tar -czf /srv/art/demo.tar.gz -C "$workdir" server sandbox-view.sh
 
-/usr/bin/hotserve file-server --listen 127.0.0.1:8200 --root /srv/art \
+/usr/bin/motel file-server --listen 127.0.0.1:8200 --root /srv/art \
 	>/tmp/artserver.log 2>&1 &
 ART_PID=$!
 S3_PID=""
@@ -663,7 +663,7 @@ done
 # a leaking view would expose.
 mkdir -p /var/lib/liveswap/other/shared
 : > /var/lib/liveswap/other/shared/secret
-chown -R hotserve:hotserve /var/lib/liveswap/other
+chown -R motel:motel /var/lib/liveswap/other
 
 # Deploy via Authorization: Bearer — Caddy access logs redact it
 # automatically — exercised here under the real unit.
@@ -672,8 +672,8 @@ code=$(curl -s -o /tmp/deploy-body -w '%{http_code}' --max-time 90 \
 	-d '{"url":"http://127.0.0.1:8200/demo.tar.gz","version":"s1"}' "$HOOK")
 [ "$code" = "200" ] || {
 	echo "deploy response: $(cat /tmp/deploy-body)"
-	echo "--- app journal (hotserve-demo):"
-	journalctl --no-pager -t hotserve-demo 2>/dev/null | tail -40
+	echo "--- app journal (motel-demo):"
+	journalctl --no-pager -t motel-demo 2>/dev/null | tail -40
 	die "deploy under systemd sandbox failed with HTTP $code — a deny-by-default view fails with ENOENT (or the sibling shell's 'exec: … not found', exit status 127, for the command itself), not a permission error, so if the journal shows a missing path suspect the unit's base view rather than file modes"
 }
 curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" \
@@ -689,15 +689,15 @@ case "$status" in
 esac
 unit=$(printf '%s' "$status" | sed -n 's/.*"unit":"\([^"]*\)".*/\1/p')
 [ -n "$unit" ] || die "status missing the app's systemd unit: $status"
-# systemctl --user for a nologin system user: same trick hotserve
+# systemctl --user for a nologin system user: same trick motel
 # itself uses — its own manager's private socket under /run/user/<uid>.
-user_systemctl() { su -s /bin/sh hotserve -c "XDG_RUNTIME_DIR=/run/user/$uid systemctl --user $*"; }
+user_systemctl() { su -s /bin/sh motel -c "XDG_RUNTIME_DIR=/run/user/$uid systemctl --user $*"; }
 user_systemctl is-active --quiet "$unit" \
-	|| die "app unit $unit is not active under hotserve's user manager"
+	|| die "app unit $unit is not active under motel's user manager"
 [ "$(user_systemctl show -p Restart --value "$unit")" = "no" ] \
 	|| die "app unit must have Restart=no (apps are restarted by the liveswap watchdog, not systemd)"
-journalctl --no-pager -t hotserve-demo | grep -q "smoke app starting" \
-	|| die "app stdout did not reach the journal under identifier hotserve-demo"
+journalctl --no-pager -t motel-demo | grep -q "smoke app starting" \
+	|| die "app stdout did not reach the journal under identifier motel-demo"
 # The runner's contract: every unit's NOFILE (soft and hard) is the
 # user manager's DefaultLimitNOFILE — the very property it reads
 # (liveswap/systemd_dbus.go). Assert against that, not a constant: a
@@ -770,13 +770,13 @@ app_nprocs=$(probe_val nprocs)
 expect_probe pid 1
 [ -n "$app_nprocs" ] && [ "$app_nprocs" -le 8 ] || die "/proc shows $app_nprocs pids inside the unit"
 [ "$app_uidmap" != "4294967295" ] && [ -n "$app_uidmap" ] || die "no user namespace inside the unit (uid_map range $app_uidmap)"
-# Sibling IPC (#311), under the real package and the hotserve user: the
+# Sibling IPC (#311), under the real package and the motel user: the
 # unit mounted its own mqueuefs (its own IPC namespace), can write its
 # own /dev/shm, and nothing written there reaches the host's.
 [ "$(probe_val mqueue_owner)" = self ] || die "the unit's /dev/mqueue is not its own (owner $(probe_val mqueue_owner)): no IPC namespace of its own"
 [ "$(probe_val shm_write)" = ok ] || die "the unit cannot write its own /dev/shm"
 [ ! -e /dev/shm/sandbox-view-canary ] || die "/dev/shm/sandbox-view-canary written inside the unit is on the host: /dev/shm is shared"
-expect_probe hotserve_lib closed
+expect_probe motel_lib closed
 # These are the acceptance paths from DESIGN-sandbox.md. They are
 # closed by the user namespace alone — the PID namespace on top is what
 # additionally hides and protects sibling processes — so they are the
@@ -790,20 +790,20 @@ saw_uid=$(probe_val saw_uid)
 [ "$saw_pid" = "$mgr_pid" ] \
 	|| die "the app was given MGR_PID='$saw_pid', not the manager's real pid $mgr_pid — the /proc probes would be vacuous"
 [ "$saw_uid" = "$uid" ] \
-	|| die "the app was given HOTSERVE_UID='$saw_uid', not $uid — the manager-socket probe would be vacuous"
+	|| die "the app was given MOTEL_UID='$saw_uid', not $uid — the manager-socket probe would be vacuous"
 # And prove the routes are reachable at all from outside the sandbox,
 # so "closed" means the sandbox closed it rather than the path being
 # absent on this host.
 [ -r "/proc/$mgr_pid/environ" ] || die "/proc/$mgr_pid/environ is unreadable even to root; the in-unit probe would prove nothing"
 [ -e "/run/user/$uid/systemd/private" ] || die "the manager socket does not exist; the in-unit probe would prove nothing"
-[ -e /run/hotserve/admin.sock ] || die "the admin socket does not exist; the in-unit probe would prove nothing"
+[ -e /run/motel/admin.sock ] || die "the admin socket does not exist; the in-unit probe would prove nothing"
 expect_probe sslprivate absent
-for route in mgr_root mgr_environ mgr_socket admin_socket state etc_hotserve run_hotserve apptmp current; do
+for route in mgr_root mgr_environ mgr_socket admin_socket state etc_motel run_motel apptmp current; do
 	got=$(probe_val "$route")
 	[ "$got" = "closed" ] \
 		|| die "$route is '$got' inside the unit: a route the design says is closed is open"
 done
-echo "in-unit routes closed: manager /proc root+environ, manager socket, admin socket, state.json, /etc/hotserve, /run/hotserve, the app's tmp and current"
+echo "in-unit routes closed: manager /proc root+environ, manager socket, admin socket, state.json, /etc/motel, /run/motel, the app's tmp and current"
 # The app's own dirs are the other side of that: exactly its release
 # (writable), its shared dir as $HOME, and a liveswap root that names
 # no other app.
@@ -831,7 +831,7 @@ expect_probe abs_varlib present
 # an OS the app can execute in, /etc is only the named entries (never
 # the whole tree, which would hand every app every other app's
 # env_file), and /var/lib holds nothing but the path to this app's own
-# directories — hotserve's TLS keys sit next door on the host.
+# directories — motel's TLS keys sit next door on the host.
 for present in binsh usrbinenv hsbin etcssl resolvconf; do
 	got=$(probe_val "$present")
 	[ "$got" = "ok" ] \
@@ -845,13 +845,13 @@ etclist=$(probe_val etc_listing)
 [ -n "$etclist" ] \
 	|| die "/etc inside the unit lists nothing at all: the base view is empty, not narrow"
 case " $etclist" in
-*" hotserve "* | *" liveswap "* | *" shadow "*)
+*" motel "* | *" liveswap "* | *" shadow "*)
 	die "/etc inside the unit carries more than the named entries ($etclist): every app would see every other app's env_file" ;;
 esac
 varliblist=$(probe_val varlib_listing)
 [ "$varliblist" = "liveswap " ] \
 	|| die "/var/lib inside the unit is '$varliblist', want only 'liveswap': anything else is a path nothing named"
-echo "in-unit base view: /bin/sh, /usr/bin/env, /usr/bin/hotserve, /etc/ssl/certs, /etc/resolv.conf; /etc=$etclist /var/lib=$varliblist"
+echo "in-unit base view: /bin/sh, /usr/bin/env, /usr/bin/motel, /etc/ssl/certs, /etc/resolv.conf; /etc=$etclist /var/lib=$varliblist"
 [ "$(user_systemctl show -p PrivateUsers --value "$unit")" = "yes" ] || die "unit lacks PrivateUsers=yes"
 [ "$(user_systemctl show -p SystemCallArchitectures --value "$unit")" = "native" ] \
 	|| die "unit lacks SystemCallArchitectures=native: on amd64 the x86-32 ABI's socketcall() opens any address family"
@@ -874,7 +874,7 @@ esac
 # the refusal inside proves nothing about the unit's own filter.
 expect_probe seccomp 2
 expect_probe io_uring_setup refused
-outside=$(as_hotserve "perl -e 'syscall(425, 1, 0); print \$!{EPERM} ? q(refused) : q(reached)'") || outside="unmeasured (su or perl failed)"
+outside=$(as_motel "perl -e 'syscall(425, 1, 0); print \$!{EPERM} ? q(refused) : q(reached)'") || outside="unmeasured (su or perl failed)"
 [ "$outside" = "reached" ] \
 	|| die "io_uring_setup outside the unit is '$outside', want reached: io_uring_setup=refused inside proves nothing (kernel.io_uring_disabled=$(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo absent); anything but 0 can refuse it outside too)"
 tmpfs=$(user_systemctl show -p TemporaryFileSystem --value "$unit")
@@ -886,45 +886,45 @@ tmpfs=$(user_systemctl show -p TemporaryFileSystem --value "$unit")
 case "$(user_systemctl show -p InaccessiblePaths --value "$unit")" in
 */*) die "unit still masks a list with InaccessiblePaths=" ;;
 esac
-echo "sandbox (systemd $sd_version): uid_map range $app_uidmap, pid $(probe_val pid), $app_nprocs pids visible, native syscall ABI only, seccomp in force (io_uring_setup refused inside, reached outside), /var/lib/hotserve $(probe_val hotserve_lib)"
+echo "sandbox (systemd $sd_version): uid_map range $app_uidmap, pid $(probe_val pid), $app_nprocs pids visible, native syscall ABI only, seccomp in force (io_uring_setup refused inside, reached outside), /var/lib/motel $(probe_val motel_lib)"
 
-# `hotserve validate` provisions and cleans up without starting: run
-# as root (no user manager for uid 0) and as the hotserve user (the
+# `motel validate` provisions and cleans up without starting: run
+# as root (no user manager for uid 0) and as the motel user (the
 # live manager) against the serving config, and the app must be
 # untouched either way.
 pid_live=$(printf '%s' "$status" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')
-hotserve validate --config /etc/hotserve/Caddyfile >/dev/null 2>&1 \
-	|| die "hotserve validate as root failed against a valid config"
-su -s /bin/sh hotserve -c "hotserve validate --config /etc/hotserve/Caddyfile" >/dev/null 2>&1 \
-	|| die "hotserve validate as the hotserve user failed against a valid config"
+motel validate --config /etc/motel/Caddyfile >/dev/null 2>&1 \
+	|| die "motel validate as root failed against a valid config"
+su -s /bin/sh motel -c "motel validate --config /etc/motel/Caddyfile" >/dev/null 2>&1 \
+	|| die "motel validate as the motel user failed against a valid config"
 sleep 1
-kill -0 "$pid_live" 2>/dev/null || die "hotserve validate stopped the running app (pid $pid_live)"
-user_systemctl is-active --quiet "$unit" || die "hotserve validate left the app unit inactive"
+kill -0 "$pid_live" 2>/dev/null || die "motel validate stopped the running app (pid $pid_live)"
+user_systemctl is-active --quiet "$unit" || die "motel validate left the app unit inactive"
 curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "app not served after validate"
-echo "validate (root and hotserve) left the running app alone"
+echo "validate (root and motel) left the running app alone"
 
 # The deploy token must never reach the journal: not via access logs
 # (Authorization is redacted), not via any error path above.
-journalctl -u hotserve --no-pager | grep -q "$TOKEN" \
+journalctl -u motel --no-pager | grep -q "$TOKEN" \
 	&& die "deploy token leaked into the journal" || true
 echo "journal is free of the deploy token"
 
-stage "stage 2b: a SIGKILLed hotserve is back within seconds, reattached"
+stage "stage 2b: a SIGKILLed motel is back within seconds, reattached"
 # Stage 3's upgrade restart is a clean stop and start, which never
 # exercises Restart=; this is the one lane that runs the installed
 # .deb's unit, so the crash path is proven here too. The unit's own
 # record is the assertion, never a systemctl exit status.
-hp0=$(systemctl show -p ExecMainPID --value hotserve)
-systemctl kill --kill-whom=main -s SIGKILL hotserve
+hp0=$(systemctl show -p ExecMainPID --value motel)
+systemctl kill --kill-whom=main -s SIGKILL motel
 i=0
-until [ "$(systemctl show -p ActiveState --value hotserve)" = "active" ] \
-	&& [ "$(systemctl show -p ExecMainPID --value hotserve)" != "$hp0" ]; do
+until [ "$(systemctl show -p ActiveState --value motel)" = "active" ] \
+	&& [ "$(systemctl show -p ExecMainPID --value motel)" != "$hp0" ]; do
 	i=$((i + 1))
-	[ "$i" -ge 60 ] && die "hotserve not back within 30s of SIGKILL: $(systemctl show -p ActiveState,SubState,Result,NRestarts hotserve | tr '\n' ' ')"
+	[ "$i" -ge 60 ] && die "motel not back within 30s of SIGKILL: $(systemctl show -p ActiveState,SubState,Result,NRestarts motel | tr '\n' ' ')"
 	sleep 0.5
 done
-[ "$(systemctl show -p NRestarts --value hotserve)" = "1" ] \
-	|| die "NRestarts is $(systemctl show -p NRestarts --value hotserve), want 1: more than one automatic restart after a single kill"
+[ "$(systemctl show -p NRestarts --value motel)" = "1" ] \
+	|| die "NRestarts is $(systemctl show -p NRestarts --value motel), want 1: more than one automatic restart after a single kill"
 deadline=$(($(date +%s) + 30))
 until [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -H "Authorization: Bearer $TOKEN" "$HOOK")" = "200" ]; do
 	[ "$(date +%s)" -ge "$deadline" ] && die "webhook not back within 30s of the automatic restart"
@@ -932,9 +932,9 @@ until [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -H "Authorization
 done
 status=$(curl -s --max-time 5 -H "Authorization: Bearer $TOKEN" "$HOOK")
 [ "$(printf '%s' "$status" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')" = "$pid_live" ] \
-	|| die "app pid changed across hotserve's SIGKILL restart: reattach failed: $status"
-curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "app not served after hotserve's automatic restart"
-echo "SIGKILL: systemd restarted hotserve (NRestarts=1); app pid $pid_live reattached"
+	|| die "app pid changed across motel's SIGKILL restart: reattach failed: $status"
+curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "app not served after motel's automatic restart"
+echo "SIGKILL: systemd restarted motel (NRestarts=1); app pid $pid_live reattached"
 
 stage "stage 2c: backups — the guide's 'Set it up' lines, as root, and validate and status as a user with no privilege"
 # What the package set up, before any line of the guide runs: the
@@ -943,11 +943,11 @@ stage "stage 2c: backups — the guide's 'Set it up' lines, as root, and validat
 # it, the four unit files, the timers enabled
 # and running and their services untouched, and no credential file —
 # that is setup's, and postinstall says so.
-S3REPO=s3:http://127.0.0.1:9000/hotserve
+S3REPO=s3:http://127.0.0.1:9000/motel
 S3KEY=AKIDSMOKEFIXTURE
 S3SECRET=smoke-fixture-key-not-a-secret
-CRED=/etc/hotserve-backup/repository.env
-TIMERS="hotserve-backup.timer hotserve-backup-drill.timer"
+CRED=/etc/motel-backup/repository.env
+TIMERS="motel-backup.timer motel-backup-drill.timer"
 # expect_backup_state <step> <is-enabled> <is-active> <absent|sha256>:
 # one row of the table, for both timers and the credential file.
 expect_backup_state() {
@@ -968,25 +968,25 @@ expect_backup_state() {
 }
 [ "$(command -v restic)" = /usr/bin/restic ] && [ "$(command -v sqlite3)" = /usr/bin/sqlite3 ] \
 	|| die "restic and sqlite3 did not come with the package, installed without recommended packages: they have to be Depends (restic '$(command -v restic)', sqlite3 '$(command -v sqlite3)')"
-getent passwd hotserve-backup | grep -q ':/nonexistent:/usr/sbin/nologin$' \
-	|| die "postinstall did not make the hotserve-backup account as setup does: $(getent passwd hotserve-backup || echo none)"
-for u in hotserve-backup.service hotserve-backup-drill.service $TIMERS; do
+getent passwd motel-backup | grep -q ':/nonexistent:/usr/sbin/nologin$' \
+	|| die "postinstall did not make the motel-backup account as setup does: $(getent passwd motel-backup || echo none)"
+for u in motel-backup.service motel-backup-drill.service $TIMERS; do
 	got=$(stat -c '%U:%G %a' "/lib/systemd/system/$u")
 	[ "$got" = "root:root 644" ] || die "/lib/systemd/system/$u is '$got', want 'root:root 644'"
 done
 expect_backup_state "after install" enabled active absent
-[ ! -e /etc/hotserve-backup ] || die "the package made /etc/hotserve-backup; that is setup's"
-for u in hotserve-backup.service hotserve-backup-drill.service; do
+[ ! -e /etc/motel-backup ] || die "the package made /etc/motel-backup; that is setup's"
+for u in motel-backup.service motel-backup-drill.service; do
 	[ "$(systemctl show -p ActiveState --value "$u")" = inactive ] && [ "$(systemctl show -p Result --value "$u")" = success ] \
 		|| die "$u after install: $(systemctl show -p ActiveState,Result "$u" | tr '\n' ' ') — nothing may start before setup"
 done
 # The whole line, so no sudo stands before it: apt runs the maintainer
 # scripts on a pty, and each line ends in \r, taken off first.
-tr -d '\r' </tmp/install.out | grep -qx "  hotserve-backup setup <repository>" \
+tr -d '\r' </tmp/install.out | grep -qx "  motel-backup setup <repository>" \
 	|| die "postinstall did not say that the timers wait for setup"
 grep -q "refuse that account" /tmp/install.out \
-	&& die "postinstall warned of the account it had just made: $(grep hotserve-backup /tmp/install.out)" || true
-hotserve-backup account >/dev/null || die "the account postinstall made is not one setup accepts: $(hotserve-backup account 2>&1)"
+	&& die "postinstall warned of the account it had just made: $(grep motel-backup /tmp/install.out)" || true
+motel-backup account >/dev/null || die "the account postinstall made is not one setup accepts: $(motel-backup account 2>&1)"
 echo "the package's own: restic, sqlite3 and ca-certificates by Depends, the account, the units, the timers enabled and waiting"
 
 # The repository the guide's lines are pointed at: rclone serve s3
@@ -1007,13 +1007,13 @@ done
 useradd -m admin
 as_admin() { runuser -u admin -- sh -c "$1"; }
 # The app's data, as the app itself would make it: a database and an
-# uploads directory under its shared/, the hotserve user's.
-su -s /bin/sh hotserve -c 'cd /var/lib/liveswap/demo/shared && sqlite3 app.db "create table t(n); insert into t values (1),(2);" && mkdir -p uploads && echo pic >uploads/a.png' \
+# uploads directory under its shared/, the motel user's.
+su -s /bin/sh motel -c 'cd /var/lib/liveswap/demo/shared && sqlite3 app.db "create table t(n); insert into t values (1),(2);" && mkdir -p uploads && echo pic >uploads/a.png' \
 	|| die "could not seed the demo app's data"
 # Step 1 of the guide, the declaration in the app's block, put there
 # the way an administrator would edit it in.
-sed -i 's|^\t\tapp demo {$|&\n\t\t\tbackup {\n\t\t\t\tsqlite app.db\n\t\t\t\tfiles  uploads\n\t\t\t}|' /etc/hotserve/Caddyfile
-[ "$(grep -c 'sqlite app.db' /etc/hotserve/Caddyfile)" = 1 ] || die "the backup block did not go into the demo app's block"
+sed -i 's|^\t\tapp demo {$|&\n\t\t\tbackup {\n\t\t\t\tsqlite app.db\n\t\t\t\tfiles  uploads\n\t\t\t}|' /etc/motel/Caddyfile
+[ "$(grep -c 'sqlite app.db' /etc/motel/Caddyfile)" = 1 ] || die "the backup block did not go into the demo app's block"
 
 # The guide's lines, between its smoke markers; the example
 # repository URL is this box's, and the app is demo, as written.
@@ -1023,24 +1023,24 @@ mapfile -t docs < <(awk '/<!-- smoke: begin -->/{on=1; next} /<!-- smoke: end --
 # Exactly the lines this stage runs and checks: a line dropped from the
 # guide, or one added that nothing here checks, fails rather than
 # passing as "ran as written".
-want="hotserve-backup validate /etc/hotserve/Caddyfile
-systemctl reload hotserve
-hotserve-backup setup $S3REPO
-systemctl start hotserve-backup.service
-hotserve-backup status
-hotserve-backup restore demo --to /root/demo-restored
-hotserve-backup restore demo"
+want="motel-backup validate /etc/motel/Caddyfile
+systemctl reload motel
+motel-backup setup $S3REPO
+systemctl start motel-backup.service
+motel-backup status
+motel-backup restore demo --to /root/demo-restored
+motel-backup restore demo"
 [ "$(printf '%s\n' "${docs[@]}")" = "$want" ] \
 	|| die "the guide's smoke block is not the seven lines this stage runs and checks; it holds: $(printf '%s | ' "${docs[@]}")"
 for line in "${docs[@]}"; do
 	echo "docs/backups.md: $line"
 	case "$line" in
-	"hotserve-backup setup "*)
+	"motel-backup setup "*)
 		converse "$line" "$P_KEY" "$S3KEY" "$P_SECRET" "$S3SECRET" "$P_STORED" stored \
 			|| die "setup as root failed: $(cat "$OUT")"
-		grep -q "account hotserve-backup: present" "$OUT" || die "setup did not find the package's account: $(cat "$OUT")"
+		grep -q "account motel-backup: present" "$OUT" || die "setup did not find the package's account: $(cat "$OUT")"
 		grep -q "repository ready: $S3REPO (new, id " "$OUT" || die "setup did not make the repository: $(cat "$OUT")"
-		grep -q "^next: the first backup runs within the hour and ten minutes (systemctl list-timers hotserve-backup.timer)" "$OUT" \
+		grep -q "^next: the first backup runs within the hour and ten minutes (systemctl list-timers motel-backup.timer)" "$OUT" \
 			|| die "setup's closing line does not name the timer: $(grep next: "$OUT")"
 		grep -q "$S3SECRET" "$OUT" && die "the storage secret was echoed at the terminal" || true
 		[ "$(stat -c '%U %a' "$CRED")" = "root 600" ] || die "$CRED is '$(stat -c '%U %a' "$CRED")', want 'root 600'"
@@ -1055,42 +1055,42 @@ for line in "${docs[@]}"; do
 		# run yet, and what will say it ran is its main process's start
 		# time (LastTriggerUSec shows the stamp's time after a restart,
 		# which is no firing) [M61].
-		[ -f /var/lib/systemd/timers/stamp-hotserve-backup.timer ] || die "the timer's first activation at install wrote no stamp"
-		started0=$(systemctl show -p ExecMainStartTimestampMonotonic --value hotserve-backup.service)
+		[ -f /var/lib/systemd/timers/stamp-motel-backup.timer ] || die "the timer's first activation at install wrote no stamp"
+		started0=$(systemctl show -p ExecMainStartTimestampMonotonic --value motel-backup.service)
 		[ "$started0" = 0 ] || die "the backup service ran before anything asked it to (main process started at $started0)"
-		mkdir -p /run/systemd/system/hotserve-backup.timer.d
-		printf '[Timer]\nOnCalendar=\nOnCalendar=*-*-* *:*:00\nRandomizedDelaySec=0\n' >/run/systemd/system/hotserve-backup.timer.d/10-smoke.conf
+		mkdir -p /run/systemd/system/motel-backup.timer.d
+		printf '[Timer]\nOnCalendar=\nOnCalendar=*-*-* *:*:00\nRandomizedDelaySec=0\n' >/run/systemd/system/motel-backup.timer.d/10-smoke.conf
 		systemctl daemon-reload
-		systemctl restart hotserve-backup.timer
+		systemctl restart motel-backup.timer
 		i=0
-		until [ "$(systemctl show -p ExecMainStartTimestampMonotonic --value hotserve-backup.service)" != "$started0" ] || [ "$i" -ge 150 ]; do
+		until [ "$(systemctl show -p ExecMainStartTimestampMonotonic --value motel-backup.service)" != "$started0" ] || [ "$i" -ge 150 ]; do
 			i=$((i + 1))
 			sleep 0.5
 		done
-		[ "$i" -lt 150 ] || die "the hourly timer, made a minute's, did not start the service within 75s: $(systemctl show -p LastTriggerUSec,NextElapseUSecRealtime,ActiveState hotserve-backup.timer | tr '\n' ' '); $(systemctl show -p ActiveState,Result,ConditionResult hotserve-backup.service | tr '\n' ' ')"
+		[ "$i" -lt 150 ] || die "the hourly timer, made a minute's, did not start the service within 75s: $(systemctl show -p LastTriggerUSec,NextElapseUSecRealtime,ActiveState motel-backup.timer | tr '\n' ' '); $(systemctl show -p ActiveState,Result,ConditionResult motel-backup.service | tr '\n' ' ')"
 		i=0
-		until [ "$(systemctl show -p ActiveState --value hotserve-backup.service)" = inactive ] || [ "$i" -ge 240 ]; do
+		until [ "$(systemctl show -p ActiveState --value motel-backup.service)" = inactive ] || [ "$i" -ge 240 ]; do
 			i=$((i + 1))
 			sleep 0.5
 		done
-		rm -rf /run/systemd/system/hotserve-backup.timer.d
+		rm -rf /run/systemd/system/motel-backup.timer.d
 		systemctl daemon-reload
-		systemctl restart hotserve-backup.timer
-		[ "$(systemctl show -p Result --value hotserve-backup.service)" = success ] \
-			|| die "the run the timer fired ended '$(systemctl show -p Result --value hotserve-backup.service)': $(journalctl -u hotserve-backup.service --no-pager | tail -20)"
-		[ -f /var/lib/hotserve-backup/status.json ] || die "the timer's run wrote no record"
+		systemctl restart motel-backup.timer
+		[ "$(systemctl show -p Result --value motel-backup.service)" = success ] \
+			|| die "the run the timer fired ended '$(systemctl show -p Result --value motel-backup.service)': $(journalctl -u motel-backup.service --no-pager | tail -20)"
+		[ -f /var/lib/motel-backup/status.json ] || die "the timer's run wrote no record"
 		echo "the timer fired ($((i / 2))s after the minute), and its run ended success under the unit's hardening"
 		;;
-	"hotserve-backup restore demo")
+	"motel-backup restore demo")
 		printf 'demo\n' | sh -c "$line" >"$OUT" 2>&1 || die "the restore into place failed: $(cat "$OUT")"
 		grep -q "demo: backed up first: snapshot [0-9a-f]\{8\} (restore --snapshot" "$OUT" || die "the restore into place did not back the app up first: $(cat "$OUT")"
 		grep -q "demo: restored from snapshot" "$OUT" || die "the restore into place restored nothing: $(cat "$OUT")"
 		;;
-	"hotserve-backup validate "*)
+	"motel-backup validate "*)
 		as_admin "$line" >"$OUT" 2>&1 || die "validate with no privilege exits $?: $(cat "$OUT")"
 		grep -q "^a run would back up demo, under " "$OUT" || die "validate with no privilege did not see demo's declaration: $(cat "$OUT")"
 		;;
-	"hotserve-backup status")
+	"motel-backup status")
 		as_admin "$line" >"$OUT" 2>&1 || die "status with no privilege exits $?: $(cat "$OUT")"
 		grep -q "^demo: ok: " "$OUT" || die "status does not say demo is ok: $(cat "$OUT")"
 		grep -q "restore last proven" "$OUT" || die "status does not say demo's restore is proven: $(cat "$OUT")"
@@ -1104,10 +1104,10 @@ done
 	|| die "the restore --to put nothing there: $(find /root/demo-restored 2>&1 | head)"
 # Not in the guide's lines, and true of them: the --to rule, and the
 # pre-restore snapshot the restore into place named.
-hotserve-backup restore demo --to /tmp/demo-restored </dev/null >"$OUT" 2>&1 && die "a restore --to /tmp was accepted" || true
+motel-backup restore demo --to /tmp/demo-restored </dev/null >"$OUT" 2>&1 && die "a restore --to /tmp was accepted" || true
 grep -q "not /tmp — /root, /srv, /var/backups, or a root-owned directory of your own" "$OUT" || die "the --to rule's words are missing: $(cat "$OUT")"
 [ ! -e /tmp/demo-restored ] || die "a refused --to made its directory"
-snaps=$(systemd-run --quiet --pipe --wait --collect -p User=hotserve-backup -p EnvironmentFile=$CRED -p CacheDirectory=hotserve-backup -E RESTIC_CACHE_DIR=/var/cache/hotserve-backup -E HOME=/nonexistent /usr/bin/restic snapshots --no-lock --json --tag pre-restore 2>/dev/null | grep -o '"short_id"' | wc -l)
+snaps=$(systemd-run --quiet --pipe --wait --collect -p User=motel-backup -p EnvironmentFile=$CRED -p CacheDirectory=motel-backup -E RESTIC_CACHE_DIR=/var/cache/motel-backup -E HOME=/nonexistent /usr/bin/restic snapshots --no-lock --json --tag pre-restore 2>/dev/null | grep -o '"short_id"' | wc -l)
 [ "$snaps" = 1 ] || die "want one pre-restore snapshot, the repository holds $snaps"
 curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "the app is not served after the backups"
 echo "the guide's lines ran as written, as root, and validate and status with no privilege: validate, reload, setup, a run, status, a restore --to, a restore into place with its pre-restore snapshot"
@@ -1117,66 +1117,66 @@ pid_before=$(printf '%s' "$status" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')
 [ -n "$pid_before" ] || die "status missing pid: $status"
 # The account already exists by definition on a reinstall, which is the
 # path that used to set the group only when it CREATED the user. Strip
-# the membership first, the way a hotserve account made by an admin (or
+# the membership first, the way a motel account made by an admin (or
 # another package) would arrive: postinstall must establish it rather
 # than assume it.
-# postinstall's useradd makes hotserve the account's PRIMARY group, so
+# postinstall's useradd makes motel the account's PRIMARY group, so
 # it cannot simply be removed; move the account to another primary
 # group instead, which is exactly the shape a pre-existing account has.
 groupadd --system smoketest-other 2>/dev/null || true
-usermod -g smoketest-other hotserve \
-	|| die "could not move the hotserve account off its primary group; the reinstall assertion below would be vacuous"
-id -nG hotserve | tr ' ' '\n' | grep -qx hotserve \
-	&& die "the hotserve account is still in the hotserve group; the reinstall assertion below would be vacuous"
+usermod -g smoketest-other motel \
+	|| die "could not move the motel account off its primary group; the reinstall assertion below would be vacuous"
+id -nG motel | tr ' ' '\n' | grep -qx motel \
+	&& die "the motel account is still in the motel group; the reinstall assertion below would be vacuous"
 # The box applier across the upgrade: an administrator's disable is kept
 # (deb-systemd-helper's was-enabled), and a tree that drifted is put
 # back by postinstall's systemd-tmpfiles.
-systemctl disable --now hotserve-box-apply.path
+systemctl disable --now motel-box-apply.path
 chmod 0777 "$B/in"
 # Five digits: GNU chmod keeps a directory's setgid bit for a
 # four-digit mode, and the bit is what tmpfiles.d must put back.
 chmod 00755 "$B"
-chown hotserve "$B/out"
+chown motel "$B/out"
 cp "$CONFIG" /tmp/Caddyfile.configured
 # stdin from /dev/null and no --force-conf*: a question would end at
 # EOF and fail the install.
 dpkg -i "$deb" </dev/null >/tmp/reinstall.out 2>/tmp/reinstall.err \
 	|| { cat /tmp/reinstall.out /tmp/reinstall.err; die "reinstall (dpkg -i) failed"; }
 cat /tmp/reinstall.out /tmp/reinstall.err
-# hotserve is enabled and running: the start hint would be noise, and a
+# motel is enabled and running: the start hint would be noise, and a
 # restart that went fine must not read as one that failed.
 grep -q 'enable --now' /tmp/reinstall.out /tmp/reinstall.err \
-	&& die "reinstall over an enabled hotserve printed the 'enable --now' start hint"
-grep -q 'journalctl -u hotserve' /tmp/reinstall.err \
+	&& die "reinstall over an enabled motel printed the 'enable --now' start hint"
+grep -q 'journalctl -u motel' /tmp/reinstall.err \
 	&& die "reinstall printed the failed-restart hint although the restart succeeded"
-grep -qx 'hotserve restarted.' /tmp/reinstall.out \
-	|| die "reinstall over a running hotserve did not say it restarted"
-id -nG hotserve | tr ' ' '\n' | grep -qx hotserve \
-	|| die "reinstall did not restore the hotserve user's group membership: the package's group-owned directories would be unreachable"
+grep -qx 'motel restarted.' /tmp/reinstall.out \
+	|| die "reinstall over a running motel did not say it restarted"
+id -nG motel | tr ' ' '\n' | grep -qx motel \
+	|| die "reinstall did not restore the motel user's group membership: the package's group-owned directories would be unreachable"
 cmp -s /tmp/Caddyfile.configured "$CONFIG" \
 	|| die "reinstall changed the configured $CONFIG"
 [ "$(cat "$RECORD")" = "$(sha "$STARTER")" ] \
 	|| die "reinstall over a configured box changed the record"
-[ "$(systemctl is-enabled hotserve-box-apply.path)" = disabled ] \
+[ "$(systemctl is-enabled motel-box-apply.path)" = disabled ] \
 	|| die "an upgrade re-enabled the box applier's path unit an administrator disabled"
-systemctl is-active --quiet hotserve-box-apply.path \
+systemctl is-active --quiet motel-box-apply.path \
 	&& die "an upgrade started the box applier's path unit an administrator disabled"
-for d in "$B 2750 root:hotserve" "$B/in 770 root:hotserve" "$B/out 2750 root:hotserve"; do
+for d in "$B 2750 root:motel" "$B/in 770 root:motel" "$B/out 2750 root:motel"; do
 	read -r p want_mode want_owner <<<"$d"
 	got=$(stat -c '%a %U:%G' "$p")
 	[ "$got" = "$want_mode $want_owner" ] || die "$p is '$got' after the upgrade, want '$want_mode $want_owner': postinstall's systemd-tmpfiles did not put it back"
 done
-systemctl enable --now hotserve-box-apply.path
-# The upgrade's postinstall ran hotserve box key again: the key is the
+systemctl enable --now motel-box-apply.path
+# The upgrade's postinstall ran motel box key again: the key is the
 # one the install made, never replaced.
-[ "$(hotserve box key 2>/dev/null)" = "$box_key" ] || die "an upgrade replaced the box's key for secrets"
-[ "$(cat /etc/hotserve/age.pub)" = "$box_key" ] || die "an upgrade rewrote age.pub with another key"
-systemctl is-active --quiet hotserve \
+[ "$(motel box key 2>/dev/null)" = "$box_key" ] || die "an upgrade replaced the box's key for secrets"
+[ "$(cat /etc/motel/age.pub)" = "$box_key" ] || die "an upgrade rewrote age.pub with another key"
+systemctl is-active --quiet motel \
 	|| die "service not active after reinstall — an upgrade must not leave the server down (preremove stop / missing postinstall restart)"
-id hotserve >/dev/null || die "hotserve user gone after reinstall (postinstall not idempotent)"
-# postinstall's try-restart swapped hotserve onto the new binary. The
+id motel >/dev/null || die "motel user gone after reinstall (postinstall not idempotent)"
+# postinstall's try-restart swapped motel onto the new binary. The
 # deployed app is a unit under the user manager, not a child of
-# hotserve: it must still be the SAME process, reattached from
+# motel: it must still be the SAME process, reattached from
 # state.json, and serving throughout.
 i=0
 until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HOOK")" = "200" ]; do
@@ -1190,39 +1190,39 @@ pid_after=$(printf '%s' "$status" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')
 	|| die "app pid changed across the upgrade restart ($pid_before -> $pid_after): reattach failed, the app was relaunched (or is gone): $status"
 case "$status" in *'"running":true'*) : ;; *) die "reattached app not running: $status" ;; esac
 curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "reattached app not served"
-echo "reinstall preserved config and user; hotserve restarted and reattached to the running app (pid $pid_after)"
+echo "reinstall preserved config and user; motel restarted and reattached to the running app (pid $pid_after)"
 # The table's upgrade rows: as installed, the timers stay enabled and
 # running and the credential file is not touched; disabled by the
 # administrator, an upgrade leaves them disabled (was-enabled is false,
 # and deb-systemd-invoke starts nothing disabled); enabled again, an
 # upgrade keeps them so.
 expect_backup_state "after an upgrade" enabled active "$CRED_SHA"
-systemctl disable --now hotserve-backup.timer hotserve-backup-drill.timer
+systemctl disable --now motel-backup.timer motel-backup-drill.timer
 expect_backup_state "disabled by the administrator" disabled inactive "$CRED_SHA"
 dpkg -i "$deb" >/dev/null
 expect_backup_state "after an upgrade, disabled before it" disabled inactive "$CRED_SHA"
-systemctl enable --now hotserve-backup.timer hotserve-backup-drill.timer
+systemctl enable --now motel-backup.timer motel-backup-drill.timer
 dpkg -i "$deb" >/dev/null
 expect_backup_state "after an upgrade, enabled before it" enabled active "$CRED_SHA"
 # The timers as dh_installsystemd has them (the owner, 2026-09-27): an
 # upgrade restarts a timer that is enabled, one an administrator
 # stopped among them — the README says so, and to disable it to keep
 # it off — and leaves one the administrator masked masked.
-systemctl stop hotserve-backup.timer
-systemctl mask --now hotserve-backup-drill.timer
+systemctl stop motel-backup.timer
+systemctl mask --now motel-backup-drill.timer
 dpkg -i "$deb" >/dev/null
-[ "$(systemctl is-active hotserve-backup.timer || true)" = active ] \
-	|| die "after an upgrade, a timer stopped and left enabled is $(systemctl is-active hotserve-backup.timer || true): dh_installsystemd restarts it"
+[ "$(systemctl is-active motel-backup.timer || true)" = active ] \
+	|| die "after an upgrade, a timer stopped and left enabled is $(systemctl is-active motel-backup.timer || true): dh_installsystemd restarts it"
 # (Debian's helper asks the manager to restart it all the same, which
 # a mask refuses: masked, and failed rather than inactive, and not
 # running either way.)
-[ "$(systemctl is-enabled hotserve-backup-drill.timer || true)" = masked ] && [ "$(systemctl is-active hotserve-backup-drill.timer || true)" != active ] \
-	|| die "after an upgrade, the administrator's mask of hotserve-backup-drill.timer is $(systemctl is-enabled hotserve-backup-drill.timer || true), $(systemctl is-active hotserve-backup-drill.timer || true)"
-systemctl unmask hotserve-backup-drill.timer
-systemctl reset-failed hotserve-backup-drill.timer 2>/dev/null || true
-systemctl start hotserve-backup-drill.timer
+[ "$(systemctl is-enabled motel-backup-drill.timer || true)" = masked ] && [ "$(systemctl is-active motel-backup-drill.timer || true)" != active ] \
+	|| die "after an upgrade, the administrator's mask of motel-backup-drill.timer is $(systemctl is-enabled motel-backup-drill.timer || true), $(systemctl is-active motel-backup-drill.timer || true)"
+systemctl unmask motel-backup-drill.timer
+systemctl reset-failed motel-backup-drill.timer 2>/dev/null || true
+systemctl start motel-backup-drill.timer
 expect_backup_state "after an upgrade, one timer stopped and one masked, and the mask taken off" enabled active "$CRED_SHA"
-systemctl is-active --quiet hotserve || die "hotserve not active after the upgrade cycle"
+systemctl is-active --quiet motel || die "motel not active after the upgrade cycle"
 # A user directory that does not answer: postinstall's lookups of the
 # accounts are bounded, and one that does not answer is "could not
 # tell" — never "absent", which would make a local account beside the
@@ -1231,25 +1231,25 @@ systemctl is-active --quiet hotserve || die "hotserve not active after the upgra
 # never answers for the backup account.
 # It ignores the SIGTERM a timeout sends first, as a lookup stuck in
 # the kernel does: only the kill that follows ends it.
-printf '#!/bin/sh\ncase "$*" in *hotserve-backup*) trap "" TERM; sleep 600; exit 0 ;; esac\nexec /usr/bin/getent "$@"\n' >/usr/local/sbin/getent
+printf '#!/bin/sh\ncase "$*" in *motel-backup*) trap "" TERM; sleep 600; exit 0 ;; esac\nexec /usr/bin/getent "$@"\n' >/usr/local/sbin/getent
 chmod 755 /usr/local/sbin/getent
 t0=$(date +%s)
 timeout 300 dpkg -i "$deb" >/tmp/upgrade-nss.log 2>&1 || { cat /tmp/upgrade-nss.log; rm -f /usr/local/sbin/getent; die "the upgrade with a directory that does not answer did not complete within 300s"; }
 took=$(($(date +%s) - t0))
 rm -f /usr/local/sbin/getent
 [ "$took" -le 150 ] || die "the upgrade with a directory that does not answer took ${took}s"
-grep -q "hotserve: whether the hotserve-backup account exists could not be told (the user directory did not answer within 30s)" /tmp/upgrade-nss.log \
+grep -q "motel: whether the motel-backup account exists could not be told (the user directory did not answer within 30s)" /tmp/upgrade-nss.log \
 	|| die "postinstall did not say that the directory did not answer: $(cat /tmp/upgrade-nss.log)"
-[ "$(getent passwd hotserve-backup | wc -l)" = 1 ] || die "a second hotserve-backup account was made: $(getent passwd | grep hotserve-backup)"
-dpkg -s hotserve | grep -q '^Status: install ok installed$' || die "hotserve is not configured after the upgrade with a directory that does not answer"
+[ "$(getent passwd motel-backup | wc -l)" = 1 ] || die "a second motel-backup account was made: $(getent passwd | grep motel-backup)"
+dpkg -s motel | grep -q '^Status: install ok installed$' || die "motel is not configured after the upgrade with a directory that does not answer"
 echo "a directory that does not answer: postinstall said so within ${took}s, made no account, and the configure completed"
 # An upgrade from a release that had no backup timers — every box that
 # first gets this feature: the helper has no state for them, and they
 # are enabled and started as on an install, not left stopped until a
 # reboot (the owner's review of #155). Staged as that release leaves a
 # box: no enable state, no stamps, the timers stopped.
-systemctl disable --now hotserve-backup.timer hotserve-backup-drill.timer >/dev/null 2>&1
-rm -f /var/lib/systemd/deb-systemd-helper-enabled/hotserve-backup*.dsh-also /var/lib/systemd/deb-systemd-helper-enabled/timers.target.wants/hotserve-backup* /var/lib/systemd/timers/stamp-hotserve-backup*
+systemctl disable --now motel-backup.timer motel-backup-drill.timer >/dev/null 2>&1
+rm -f /var/lib/systemd/deb-systemd-helper-enabled/motel-backup*.dsh-also /var/lib/systemd/deb-systemd-helper-enabled/timers.target.wants/motel-backup* /var/lib/systemd/timers/stamp-motel-backup*
 systemctl reset-failed $TIMERS 2>/dev/null || true
 dpkg -i "$deb" >/tmp/upgrade-first.log 2>&1 || { cat /tmp/upgrade-first.log; die "the upgrade from a release without the timers failed"; }
 expect_backup_state "after an upgrade from a release without the timers" enabled active "$CRED_SHA"
@@ -1267,10 +1267,10 @@ hold_upload() {
 	# manager refuses the next (start-limit-hit). Counted from here.
 	# shellcheck disable=SC2086 # two unit names
 	systemctl reset-failed $TIMERS 2>/dev/null || true
-	su -s /bin/sh hotserve -c 'head -c 50000000 /dev/urandom >/var/lib/liveswap/demo/shared/uploads/big.bin'
+	su -s /bin/sh motel -c 'head -c 50000000 /dev/urandom >/var/lib/liveswap/demo/shared/uploads/big.bin'
 	eval "$1"
 	i=0
-	until up=$(systemctl list-units --plain --no-legend --state=activating 'hotserve_backup_upload_*' | awk '{print $1}' | head -1) && [ -n "$up" ]; do
+	until up=$(systemctl list-units --plain --no-legend --state=activating 'motel_backup_upload_*' | awk '{print $1}' | head -1) && [ -n "$up" ]; do
 		i=$((i + 1))
 		[ "$i" -ge 300 ] && die "no upload unit appeared ($1): the row would prove nothing"
 		sleep 0.1
@@ -1286,32 +1286,32 @@ survived() {
 	# An upgrade stops and sweeps nothing: none of what a stop or a
 	# sweep says is in its output (the owner's review of #155: this
 	# looked for words no script prints any more).
-	grep -q "not swept\|hotserve-backup sweep\|Stopping\|Stopped" "$2" && die "$1: the upgrade stopped or swept something of the backups: $(cat "$2")" || true
+	grep -q "not swept\|motel-backup sweep\|Stopping\|Stopped" "$2" && die "$1: the upgrade stopped or swept something of the backups: $(cat "$2")" || true
 	kill -CONT "$rpid"
 }
-hold_upload "systemctl start --no-block hotserve-backup.service"
+hold_upload "systemctl start --no-block motel-backup.service"
 dpkg -i "$deb" >/tmp/upgrade-run.log 2>&1 || { cat /tmp/upgrade-run.log; die "the upgrade with a run under way failed"; }
 survived "an upgrade with a run under way" /tmp/upgrade-run.log
 i=0
-until [ "$(systemctl show -p ActiveState --value hotserve-backup.service)" != activating ] || [ "$i" -ge 240 ]; do
+until [ "$(systemctl show -p ActiveState --value motel-backup.service)" != activating ] || [ "$i" -ge 240 ]; do
 	i=$((i + 1))
 	sleep 0.5
 done
 # Ended, and not still under way: a hung run keeps the Result= of the
 # run before it (Copilot on #155).
-[ "$(systemctl show -p ActiveState --value hotserve-backup.service)" != activating ] \
-	|| die "the run under way at the upgrade had not ended 120s after it was let go: $(journalctl -u hotserve-backup.service --no-pager | tail -10)"
-[ "$(systemctl show -p Result --value hotserve-backup.service)" = success ] \
-	|| die "the run under way at the upgrade ended '$(systemctl show -p Result --value hotserve-backup.service)': $(journalctl -u hotserve-backup.service --no-pager | tail -10)"
-grep -q '"demo": {' /var/lib/hotserve-backup/status.json && tr -d '\n' </var/lib/hotserve-backup/status.json | grep -q '"demo": { *"class": "ok"' \
-	|| die "the run under way at the upgrade did not back demo up: $(tr -d '\n' </var/lib/hotserve-backup/status.json | cut -c1-400)"
-su -s /bin/sh hotserve -c 'rm -f /var/lib/liveswap/demo/shared/uploads/big.bin'
+[ "$(systemctl show -p ActiveState --value motel-backup.service)" != activating ] \
+	|| die "the run under way at the upgrade had not ended 120s after it was let go: $(journalctl -u motel-backup.service --no-pager | tail -10)"
+[ "$(systemctl show -p Result --value motel-backup.service)" = success ] \
+	|| die "the run under way at the upgrade ended '$(systemctl show -p Result --value motel-backup.service)': $(journalctl -u motel-backup.service --no-pager | tail -10)"
+grep -q '"demo": {' /var/lib/motel-backup/status.json && tr -d '\n' </var/lib/motel-backup/status.json | grep -q '"demo": { *"class": "ok"' \
+	|| die "the run under way at the upgrade did not back demo up: $(tr -d '\n' </var/lib/motel-backup/status.json | cut -c1-400)"
+su -s /bin/sh motel -c 'rm -f /var/lib/liveswap/demo/shared/uploads/big.bin'
 expect_backup_state "after an upgrade with a run under way" enabled active "$CRED_SHA"
 echo "an upgrade left the run under way alone: its upload finished, and it ended ok"
 # The same from a shell.
-hold_upload "setsid hotserve-backup run >/tmp/shell-run.log 2>&1 &"
-shell_pid=$(sed -n 's/^pid \([0-9][0-9]*\),.*/\1/p' /run/hotserve-backup/lock)
-[ -n "$shell_pid" ] && kill -0 "$shell_pid" || die "the run from a shell is not the lock's holder ('$(cat /run/hotserve-backup/lock)'): the row proves nothing"
+hold_upload "setsid motel-backup run >/tmp/shell-run.log 2>&1 &"
+shell_pid=$(sed -n 's/^pid \([0-9][0-9]*\),.*/\1/p' /run/motel-backup/lock)
+[ -n "$shell_pid" ] && kill -0 "$shell_pid" || die "the run from a shell is not the lock's holder ('$(cat /run/motel-backup/lock)'): the row proves nothing"
 dpkg -i "$deb" >/tmp/upgrade-shell.log 2>&1 || { cat /tmp/upgrade-shell.log; die "the upgrade with a command under way from a shell failed"; }
 survived "an upgrade with a command under way from a shell" /tmp/upgrade-shell.log
 i=0
@@ -1321,7 +1321,7 @@ while kill -0 "$shell_pid" 2>/dev/null; do
 	sleep 0.5
 done
 grep -q "^demo: ok" /tmp/shell-run.log || die "the run from a shell, under way at the upgrade, did not back demo up: $(cat /tmp/shell-run.log)"
-su -s /bin/sh hotserve -c 'rm -f /var/lib/liveswap/demo/shared/uploads/big.bin'
+su -s /bin/sh motel -c 'rm -f /var/lib/liveswap/demo/shared/uploads/big.bin'
 expect_backup_state "after an upgrade with a command under way from a shell" enabled active "$CRED_SHA"
 echo "a command from a shell, under way at the upgrade: left alone, and it ended ok"
 # And under a policy-rc.d, which forbids a package every start and
@@ -1334,22 +1334,22 @@ rm -f /usr/sbin/policy-rc.d
 expect_backup_state "after an upgrade under a policy-rc.d" enabled active "$CRED_SHA"
 echo "an upgrade under a policy-rc.d left the timers running"
 # The account is every run's to check, and an upgrade says so in
-# setup's own words: hotserve uses only an account it made, marked as
+# setup's own words: motel uses only an account it made, marked as
 # its own; with the mark gone — one made by someone else stands in —
 # it is warned of at the upgrade, refused by a run, and accepted again
-# once it is hotserve's.
-usermod --comment "made by someone else" hotserve-backup
-dpkg -i "$deb" >/tmp/upgrade-mark.log 2>&1 || { cat /tmp/upgrade-mark.log; die "the upgrade with an account hotserve did not make failed: a warning must not fail an install"; }
-grep -q "was not made by hotserve" /tmp/upgrade-mark.log && grep -q "refuse that account" /tmp/upgrade-mark.log \
-	|| die "postinstall did not warn of an account hotserve did not make: $(cat /tmp/upgrade-mark.log)"
-systemctl start hotserve-backup.service && die "a run with an account hotserve did not make exited 0" || true
-journalctl -u hotserve-backup.service --no-pager | grep -q "was not made by hotserve" \
-	|| die "the run did not say why it refused: $(journalctl -u hotserve-backup.service --no-pager | tail -5)"
-usermod --comment made-by-hotserve hotserve-backup
-systemctl reset-failed hotserve-backup.service 2>/dev/null || true
-hotserve-backup account >/dev/null || die "hotserve's account is not accepted: $(hotserve-backup account 2>&1)"
-systemctl start hotserve-backup.service || die "a run after the account was hotserve's again failed: $(journalctl -u hotserve-backup.service --no-pager | tail -20)"
-echo "an account hotserve did not make: warned of at the upgrade in setup's words, refused by a run, accepted once it is hotserve's"
+# once it is motel's.
+usermod --comment "made by someone else" motel-backup
+dpkg -i "$deb" >/tmp/upgrade-mark.log 2>&1 || { cat /tmp/upgrade-mark.log; die "the upgrade with an account motel did not make failed: a warning must not fail an install"; }
+grep -q "was not made by motel" /tmp/upgrade-mark.log && grep -q "refuse that account" /tmp/upgrade-mark.log \
+	|| die "postinstall did not warn of an account motel did not make: $(cat /tmp/upgrade-mark.log)"
+systemctl start motel-backup.service && die "a run with an account motel did not make exited 0" || true
+journalctl -u motel-backup.service --no-pager | grep -q "was not made by motel" \
+	|| die "the run did not say why it refused: $(journalctl -u motel-backup.service --no-pager | tail -5)"
+usermod --comment made-by-motel motel-backup
+systemctl reset-failed motel-backup.service 2>/dev/null || true
+motel-backup account >/dev/null || die "motel's account is not accepted: $(motel-backup account 2>&1)"
+systemctl start motel-backup.service || die "a run after the account was motel's again failed: $(journalctl -u motel-backup.service --no-pager | tail -20)"
+echo "an account motel did not make: warned of at the upgrade in setup's words, refused by a run, accepted once it is motel's"
 
 stage "stage 3b: prerm deconfigure is not removal"
 # dpkg runs `prerm deconfigure` when a dependency (dbus, libpam-systemd)
@@ -1357,18 +1357,18 @@ stage "stage 3b: prerm deconfigure is not removal"
 # later maintainer script re-enables the service. Calling the installed
 # script directly is the only way to reach that path without a real
 # conflicting package.
-prerm=/var/lib/dpkg/info/hotserve.prerm
+prerm=/var/lib/dpkg/info/motel.prerm
 [ -x "$prerm" ] || die "installed prerm not found at $prerm"
-main_before=$(systemctl show -P MainPID hotserve)
+main_before=$(systemctl show -P MainPID motel)
 "$prerm" deconfigure in-favour smoketest-dep 1.0 removing dbus 1.0 \
 	|| die "prerm deconfigure exited non-zero"
-systemctl is-active --quiet hotserve || die "prerm deconfigure stopped hotserve"
-systemctl is-enabled --quiet hotserve || die "prerm deconfigure disabled hotserve"
-[ "$(systemctl show -P MainPID hotserve)" = "$main_before" ] || die "prerm deconfigure restarted hotserve"
+systemctl is-active --quiet motel || die "prerm deconfigure stopped motel"
+systemctl is-enabled --quiet motel || die "prerm deconfigure disabled motel"
+[ "$(systemctl show -P MainPID motel)" = "$main_before" ] || die "prerm deconfigure restarted motel"
 systemctl is-active --quiet "user@$uid.service" || die "prerm deconfigure stopped the user manager (and every app)"
-[ -e /etc/systemd/system/hotserve.service.d/10-user-manager.conf ] || die "prerm deconfigure removed the user-manager drop-in"
-[ -e "/etc/systemd/system/user@$uid.service.d/10-hotserve.conf" ] || die "prerm deconfigure removed the user@ limits drop-in"
-[ -e /var/lib/systemd/linger/hotserve ] || die "prerm deconfigure disabled lingering"
+[ -e /etc/systemd/system/motel.service.d/10-user-manager.conf ] || die "prerm deconfigure removed the user-manager drop-in"
+[ -e "/etc/systemd/system/user@$uid.service.d/10-motel.conf" ] || die "prerm deconfigure removed the user@ limits drop-in"
+[ -e /var/lib/systemd/linger/motel ] || die "prerm deconfigure disabled lingering"
 kill -0 "$pid_after" 2>/dev/null || die "deployed app (pid $pid_after) did not survive prerm deconfigure"
 curl -fsS --max-time 5 "$PROXY/" | grep -q "hello smoke" || die "app not served after prerm deconfigure"
 echo "prerm deconfigure left the service, the user manager and the app (pid $pid_after) running"
@@ -1379,53 +1379,53 @@ stage "stage 3c: an upgrade restart the new version refuses is reported; an upgr
 # stderr — and still exit 0, or the package is left half-configured.
 # A subdirective no version accepts stands in for one an upgrade stops
 # accepting; reinstalling the same .deb runs the same try-restart.
-cp /etc/hotserve/Caddyfile /tmp/Caddyfile.good
-sed -i '/^[[:space:]]*liveswap {$/a smoke_retired_option on' /etc/hotserve/Caddyfile
-hotserve adapt --config /etc/hotserve/Caddyfile >/dev/null 2>&1 \
+cp /etc/motel/Caddyfile /tmp/Caddyfile.good
+sed -i '/^[[:space:]]*liveswap {$/a smoke_retired_option on' /etc/motel/Caddyfile
+motel adapt --config /etc/motel/Caddyfile >/dev/null 2>&1 \
 	&& die "the broken Caddyfile adapts; the failed-restart assertions below would be vacuous"
 dpkg -i "$deb" >/tmp/refused.out 2>/tmp/refused.err \
 	|| { cat /tmp/refused.out /tmp/refused.err; die "dpkg -i exited non-zero over a refused config: a failed restart must not fail the package"; }
 cat /tmp/refused.out /tmp/refused.err
-[ "$(dpkg-query -W -f='${Status}' hotserve)" = "install ok installed" ] \
-	|| die "package state is '$(dpkg-query -W -f='${Status}' hotserve)' after a refused restart, want 'install ok installed'"
-systemctl is-active --quiet hotserve \
-	&& die "hotserve is active after a restart over a refused config; this stage tests nothing"
-grep -q 'journalctl -u hotserve -e' /tmp/refused.err \
+[ "$(dpkg-query -W -f='${Status}' motel)" = "install ok installed" ] \
+	|| die "package state is '$(dpkg-query -W -f='${Status}' motel)' after a refused restart, want 'install ok installed'"
+systemctl is-active --quiet motel \
+	&& die "motel is active after a restart over a refused config; this stage tests nothing"
+grep -q 'journalctl -u motel -e' /tmp/refused.err \
 	|| die "a failed upgrade restart printed no journalctl hint on stderr (postinstall swallowed it)"
-grep -q 'systemctl status hotserve' /tmp/refused.err \
+grep -q 'systemctl status motel' /tmp/refused.err \
 	|| die "a failed upgrade restart printed no systemctl status hint on stderr"
-grep -qx '  then fix it and run: systemctl restart hotserve' /tmp/refused.err \
+grep -qx '  then fix it and run: systemctl restart motel' /tmp/refused.err \
 	|| die "a failed upgrade restart did not give the restart line, with no sudo"
 grep -q 'enable --now' /tmp/refused.out /tmp/refused.err \
 	&& die "a failed upgrade restart printed the 'enable --now' start hint, as if all were well"
 grep -q 'restarted\.' /tmp/refused.out \
-	&& die "a failed upgrade restart claimed hotserve restarted"
-kill -0 "$pid_after" 2>/dev/null || die "deployed app (pid $pid_after) did not survive hotserve's refused start"
+	&& die "a failed upgrade restart claimed motel restarted"
+kill -0 "$pid_after" 2>/dev/null || die "deployed app (pid $pid_after) did not survive motel's refused start"
 # The box applier's path unit, enabled again after stage 3, is restarted
-# by the upgrade whatever became of hotserve.
-[ "$(systemctl is-enabled hotserve-box-apply.path)" = enabled ] && systemctl is-active --quiet hotserve-box-apply.path \
-	|| die "the box applier's path unit is not enabled and active after an upgrade: $(systemctl show -p ActiveState,Result hotserve-box-apply.path | tr '\n' ' ')"
+# by the upgrade whatever became of motel.
+[ "$(systemctl is-enabled motel-box-apply.path)" = enabled ] && systemctl is-active --quiet motel-box-apply.path \
+	|| die "the box applier's path unit is not enabled and active after an upgrade: $(systemctl show -p ActiveState,Result motel-box-apply.path | tr '\n' ' ')"
 # Fix the config, as the operator would. An upgrade now, over the unit
 # the refused restart left failed, starts nothing (try-restart), though
 # the config would load, and says how to start it.
-cp /tmp/Caddyfile.good /etc/hotserve/Caddyfile
-st=$(systemctl show -P ActiveState hotserve)
-[ "$st" = failed ] || die "hotserve is '$st' after the refused restart, not failed: the upgrade below would prove nothing"
-dpkg -i "$deb" </dev/null >/tmp/stopped.out 2>&1 || { cat /tmp/stopped.out; die "dpkg -i over a failed hotserve exited non-zero"; }
+cp /tmp/Caddyfile.good /etc/motel/Caddyfile
+st=$(systemctl show -P ActiveState motel)
+[ "$st" = failed ] || die "motel is '$st' after the refused restart, not failed: the upgrade below would prove nothing"
+dpkg -i "$deb" </dev/null >/tmp/stopped.out 2>&1 || { cat /tmp/stopped.out; die "dpkg -i over a failed motel exited non-zero"; }
 cat /tmp/stopped.out
-st=$(systemctl show -P ActiveState hotserve)
-[ "$st" = failed ] || die "an upgrade over a failed hotserve left it '$st', not failed: it started it, or cleared the failure"
-grep -A1 -x 'hotserve is enabled but not running. Start it with:' /tmp/stopped.out | grep -qx '  systemctl start hotserve' \
-	|| die "an upgrade over a failed hotserve did not give the start line, with no sudo"
-grep -q -e '^hotserve restarted\.$' -e 'restarting onto the new version FAILED' /tmp/stopped.out \
-	&& die "an upgrade over a failed hotserve also said it restarted, or that the restart failed"
+st=$(systemctl show -P ActiveState motel)
+[ "$st" = failed ] || die "an upgrade over a failed motel left it '$st', not failed: it started it, or cleared the failure"
+grep -A1 -x 'motel is enabled but not running. Start it with:' /tmp/stopped.out | grep -qx '  systemctl start motel' \
+	|| die "an upgrade over a failed motel did not give the start line, with no sudo"
+grep -q -e '^motel restarted\.$' -e 'restarting onto the new version FAILED' /tmp/stopped.out \
+	&& die "an upgrade over a failed motel also said it restarted, or that the restart failed"
 # Recover the way the failed restart's hint says, so stage 4 starts
 # from a serving box. reset-failed first: stages 3 to 3c started the
 # unit often enough in a few seconds to reach systemd's start limit
 # (5 in 10 s), which an operator fixing the config by hand would have
 # long outlived.
-systemctl reset-failed hotserve
-timeout 300 systemctl restart hotserve || die "hotserve did not start again on the restored config"
+systemctl reset-failed motel
+timeout 300 systemctl restart motel || die "motel did not start again on the restored config"
 i=0
 until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HOOK")" = "200" ]; do
 	i=$((i + 1))
@@ -1452,8 +1452,8 @@ done
 # mounted inside the app's data — one of a name with a space in it,
 # which mountinfo escapes. Through a bind taken away, each disk stays
 # mounted where the operator put it.
-su -s /bin/sh hotserve -c 'mkdir -p /var/lib/liveswap/demo/shared/uploads/disk "/var/lib/liveswap/demo/shared/uploads/my disk"'
-mkdir -p /run/hotserve-backup/dead00000001/mount-1 /tmp/disk "/tmp/my disk"
+su -s /bin/sh motel -c 'mkdir -p /var/lib/liveswap/demo/shared/uploads/disk "/var/lib/liveswap/demo/shared/uploads/my disk"'
+mkdir -p /run/motel-backup/dead00000001/mount-1 /tmp/disk "/tmp/my disk"
 echo on-the-disk >/tmp/disk/kept.txt
 echo on-my-disk >"/tmp/my disk/kept.txt"
 mount --bind /tmp/disk /var/lib/liveswap/demo/shared/uploads/disk || die "could not stage a disk inside the app's data"
@@ -1463,11 +1463,11 @@ disks_mounted() { # <when>
 		&& [ -f /var/lib/liveswap/demo/shared/uploads/disk/kept.txt ] && [ -f "/var/lib/liveswap/demo/shared/uploads/my disk/kept.txt" ] \
 		|| die "$1: a disk inside the app's data was unmounted from under the app: $(grep liveswap/demo /proc/self/mountinfo | awk '{print $5}' | tr '\n' ' ')"
 }
-mount --rbind /var/lib/liveswap/demo/shared /run/hotserve-backup/dead00000001/mount-1 || die "could not stage a leftover bind mount"
-[ -f /run/hotserve-backup/dead00000001/mount-1/app.db ] && [ -f "/run/hotserve-backup/dead00000001/mount-1/uploads/my disk/kept.txt" ] \
+mount --rbind /var/lib/liveswap/demo/shared /run/motel-backup/dead00000001/mount-1 || die "could not stage a leftover bind mount"
+[ -f /run/motel-backup/dead00000001/mount-1/app.db ] && [ -f "/run/motel-backup/dead00000001/mount-1/uploads/my disk/kept.txt" ] \
 	|| die "the staged mount does not show the app's data: the remove row would prove nothing"
 disks_mounted "before the remove"
-apt-get remove -y hotserve >/tmp/remove.log 2>&1 || { cat /tmp/remove.log; die "apt-get remove failed"; }
+apt-get remove -y motel >/tmp/remove.log 2>&1 || { cat /tmp/remove.log; die "apt-get remove failed"; }
 cat /tmp/remove.log
 disks_mounted "after remove"
 grep -q "unmount .*yourself" /tmp/remove.log \
@@ -1475,23 +1475,23 @@ grep -q "unmount .*yourself" /tmp/remove.log \
 for u in $TIMERS; do
 	[ ! -e "/var/lib/systemd/timers/stamp-$u" ] || die "remove left the stamp of $u: a reinstall would catch up a run nobody missed"
 done
-grep -q " /run/hotserve-backup/" /proc/self/mountinfo \
-	&& die "remove left a killed run's mount: $(grep ' /run/hotserve-backup/' /proc/self/mountinfo)" || true
+grep -q " /run/motel-backup/" /proc/self/mountinfo \
+	&& die "remove left a killed run's mount: $(grep ' /run/motel-backup/' /proc/self/mountinfo)" || true
 [ -f /var/lib/liveswap/demo/shared/app.db ] && [ -f /var/lib/liveswap/demo/shared/uploads/a.png ] \
 	|| die "remove took the app's data with the mount"
-[ ! -e /run/hotserve-backup/dead00000001 ] || die "remove left a killed run's directory, which the engine's sweep takes: $(ls -la /run/hotserve-backup/dead00000001)"
+[ ! -e /run/motel-backup/dead00000001 ] || die "remove left a killed run's directory, which the engine's sweep takes: $(ls -la /run/motel-backup/dead00000001)"
 echo "remove took the timers' stamps, and the engine's sweep a killed run's mount and its directory, and nothing of the app's"
-systemctl is-active --quiet hotserve && die "service still active after remove (preremove did not stop it)" || true
-[ ! -e /usr/bin/hotserve ] || die "/usr/bin/hotserve still present after remove"
+systemctl is-active --quiet motel && die "service still active after remove (preremove did not stop it)" || true
+[ ! -e /usr/bin/motel ] || die "/usr/bin/motel still present after remove"
 cmp -s /tmp/Caddyfile.configured "$CONFIG" || die "remove changed or deleted $CONFIG"
 [ -f "$RECORD" ] || die "remove deleted the record"
 systemctl is-active --quiet "user@$uid.service" && die "user manager still running after remove (apps would linger)" || true
-[ ! -e /etc/systemd/system/hotserve.service.d/10-user-manager.conf ] || die "user-manager drop-in left behind"
-[ ! -e "/etc/systemd/system/user@$uid.service.d/10-hotserve.conf" ] || die "user@ limits drop-in left behind"
-[ ! -e /var/lib/systemd/linger/hotserve ] || die "lingering left enabled"
+[ ! -e /etc/systemd/system/motel.service.d/10-user-manager.conf ] || die "user-manager drop-in left behind"
+[ ! -e "/etc/systemd/system/user@$uid.service.d/10-motel.conf" ] || die "user@ limits drop-in left behind"
+[ ! -e /var/lib/systemd/linger/motel ] || die "lingering left enabled"
 kill -0 "$pid_after" 2>/dev/null && die "deployed app (pid $pid_after) survived package removal" || true
-systemctl is-active --quiet hotserve-box-apply.path && die "the box applier's path unit is still active after remove (preremove did not stop it)" || true
-[ ! -e /lib/systemd/system/hotserve-box-apply.path ] && [ ! -e /lib/systemd/system/hotserve-box-apply.service ] \
+systemctl is-active --quiet motel-box-apply.path && die "the box applier's path unit is still active after remove (preremove did not stop it)" || true
+[ ! -e /lib/systemd/system/motel-box-apply.path ] && [ ! -e /lib/systemd/system/motel-box-apply.service ] \
 	|| die "the box applier's units are still installed after remove"
 # postremove's daemon-reload, run after dpkg removed the unit files:
 # the manager no longer loads them. The path unit is masked, as
@@ -1499,27 +1499,27 @@ systemctl is-active --quiet hotserve-box-apply.path && die "the box applier's pa
 # it enabled and active again); the mask is a /dev/null link where the
 # unit file was, and deb-systemd-helper's note of it is what lets
 # postinstall take it off without undoing an administrator's own mask.
-for u in hotserve.service hotserve-box-apply.service; do
+for u in motel.service motel-box-apply.service; do
 	[ "$(systemctl show -p LoadState --value "$u")" = not-found ] \
 		|| die "$u is still loaded after remove ($(systemctl show -p LoadState,FragmentPath --value "$u" | tr '\n' ' ')): postremove did not reload the manager"
 	[ -z "$(systemctl list-unit-files --no-legend "$u" 2>/dev/null)" ] \
 		|| die "$u is still a unit file after remove: $(systemctl list-unit-files --no-legend "$u")"
 done
-[ "$(systemctl is-enabled hotserve-box-apply.path 2>/dev/null)" = masked ] \
-	|| die "hotserve-box-apply.path is '$(systemctl is-enabled hotserve-box-apply.path 2>&1)' after remove, want masked (postremove's deb-systemd-helper mask)"
-[ "$(readlink /etc/systemd/system/hotserve-box-apply.path)" = /dev/null ] \
-	|| die "the mask of hotserve-box-apply.path is not a /dev/null link in /etc/systemd/system"
-[ -e /var/lib/systemd/deb-systemd-helper-masked/hotserve-box-apply.path ] \
+[ "$(systemctl is-enabled motel-box-apply.path 2>/dev/null)" = masked ] \
+	|| die "motel-box-apply.path is '$(systemctl is-enabled motel-box-apply.path 2>&1)' after remove, want masked (postremove's deb-systemd-helper mask)"
+[ "$(readlink /etc/systemd/system/motel-box-apply.path)" = /dev/null ] \
+	|| die "the mask of motel-box-apply.path is not a /dev/null link in /etc/systemd/system"
+[ -e /var/lib/systemd/deb-systemd-helper-masked/motel-box-apply.path ] \
 	|| die "deb-systemd-helper did not note the mask: postinstall's unmask would leave the path unit masked"
 # The table's remove row: the timers stopped and masked, the unit files
 # gone, the credential file and the account kept.
 expect_backup_state "after remove" masked inactive "$CRED_SHA"
-for u in hotserve-backup.service hotserve-backup-drill.service $TIMERS; do
+for u in motel-backup.service motel-backup-drill.service $TIMERS; do
 	[ ! -e "/lib/systemd/system/$u" ] || die "/lib/systemd/system/$u still present after remove"
 done
-systemctl is-active --quiet hotserve-backup.service && die "a backup run is still active after remove" || true
-getent passwd hotserve-backup >/dev/null || die "the hotserve-backup account was removed with the package"
-[ ! -e /usr/bin/hotserve-backup ] || die "/usr/bin/hotserve-backup still present after remove"
+systemctl is-active --quiet motel-backup.service && die "a backup run is still active after remove" || true
+getent passwd motel-backup >/dev/null || die "the motel-backup account was removed with the package"
+[ ! -e /usr/bin/motel-backup ] || die "/usr/bin/motel-backup still present after remove"
 echo "removal stopped the service, the apps and the box applier's path unit, kept the config and the record; the units unloaded, the path unit masked; the backup timers masked, the credential file and the account kept"
 
 stage "stage 5: install again after removal, a backup run, and purge"
@@ -1528,8 +1528,8 @@ stage "stage 5: install again after removal, a backup run, and purge"
 # have left the applier off for good.
 : >/tmp/before-reinstall
 apt-get install -y "$deb" >/tmp/again.out 2>&1 || { cat /tmp/again.out; die "install after removal failed"; }
-[ "$(systemctl is-enabled hotserve-box-apply.path)" = enabled ] && systemctl is-active --quiet hotserve-box-apply.path \
-	|| die "after remove and install, the box applier's path unit is '$(systemctl is-enabled hotserve-box-apply.path)', $(systemctl is-active hotserve-box-apply.path); want enabled and active"
+[ "$(systemctl is-enabled motel-box-apply.path)" = enabled ] && systemctl is-active --quiet motel-box-apply.path \
+	|| die "after remove and install, the box applier's path unit is '$(systemctl is-enabled motel-box-apply.path)', $(systemctl is-active motel-box-apply.path); want enabled and active"
 cmp -s /tmp/Caddyfile.configured "$CONFIG" || die "an install after removal changed the configured $CONFIG"
 echo "install after removal: the path unit enabled and active again; the configured $CONFIG kept"
 expect_backup_state "reinstalled after remove" enabled active "$CRED_SHA"
@@ -1549,11 +1549,11 @@ done
 # other state is not waiting, and the wait ends at once.
 not_timing() { case $(systemctl show -p SubState --value "$1") in running|waiting) return 1 ;; *) return 0 ;; esac; }
 i=0
-until dnext=$(systemctl show -p NextElapseUSecRealtime --value hotserve-backup-drill.timer) && [ -n "$dnext" ] || not_timing hotserve-backup-drill.timer || [ "$i" -ge 600 ]; do
+until dnext=$(systemctl show -p NextElapseUSecRealtime --value motel-backup-drill.timer) && [ -n "$dnext" ] || not_timing motel-backup-drill.timer || [ "$i" -ge 600 ]; do
 	i=$((i + 1))
 	sleep 1
 done
-[ -n "$dnext" ] || die "reinstalled after remove: hotserve-backup-drill.timer has no next elapse and is '$(systemctl show -p SubState --value hotserve-backup-drill.timer)' (running: the drill it fired is still going after 600s; anything else: the timer is not waiting): $(journalctl -u hotserve-backup-drill.timer -u hotserve-backup-drill.service --no-pager | tail -5)"
+[ -n "$dnext" ] || die "reinstalled after remove: motel-backup-drill.timer has no next elapse and is '$(systemctl show -p SubState --value motel-backup-drill.timer)' (running: the drill it fired is still going after 600s; anything else: the timer is not waiting): $(journalctl -u motel-backup-drill.timer -u motel-backup-drill.service --no-pager | tail -5)"
 dpast=$(($(date -d "$dnext" +%s) - $(date -d "$(date -d "$dnext" '+%Y-%m-%d') 03:30:00" +%s)))
 [ "$(date -d "$dnext" +%a)" = Sun ] && [ "$dpast" -ge 0 ] && [ "$dpast" -le 600 ] \
 	|| die "reinstalled after remove: the drill's next elapse is '$dnext' (${dpast}s past 03:30 of its day), not a Sunday between 03:30 and 03:40: a catch-up"
@@ -1568,11 +1568,11 @@ dpast=$(($(date -d "$dnext" +%s) - $(date -d "$(date -d "$dnext" '+%Y-%m-%d') 03
 # off the calendar: the manager's start and the offset [M68], or the
 # timer's activation [M86]. The next elapse is empty while the fired
 # run lasts: it is read once the run has ended.
-for u in hotserve-backup.service hotserve-backup-drill.service; do
+for u in motel-backup.service motel-backup-drill.service; do
 	t=${u%.service}.timer
 	# The period is the unit's OnCalendar= by hand: held to the unit, on
 	# every run, fired or not.
-	case $t in hotserve-backup.timer) period=3600; cal='\*-\*-\* \*:00:00' ;; *) period=604800; cal='Sun \*-\*-\* 03:30:00' ;; esac
+	case $t in motel-backup.timer) period=3600; cal='\*-\*-\* \*:00:00' ;; *) period=604800; cal='Sun \*-\*-\* 03:30:00' ;; esac
 	systemctl show -p TimersCalendar --value "$t" | grep -q "OnCalendar=$cal ;" \
 		|| die "reinstalled after remove: $t's calendar is '$(systemctl show -p TimersCalendar --value "$t")', not the ${period}s period this check takes"
 	[ "$(systemctl show -p ExecMainStartTimestampMonotonic --value "$u")" = 0 ] && continue
@@ -1590,9 +1590,9 @@ for u in hotserve-backup.service hotserve-backup-drill.service; do
 	echo "reinstalled after remove: $u ran inside the install at its timer's elapse (last trigger $last, ${late}s after it): a scheduled run, not a catch-up"
 done
 echo "reinstalled after remove: the stamps are new, and nothing caught up"
-timeout 300 systemctl enable --now hotserve || die "hotserve did not start after the reinstall"
+timeout 300 systemctl enable --now motel || die "motel did not start after the reinstall"
 # A timer firing from here to the run below would put a drill, which
-# holds the run lock (hotserve-backup-drill.service), or a run of its
+# holds the run lock (motel-backup-drill.service), or a run of its
 # own in the way of the stage's run: the timers are held while it runs,
 # and one fired since the check above is let end first. Before they
 # are started again their stamps are touched: a start reads the
@@ -1603,15 +1603,15 @@ systemctl stop $TIMERS || die "reinstalled after remove: the timers could not be
 # run lock.
 going() { case $(systemctl show -p ActiveState --value "$1") in activating|deactivating) return 0 ;; *) return 1 ;; esac; }
 i=0
-until ! going hotserve-backup.service && ! going hotserve-backup-drill.service || [ "$i" -ge 600 ]; do
+until ! going motel-backup.service && ! going motel-backup-drill.service || [ "$i" -ge 600 ]; do
 	i=$((i + 1))
 	sleep 1
 done
-if [ "$i" -ge 600 ] && { going hotserve-backup.service || going hotserve-backup-drill.service; }; then
-	die "reinstalled after remove: a run or drill the timer fired is still running after 600s ($(systemctl show -p ActiveState --value hotserve-backup.service), $(systemctl show -p ActiveState --value hotserve-backup-drill.service)): $(journalctl -u hotserve-backup.service -u hotserve-backup-drill.service --no-pager | tail -5)"
+if [ "$i" -ge 600 ] && { going motel-backup.service || going motel-backup-drill.service; }; then
+	die "reinstalled after remove: a run or drill the timer fired is still running after 600s ($(systemctl show -p ActiveState --value motel-backup.service), $(systemctl show -p ActiveState --value motel-backup-drill.service)): $(journalctl -u motel-backup.service -u motel-backup-drill.service --no-pager | tail -5)"
 fi
-systemctl start hotserve-backup.service || die "a run after the reinstall failed: $(journalctl -u hotserve-backup.service --no-pager | tail -20)"
-[ "$(systemctl show -p Result --value hotserve-backup.service)" = success ] || die "the run after the reinstall ended '$(systemctl show -p Result --value hotserve-backup.service)'"
+systemctl start motel-backup.service || die "a run after the reinstall failed: $(journalctl -u motel-backup.service --no-pager | tail -20)"
+[ "$(systemctl show -p Result --value motel-backup.service)" = success ] || die "the run after the reinstall ended '$(systemctl show -p Result --value motel-backup.service)'"
 echo "reinstalled after remove: the same credential file, a run works; the timers are held until the purge"
 # What a killed run can leave behind: a bind mount of an app's data
 # under the run directory, and the record writer's temp file. Purge
@@ -1620,34 +1620,34 @@ echo "reinstalled after remove: the same credential file, a run works; the timer
 # A directory and a file, as a run binds them, a mount inside a mount,
 # and the files a run keeps beside them; and the temp file setup's
 # writer of the repository id leaves when it is killed mid-write.
-su -s /bin/sh hotserve -c 'echo inner >/var/lib/liveswap/demo/shared/uploads/inner.txt'
-mkdir -p /run/hotserve-backup/dead00000001/mount-1
-: >/run/hotserve-backup/dead00000001/mount-2
+su -s /bin/sh motel -c 'echo inner >/var/lib/liveswap/demo/shared/uploads/inner.txt'
+mkdir -p /run/motel-backup/dead00000001/mount-1
+: >/run/motel-backup/dead00000001/mount-2
 disks_mounted "before the purge"
-mount --rbind /var/lib/liveswap/demo/shared /run/hotserve-backup/dead00000001/mount-1 || die "could not stage a leftover bind mount"
-mount --bind /var/lib/liveswap/demo/shared/app.db /run/hotserve-backup/dead00000001/mount-2 || die "could not stage a leftover bind mount of a file"
-[ -f /run/hotserve-backup/dead00000001/mount-1/app.db ] && [ -f /run/hotserve-backup/dead00000001/mount-1/uploads/disk/kept.txt ] \
+mount --rbind /var/lib/liveswap/demo/shared /run/motel-backup/dead00000001/mount-1 || die "could not stage a leftover bind mount"
+mount --bind /var/lib/liveswap/demo/shared/app.db /run/motel-backup/dead00000001/mount-2 || die "could not stage a leftover bind mount of a file"
+[ -f /run/motel-backup/dead00000001/mount-1/app.db ] && [ -f /run/motel-backup/dead00000001/mount-1/uploads/disk/kept.txt ] \
 	|| die "the staged mounts do not show the app's data: the purge check would prove nothing"
 # The mount a run makes of nothing, to ask the manager whether it is
 # seen: a run killed right then leaves it.
-mkdir -p /run/hotserve-backup/dead00000001/seen
-mount --bind /run/hotserve-backup/dead00000001/seen /run/hotserve-backup/dead00000001/seen || die "could not stage a run's own probe mount"
-echo '{}' >/run/hotserve-backup/dead00000001/plan.json
-: >/run/hotserve-backup/dead00000001/.listing.err
+mkdir -p /run/motel-backup/dead00000001/seen
+mount --bind /run/motel-backup/dead00000001/seen /run/motel-backup/dead00000001/seen || die "could not stage a run's own probe mount"
+echo '{}' >/run/motel-backup/dead00000001/plan.json
+: >/run/motel-backup/dead00000001/.listing.err
 # And the units a command killed from a shell left running — it has no
 # service for the manager to end them with — recorded by their exact
 # names, as a run records each before it starts it. A line that is no
 # name the engine writes is nothing to stop.
-LEFT=hotserve_backup_upload_demo_0123456789ab.service
-systemd-run --quiet --unit="$LEFT" -p User=hotserve-backup /usr/bin/sleep 600 || die "could not stage a unit a killed command left running"
+LEFT=motel_backup_upload_demo_0123456789ab.service
+systemd-run --quiet --unit="$LEFT" -p User=motel-backup /usr/bin/sleep 600 || die "could not stage a unit a killed command left running"
 systemd-run --quiet --unit=smoke-bystander.service /usr/bin/sleep 600 || die "could not stage a unit that is none of the engine's"
 # And one of the engine's prefix that is no name the engine writes: no
 # role and app, no run's twelve hex digits (Copilot on #155).
-systemd-run --quiet --unit=hotserve_backup_bystander.service /usr/bin/sleep 600 || die "could not stage a unit of the engine's prefix"
-printf '%s\nsmoke-bystander.service\nhotserve_backup_bystander.service\n' "$LEFT" >/run/hotserve-backup/units
+systemd-run --quiet --unit=motel_backup_bystander.service /usr/bin/sleep 600 || die "could not stage a unit of the engine's prefix"
+printf '%s\nsmoke-bystander.service\nmotel_backup_bystander.service\n' "$LEFT" >/run/motel-backup/units
 [ "$(systemctl is-active "$LEFT" || true)" = active ] || die "the staged unit is not running: the purge row would prove nothing"
-: >/var/lib/hotserve-backup/.status-crash
-echo 0123 >/var/lib/hotserve-backup/repository-id.new
+: >/var/lib/motel-backup/.status-crash
+echo 0123 >/var/lib/motel-backup/repository-id.new
 # The timers, held since the stage's own run so that no run of theirs
 # sweeps what was staged above, are started again here, their stamps
 # touched first (a start reads the stamp, and an elapse that passed
@@ -1656,34 +1656,34 @@ echo 0123 >/var/lib/hotserve-backup/repository-id.new
 for u in $TIMERS; do touch "/var/lib/systemd/timers/stamp-$u"; done
 systemctl start $TIMERS || die "reinstalled after remove: the timers could not be started again: $(systemctl show -p ActiveState,Result $TIMERS | tr '\n' ' ')"
 expect_backup_state "before the purge" enabled active "$CRED_SHA"
-apt-get purge -y hotserve >/tmp/purge.log 2>&1 || { cat /tmp/purge.log; die "apt-get purge failed"; }
+apt-get purge -y motel >/tmp/purge.log 2>&1 || { cat /tmp/purge.log; die "apt-get purge failed"; }
 cat /tmp/purge.log
 [ -f /var/lib/liveswap/demo/shared/app.db ] && [ -f /var/lib/liveswap/demo/shared/uploads/a.png ] && [ -f /var/lib/liveswap/demo/shared/uploads/inner.txt ] && [ -f /tmp/disk/kept.txt ] \
-	|| die "purge removed the app's data through a mount a killed run left under /run/hotserve-backup"
+	|| die "purge removed the app's data through a mount a killed run left under /run/motel-backup"
 disks_mounted "after purge"
 [ "$(systemctl is-active "$LEFT" || true)" != active ] \
 	|| die "purge left a unit a killed command had left running, and removed the one record of it: $LEFT is still active, with the credential"
-for u in smoke-bystander.service hotserve_backup_bystander.service; do
+for u in smoke-bystander.service motel_backup_bystander.service; do
 	[ "$(systemctl is-active "$u" || true)" = active ] \
 		|| die "purge stopped $u, which is no name the engine writes, for being written in the units file"
 done
-systemctl stop smoke-bystander.service hotserve_backup_bystander.service
-grep -q " /run/hotserve-backup" /proc/self/mountinfo \
-	&& die "purge left a killed run's mounts, with no next run to sweep them: $(grep ' /run/hotserve-backup' /proc/self/mountinfo)" || true
-[ ! -e /run/hotserve-backup ] || die "purge left /run/hotserve-backup: $(find /run/hotserve-backup)"
-grep -q "still mounted\|/run/hotserve-backup" /tmp/purge.log \
-	&& die "purge spoke of a run directory it removed whole: $(grep 'hotserve-backup' /tmp/purge.log)" || true
+systemctl stop smoke-bystander.service motel_backup_bystander.service
+grep -q " /run/motel-backup" /proc/self/mountinfo \
+	&& die "purge left a killed run's mounts, with no next run to sweep them: $(grep ' /run/motel-backup' /proc/self/mountinfo)" || true
+[ ! -e /run/motel-backup ] || die "purge left /run/motel-backup: $(find /run/motel-backup)"
+grep -q "still mounted\|/run/motel-backup" /tmp/purge.log \
+	&& die "purge spoke of a run directory it removed whole: $(grep 'motel-backup' /tmp/purge.log)" || true
 umount /var/lib/liveswap/demo/shared/uploads/disk "/var/lib/liveswap/demo/shared/uploads/my disk"
-[ ! -e /var/lib/hotserve-backup/repository-id.new ] || die "purge left setup's temp file, repository-id.new"
-grep -q "kept.*/var/lib/hotserve-backup" /tmp/purge.log \
+[ ! -e /var/lib/motel-backup/repository-id.new ] || die "purge left setup's temp file, repository-id.new"
+grep -q "kept.*/var/lib/motel-backup" /tmp/purge.log \
 	&& die "purge kept the state directory, which held nothing but the package's own: $(grep kept /tmp/purge.log)" || true
 grep -q "$CRED is kept: it holds the repository password, the only way to read the backups already made" /tmp/purge.log \
 	|| die "purge did not say that the credential file is kept, and why"
 [ "$(sha256sum "$CRED" | cut -d' ' -f1)" = "$CRED_SHA" ] || die "purge changed or removed $CRED"
-[ ! -e /var/lib/hotserve-backup/status.json ] && [ ! -e /var/lib/hotserve-backup/repository-id ] || die "purge left the record or the repository id"
-[ ! -e /var/lib/hotserve-backup ] || die "purge left /var/lib/hotserve-backup, though nothing of an app's was in it: $(find /var/lib/hotserve-backup)"
-[ ! -e /var/cache/hotserve-backup ] || die "purge left restic's cache"
-getent passwd hotserve-backup >/dev/null || die "purge removed the hotserve-backup account"
+[ ! -e /var/lib/motel-backup/status.json ] && [ ! -e /var/lib/motel-backup/repository-id ] || die "purge left the record or the repository id"
+[ ! -e /var/lib/motel-backup ] || die "purge left /var/lib/motel-backup, though nothing of an app's was in it: $(find /var/lib/motel-backup)"
+[ ! -e /var/cache/motel-backup ] || die "purge left restic's cache"
+getent passwd motel-backup >/dev/null || die "purge removed the motel-backup account"
 for u in $TIMERS; do
 	[ ! -e "/etc/systemd/system/$u" ] || die "purge left $u masked"
 	[ ! -e "/etc/systemd/system/timers.target.wants/$u" ] || die "purge left $u enabled"
@@ -1696,16 +1696,16 @@ done
 echo "purge kept the credential file and said why, removed the package's own state, the cache, the stamps and a killed run's mounts, kept the account"
 # Installed again, so that stage 5b's first case is an upgrade over an
 # installed package: the install writes the starter and its record, and
-# hotserve stays disabled and stopped, as the purge left it.
+# motel stays disabled and stopped, as the purge left it.
 apt-get install -y "$deb" >/tmp/after-purge.out 2>&1 || { cat /tmp/after-purge.out; die "install after the purge failed"; }
 
 stage "stage 5b: the starter across upgrades"
 # Upgrades never ask about $CONFIG: postinstall installs the starter
 # where nothing stands, replaces it only while it is byte-identical to
 # the starter it last wrote (the record), and leaves anything else
-# alone. hotserve is disabled and stopped since stage 5's purge, so no
+# alone. motel is disabled and stopped since stage 5's purge, so no
 # postinstall here restarts it.
-systemctl is-active --quiet hotserve && die "hotserve is running; stage 5b expects it stopped" || true
+systemctl is-active --quiet motel && die "motel is running; stage 5b expects it stopped" || true
 rm -f "$CONFIG"
 dpkg -i "$deb" </dev/null >/tmp/starter.out 2>&1 || { cat /tmp/starter.out; die "reinstall over a missing $CONFIG failed"; }
 cmp -s "$STARTER" "$CONFIG" || die "a missing $CONFIG was not restored from the starter"
@@ -1716,11 +1716,11 @@ echo "a missing $CONFIG: the starter restored and recorded"
 cp "$STARTER" /tmp/starter.prev
 rm -rf /tmp/repack
 dpkg-deb -R "$deb" /tmp/repack
-printf '# smoke: a changed starter\n' >>/tmp/repack/usr/share/hotserve/Caddyfile
+printf '# smoke: a changed starter\n' >>/tmp/repack/usr/share/motel/Caddyfile
 sed -i 's/^Version: .*/&+smoke1/' /tmp/repack/DEBIAN/control
 (cd /tmp/repack && find . -path ./DEBIAN -prune -o -type f -printf '%P\0' | xargs -0 md5sum >DEBIAN/md5sums)
-dpkg-deb -b /tmp/repack /tmp/hotserve-smoke1.deb >/dev/null || die "could not repack the .deb with a changed starter"
-dpkg -i /tmp/hotserve-smoke1.deb </dev/null >/tmp/starter.out 2>&1 \
+dpkg-deb -b /tmp/repack /tmp/motel-smoke1.deb >/dev/null || die "could not repack the .deb with a changed starter"
+dpkg -i /tmp/motel-smoke1.deb </dev/null >/tmp/starter.out 2>&1 \
 	|| { cat /tmp/starter.out; die "the upgrade to a changed starter failed (a question at EOF fails it)"; }
 grep -q 'Configuration file' /tmp/starter.out && { cat /tmp/starter.out; die "the upgrade to a changed starter asked about a config file"; }
 tail -n 1 "$STARTER" | grep -qx '# smoke: a changed starter' || die "the repacked .deb did not ship the changed starter"
@@ -1732,9 +1732,9 @@ echo "a stock $CONFIG: replaced by the changed starter, with no question, and re
 
 # Each case below runs the installed postinst directly, the way stage
 # 3b runs prerm: each is the state an upgrade would find.
-ver=$(dpkg-query -W -f='${Version}' hotserve)
+ver=$(dpkg-query -W -f='${Version}' motel)
 postinst() {
-	/var/lib/dpkg/info/hotserve.postinst configure "$ver" </dev/null >/tmp/postinst.out 2>&1 \
+	/var/lib/dpkg/info/motel.postinst configure "$ver" </dev/null >/tmp/postinst.out 2>&1 \
 		|| { cat /tmp/postinst.out; die "postinst exited non-zero over $1"; }
 }
 want=$(sha "$STARTER")
@@ -1790,15 +1790,15 @@ postinst "no record"
 cmp -s /tmp/starter.prev "$CONFIG" || die "postinst replaced $CONFIG with no record"
 [ ! -e "$RECORD" ] || die "postinst wrote a record although it wrote no starter"
 echo "a garbled record, no record: $CONFIG untouched"
-ls -A /etc/hotserve | grep -q '^\.Caddyfile\.package-' && die "postinst left a temporary in /etc/hotserve" || true
+ls -A /etc/motel | grep -q '^\.Caddyfile\.package-' && die "postinst left a temporary in /etc/motel" || true
 
 # postinst sweeps a crash's temporaries; a directory by one of their
 # names is not its to remove, and must not fail the install.
-mkdir /etc/hotserve/.Caddyfile.package-smoke "$RECORD.smoke"
+mkdir /etc/motel/.Caddyfile.package-smoke "$RECORD.smoke"
 postinst "directories named like its temporaries"
-[ -d /etc/hotserve/.Caddyfile.package-smoke ] && [ -d "$RECORD.smoke" ] \
+[ -d /etc/motel/.Caddyfile.package-smoke ] && [ -d "$RECORD.smoke" ] \
 	|| die "postinst removed a directory named like its temporaries"
-rmdir /etc/hotserve/.Caddyfile.package-smoke "$RECORD.smoke"
+rmdir /etc/motel/.Caddyfile.package-smoke "$RECORD.smoke"
 echo "directories named like its temporaries: left, and postinst exits 0"
 
 # A directory at a temporary's exact name: made under the PID postinst
@@ -1806,7 +1806,7 @@ echo "directories named like its temporaries: left, and postinst exits 0"
 # install goes on, saying why, and nothing is written into the
 # directory, over it or in its place.
 postinst_colliding() {
-	sh -c 'mkdir -m 0755 "$1$$" && exec "$2" configure "$3"' sh "$1" /var/lib/dpkg/info/hotserve.postinst "$ver" \
+	sh -c 'mkdir -m 0755 "$1$$" && exec "$2" configure "$3"' sh "$1" /var/lib/dpkg/info/motel.postinst "$ver" \
 		</dev/null >/tmp/postinst.out 2>&1 \
 		|| { cat /tmp/postinst.out; die "postinst exited non-zero with a directory at its temporary $1<pid>"; }
 	collided=$(ls -d "$1"[0-9]*) || die "no directory at $1<pid>: the collision tested nothing"
@@ -1816,12 +1816,12 @@ postinst_colliding() {
 }
 cp /tmp/starter.prev "$CONFIG"
 sha /tmp/starter.prev >"$RECORD"
-postinst_colliding /etc/hotserve/.Caddyfile.package-
+postinst_colliding /etc/motel/.Caddyfile.package-
 cmp -s /tmp/starter.prev "$CONFIG" || die "postinst changed a stock $CONFIG although its temporary was a directory"
 [ "$(cat "$RECORD")" = "$(sha /tmp/starter.prev)" ] || die "postinst recorded a starter it did not install"
 grep -q 'could not install the starter config' /tmp/postinst.out || die "postinst did not say it could not install the starter"
 rm -f "$CONFIG"
-postinst_colliding /etc/hotserve/.Caddyfile.package-
+postinst_colliding /etc/motel/.Caddyfile.package-
 [ ! -e "$CONFIG" ] && [ ! -L "$CONFIG" ] \
 	|| die "postinst put a $(stat -c %F "$CONFIG") at a missing $CONFIG although its temporary was a directory"
 [ "$(cat "$RECORD")" = "$(sha /tmp/starter.prev)" ] || die "postinst recorded a starter it did not install"
@@ -1834,8 +1834,8 @@ cmp -s "$STARTER" "$CONFIG" || die "postinst changed $CONFIG while failing to wr
 grep -q "could not write $RECORD durably" /tmp/postinst.out || die "postinst did not say it could not write the record"
 echo "a directory at a temporary's exact name: left as it was, $CONFIG and the record unchanged, postinst exits 0 and says why"
 
-apt-get remove -y hotserve >/dev/null
-systemctl is-active --quiet hotserve-box-apply.path && die "the second remove left the path unit active" || true
+apt-get remove -y motel >/dev/null
+systemctl is-active --quiet motel-box-apply.path && die "the second remove left the path unit active" || true
 echo "stage 5b: removed again; the path unit stopped"
 
 stage "stage 6: purge"
@@ -1843,41 +1843,41 @@ stage "stage 6: purge"
 # holds — the box's config, the starter's record, the box applier's
 # exchange tree, the path unit's enable state and its mask — and never
 # Caddy's state, the deployed apps' data or the account. The box's key
-# for secrets stays in /etc/hotserve, and the purge says so on stderr.
+# for secrets stays in /etc/motel, and the purge says so on stderr.
 # Each path is checked to be there first, so that "gone" proves the
 # purge removed it; the installed postrm is copied for the mount case
 # below, since dpkg removes the script with the purge.
-cp /var/lib/dpkg/info/hotserve.postrm /tmp/hotserve.postrm
-: >/var/lib/hotserve/smoke-state
-for p in "$CONFIG" "$RECORD" "$B/in" "$B/out" /etc/hotserve/age/identity "$view" \
-	/var/lib/liveswap/other/shared/secret /var/lib/systemd/deb-systemd-helper-enabled/hotserve-box-apply.path.dsh-also \
-	/var/lib/systemd/deb-systemd-helper-masked/hotserve-box-apply.path; do
+cp /var/lib/dpkg/info/motel.postrm /tmp/motel.postrm
+: >/var/lib/motel/smoke-state
+for p in "$CONFIG" "$RECORD" "$B/in" "$B/out" /etc/motel/age/identity "$view" \
+	/var/lib/liveswap/other/shared/secret /var/lib/systemd/deb-systemd-helper-enabled/motel-box-apply.path.dsh-also \
+	/var/lib/systemd/deb-systemd-helper-masked/motel-box-apply.path; do
 	[ -e "$p" ] || die "the purge would prove nothing: $p is already gone"
 done
-apt-get purge -y hotserve >/tmp/purge.out 2>&1 || { cat /tmp/purge.out; die "apt-get purge failed"; }
+apt-get purge -y motel >/tmp/purge.out 2>&1 || { cat /tmp/purge.out; die "apt-get purge failed"; }
 cat /tmp/purge.out
-case "$(dpkg-query -W -f='${Status}' hotserve 2>/dev/null)" in
+case "$(dpkg-query -W -f='${Status}' motel 2>/dev/null)" in
 '' | *not-installed) : ;;
-*) die "hotserve is still '$(dpkg-query -W -f='${Status}' hotserve)' after purge" ;;
+*) die "motel is still '$(dpkg-query -W -f='${Status}' motel)' after purge" ;;
 esac
 [ ! -e "$CONFIG" ] && [ ! -L "$CONFIG" ] || die "purge left $CONFIG"
 [ ! -e "${RECORD%/*}" ] || die "purge left ${RECORD%/*}"
 [ ! -e "$B" ] || die "purge left $B: $(find "$B" | tr '\n' ' ')"
-[ -f /var/lib/hotserve/smoke-state ] || die "purge removed /var/lib/hotserve, Caddy's state"
+[ -f /var/lib/motel/smoke-state ] || die "purge removed /var/lib/motel, Caddy's state"
 [ -f "$view" ] && [ -f /var/lib/liveswap/other/shared/secret ] || die "purge removed the apps' data under /var/lib/liveswap"
-id hotserve >/dev/null || die "purge removed the hotserve account"
-[ -f /etc/hotserve/age/identity ] && [ "$(cat /etc/hotserve/age.pub)" = "$box_key" ] \
+id motel >/dev/null || die "purge removed the motel account"
+[ -f /etc/motel/age/identity ] && [ "$(cat /etc/motel/age.pub)" = "$box_key" ] \
 	|| die "purge removed the box's key for secrets, the one way to read the secrets its repository holds"
-grep -q 'kept /etc/hotserve: it still holds' /tmp/purge.out || die "the purge did not say it kept /etc/hotserve"
-tr -d '\r' </tmp/purge.out | grep -q 'age/identity is the box.s key for secrets.*once nothing needs them: rm -r /etc/hotserve$' || die "the purge did not name the key it kept, and the command that finishes the job, with no sudo"
+grep -q 'kept /etc/motel: it still holds' /tmp/purge.out || die "the purge did not say it kept /etc/motel"
+tr -d '\r' </tmp/purge.out | grep -q 'age/identity is the box.s key for secrets.*once nothing needs them: rm -r /etc/motel$' || die "the purge did not name the key it kept, and the command that finishes the job, with no sudo"
 # The path unit's enable state and mask: gone, so a later install
 # starts from nothing (postinstall's was-enabled is true with no state).
-st=$(systemctl is-enabled hotserve-box-apply.path 2>&1) && die "hotserve-box-apply.path is still '$st' after purge" || true
-[ "$st" != masked ] || die "purge left hotserve-box-apply.path masked"
-[ "$(systemctl show -p LoadState --value hotserve-box-apply.path)" = not-found ] \
-	|| die "hotserve-box-apply.path is '$(systemctl show -p LoadState --value hotserve-box-apply.path)' after purge, want not-found"
-for p in /etc/systemd/system/hotserve-box-apply.path /etc/systemd/system/multi-user.target.wants/hotserve-box-apply.path \
-	/var/lib/systemd/deb-systemd-helper-enabled/hotserve-box-apply.path.dsh-also /var/lib/systemd/deb-systemd-helper-masked/hotserve-box-apply.path; do
+st=$(systemctl is-enabled motel-box-apply.path 2>&1) && die "motel-box-apply.path is still '$st' after purge" || true
+[ "$st" != masked ] || die "purge left motel-box-apply.path masked"
+[ "$(systemctl show -p LoadState --value motel-box-apply.path)" = not-found ] \
+	|| die "motel-box-apply.path is '$(systemctl show -p LoadState --value motel-box-apply.path)' after purge, want not-found"
+for p in /etc/systemd/system/motel-box-apply.path /etc/systemd/system/multi-user.target.wants/motel-box-apply.path \
+	/var/lib/systemd/deb-systemd-helper-enabled/motel-box-apply.path.dsh-also /var/lib/systemd/deb-systemd-helper-masked/motel-box-apply.path; do
 	[ ! -e "$p" ] && [ ! -L "$p" ] || die "purge left $p"
 done
 echo "purge: config, record and exchange tree gone; the key, Caddy's state, the apps' data and the account kept; the path unit's state and mask gone"
@@ -1890,7 +1890,7 @@ mkdir -p "$B/work"
 mount -t tmpfs -o size=1m smoke "$B/work" || die "could not mount a tmpfs under $B; the mount case would prove nothing"
 : >"$B/work/through-the-mount"
 : >"$B/beside-the-mount"
-sh /tmp/hotserve.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with a mount under $B"; }
+sh /tmp/motel.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with a mount under $B"; }
 [ -f "$B/work/through-the-mount" ] && [ -f "$B/beside-the-mount" ] \
 	|| die "postrm purge removed through or beside a mount under $B; left: $(find "$B" | tr '\n' ' ')"
 grep -q "kept $B: something is mounted at or under it" /tmp/postrm.out \
@@ -1904,7 +1904,7 @@ echo "a mount under $B: postrm purge kept the tree whole, said so, exit 0"
 # seen as mounted: the function is taken out of the saved postrm and
 # asked about a stand-in reached through a link, since /var itself
 # cannot be made a link here.
-sed -n '/^mounted() {/,/^}/p' /tmp/hotserve.postrm >/tmp/mounted.sh
+sed -n '/^mounted() {/,/^}/p' /tmp/motel.postrm >/tmp/mounted.sh
 grep -q '^mounted() {' /tmp/mounted.sh || die "could not take mounted() out of the postrm for the symlink case"
 mkdir -p /tmp/real-var/tree/work
 ln -sfn /tmp/real-var /tmp/link-var
@@ -1941,7 +1941,7 @@ mkdir -p /tmp/fakebin "$B/in"
 printf '#!/bin/sh\nexit 2\n' >/tmp/fakebin/awk
 chmod 0755 /tmp/fakebin/awk
 : >"$B/in/entry"
-PATH="/tmp/fakebin:$PATH" sh /tmp/hotserve.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with a failing awk"; }
+PATH="/tmp/fakebin:$PATH" sh /tmp/motel.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with a failing awk"; }
 [ -f "$B/in/entry" ] || die "postrm purge removed $B although the mount scan failed; output: $(cat /tmp/postrm.out)"
 grep -q "kept $B: something is mounted at or under it" /tmp/postrm.out \
 	|| die "postrm purge did not say it kept $B when the scan failed: $(cat /tmp/postrm.out)"
@@ -1964,7 +1964,7 @@ hold_lock() { # <seconds>
 cp /tmp/starter.prev "$CONFIG"
 hold_lock 4
 t0=$(date +%s)
-sh /tmp/hotserve.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero while a run held the lock"; }
+sh /tmp/motel.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero while a run held the lock"; }
 t1=$(date +%s)
 wait "$holder" || true
 [ $((t1 - t0)) -ge 3 ] || die "postrm purge finished in $((t1 - t0))s with the lock held for 4s: it did not wait for the run"
@@ -1973,7 +1973,7 @@ echo "a run holding the lock for 4s: postrm purge waited $((t1 - t0))s, then rem
 cp /tmp/starter.prev "$CONFIG"
 hold_lock 120
 t0=$(date +%s)
-sh /tmp/hotserve.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with the lock held past its wait"; }
+sh /tmp/motel.postrm purge >/tmp/postrm.out 2>&1 || { cat /tmp/postrm.out; die "postrm purge exited non-zero with the lock held past its wait"; }
 t1=$(date +%s)
 kill "$holder" 2>/dev/null || true
 [ $((t1 - t0)) -ge 29 ] || die "postrm purge gave up on the lock after $((t1 - t0))s, want about 30"
@@ -1985,61 +1985,61 @@ echo "a run holding the lock past 30s: postrm purge kept the config and the tree
 
 stage "stage 7: an account that cannot be made, a command under way at purge, and what purge keeps"
 # A group of the account's name and no account: useradd exits 9 [M66].
-# The configure completes — hotserve is installed, on a box that may
+# The configure completes — motel is installed, on a box that may
 # use no backups — and says what setup will have to do (the owner,
 # 2026-09-27).
-userdel hotserve-backup || die "could not remove the account to stage one that cannot be made"
-getent group hotserve-backup >/dev/null || groupadd --system hotserve-backup
+userdel motel-backup || die "could not remove the account to stage one that cannot be made"
+getent group motel-backup >/dev/null || groupadd --system motel-backup
 apt-get install -y "$deb" >/tmp/install-noaccount.log 2>&1 \
-	|| { cat /tmp/install-noaccount.log; die "the install failed where the hotserve-backup account could not be made: hotserve is left half-configured"; }
-dpkg -s hotserve | grep -q '^Status: install ok installed$' || die "hotserve is not configured: $(dpkg -s hotserve | grep ^Status)"
-getent passwd hotserve-backup >/dev/null && die "the account was made: the row proves nothing" || true
-grep -q "hotserve: the hotserve-backup account could not be made (useradd: group hotserve-backup exists" /tmp/install-noaccount.log \
+	|| { cat /tmp/install-noaccount.log; die "the install failed where the motel-backup account could not be made: motel is left half-configured"; }
+dpkg -s motel | grep -q '^Status: install ok installed$' || die "motel is not configured: $(dpkg -s motel | grep ^Status)"
+getent passwd motel-backup >/dev/null && die "the account was made: the row proves nothing" || true
+grep -q "motel: the motel-backup account could not be made (useradd: group motel-backup exists" /tmp/install-noaccount.log \
 	|| die "postinstall did not say that the account could not be made, and why: $(cat /tmp/install-noaccount.log)"
-grep -q "nothing else of hotserve does: hotserve-backup setup <repository> makes it, or says why it cannot" /tmp/install-noaccount.log \
+grep -q "nothing else of motel does: motel-backup setup <repository> makes it, or says why it cannot" /tmp/install-noaccount.log \
 	|| die "postinstall did not say what makes the account: $(cat /tmp/install-noaccount.log)"
-timeout 300 systemctl enable --now hotserve || die "hotserve did not start on the box where the account could not be made"
+timeout 300 systemctl enable --now motel || die "motel did not start on the box where the account could not be made"
 expect_backup_state "installed where the account cannot be made" enabled active "$CRED_SHA"
-systemctl start hotserve-backup.service && die "a run with no account exited 0" || true
-journalctl -u hotserve-backup.service --no-pager | grep -q "the hotserve-backup account is not there" \
-	|| die "the run did not say that the account is not there: $(journalctl -u hotserve-backup.service --no-pager | tail -5)"
-systemctl reset-failed hotserve-backup.service 2>/dev/null || true
-groupdel hotserve-backup
+systemctl start motel-backup.service && die "a run with no account exited 0" || true
+journalctl -u motel-backup.service --no-pager | grep -q "the motel-backup account is not there" \
+	|| die "the run did not say that the account is not there: $(journalctl -u motel-backup.service --no-pager | tail -5)"
+systemctl reset-failed motel-backup.service 2>/dev/null || true
+groupdel motel-backup
 echo "a group of the account's name: installed, and said; a run says the account is not there"
 # Purge with a command holding the run lock: said, its mounts left to
 # it. And what purge keeps, said for what it is: copies of an app's
 # data in staging, and a file in the state directory that the package
 # did not make, which is no app's data.
-mkdir -p /run/hotserve-backup/11fe00000001/mount-1 /var/lib/hotserve-backup/staging/demo
-mount --bind /var/lib/liveswap/demo/shared /run/hotserve-backup/11fe00000001/mount-1 || die "could not stage a mount of a run under way"
-flock /run/hotserve-backup/lock -c 'echo "pid $$, since 2026-09-27T00:00:00Z" >/run/hotserve-backup/lock; exec sleep 300' &
+mkdir -p /run/motel-backup/11fe00000001/mount-1 /var/lib/motel-backup/staging/demo
+mount --bind /var/lib/liveswap/demo/shared /run/motel-backup/11fe00000001/mount-1 || die "could not stage a mount of a run under way"
+flock /run/motel-backup/lock -c 'echo "pid $$, since 2026-09-27T00:00:00Z" >/run/motel-backup/lock; exec sleep 300' &
 holder=$!
 i=0
-until ! flock -n /run/hotserve-backup/lock true 2>/dev/null; do
+until ! flock -n /run/motel-backup/lock true 2>/dev/null; do
 	i=$((i + 1))
 	[ "$i" -ge 50 ] && die "could not hold the run lock: the row would prove nothing"
 	sleep 0.1
 done
-echo plaintext >/var/lib/hotserve-backup/staging/demo/app.db
-echo mine >/var/lib/hotserve-backup/notes.txt
-apt-get purge -y hotserve >/tmp/purge-held.log 2>&1 || { cat /tmp/purge-held.log; die "apt-get purge with a command under way failed"; }
+echo plaintext >/var/lib/motel-backup/staging/demo/app.db
+echo mine >/var/lib/motel-backup/notes.txt
+apt-get purge -y motel >/tmp/purge-held.log 2>&1 || { cat /tmp/purge-held.log; die "apt-get purge with a command under way failed"; }
 cat /tmp/purge-held.log
-grep -q "hotserve: what a backup command left was not swept, and is left: another backup run is in progress: pid [0-9]*, since 2026-09-27T00:00:00Z" /tmp/purge-held.log \
+grep -q "motel: what a backup command left was not swept, and is left: another backup run is in progress: pid [0-9]*, since 2026-09-27T00:00:00Z" /tmp/purge-held.log \
 	|| die "preremove did not say that a command holds the run lock"
-grep -q "hotserve: kept /run/hotserve-backup: something is mounted at or under it" /tmp/purge-held.log \
+grep -q "motel: kept /run/motel-backup: something is mounted at or under it" /tmp/purge-held.log \
 	|| die "postremove did not say why it kept the run directory"
-[ -f /run/hotserve-backup/11fe00000001/mount-1/app.db ] || die "purge unmounted under a command that holds the run lock"
-grep -q "hotserve: kept /var/lib/hotserve-backup/staging: not empty — copies of an app's data" /tmp/purge-held.log \
+[ -f /run/motel-backup/11fe00000001/mount-1/app.db ] || die "purge unmounted under a command that holds the run lock"
+grep -q "motel: kept /var/lib/motel-backup/staging: not empty — copies of an app's data" /tmp/purge-held.log \
 	|| die "purge did not say that staging is kept, and what is in it"
-grep -q "hotserve: kept /var/lib/hotserve-backup: it holds what this package did not make (notes.txt)" /tmp/purge-held.log \
+grep -q "motel: kept /var/lib/motel-backup: it holds what this package did not make (notes.txt)" /tmp/purge-held.log \
 	|| die "purge did not say what the state directory is kept for"
-grep "kept /var/lib/hotserve-backup:" /tmp/purge-held.log | grep -q "copies of an app's data" \
+grep "kept /var/lib/motel-backup:" /tmp/purge-held.log | grep -q "copies of an app's data" \
 	&& die "purge blamed copies of app data for a file that is none" || true
-[ -f /var/lib/hotserve-backup/staging/demo/app.db ] && [ -f /var/lib/hotserve-backup/notes.txt ] || die "purge removed what it said it kept"
+[ -f /var/lib/motel-backup/staging/demo/app.db ] && [ -f /var/lib/motel-backup/notes.txt ] || die "purge removed what it said it kept"
 pkill -P "$holder" 2>/dev/null || true
 kill "$holder" 2>/dev/null || true
-umount /run/hotserve-backup/11fe00000001/mount-1
-rm -rf /run/hotserve-backup /var/lib/hotserve-backup
+umount /run/motel-backup/11fe00000001/mount-1
+rm -rf /run/motel-backup /var/lib/motel-backup
 echo "purge under a command's lock: said, its mount left; what is kept is said for what it is"
 # Mounts under the run directory of names the engine does not make:
 # the directory is root's alone, 0700, and nothing but the engine
@@ -2048,20 +2048,20 @@ echo "purge under a command's lock: said, its mount left; what is kept is said f
 # stays — and the app's files stay (the owner, 2026-09-27: the
 # engine's sweep, not a shell copy with its own rules).
 apt-get install -y "$deb" >/tmp/install-again.log 2>&1 || { cat /tmp/install-again.log; die "the install before the last purge failed"; }
-ODD="/run/hotserve-backup/odd /run/hotserve-backup/dead00000001/other /run/hotserve-backup/notarun/mount-1"
-mkdir -p "/run/hotserve-backup/odd dir" /run/hotserve-backup/dead00000001/mount-1 $ODD
-echo '{}' >/run/hotserve-backup/dead00000001/plan.json
-for m in "/run/hotserve-backup/odd dir" $ODD /run/hotserve-backup/dead00000001/mount-1; do
+ODD="/run/motel-backup/odd /run/motel-backup/dead00000001/other /run/motel-backup/notarun/mount-1"
+mkdir -p "/run/motel-backup/odd dir" /run/motel-backup/dead00000001/mount-1 $ODD
+echo '{}' >/run/motel-backup/dead00000001/plan.json
+for m in "/run/motel-backup/odd dir" $ODD /run/motel-backup/dead00000001/mount-1; do
 	mount --bind /var/lib/liveswap/demo/shared "$m" || die "could not stage a mount at $m"
 done
-cp /var/lib/dpkg/info/hotserve.postrm /tmp/hotserve.postrm
-apt-get purge -y hotserve >/tmp/purge-odd.log 2>&1 || { cat /tmp/purge-odd.log; die "apt-get purge with mounts of other names failed"; }
+cp /var/lib/dpkg/info/motel.postrm /tmp/motel.postrm
+apt-get purge -y motel >/tmp/purge-odd.log 2>&1 || { cat /tmp/purge-odd.log; die "apt-get purge with mounts of other names failed"; }
 cat /tmp/purge-odd.log
 [ -f /var/lib/liveswap/demo/shared/app.db ] && [ -f /var/lib/liveswap/demo/shared/uploads/a.png ] \
 	|| die "purge removed the app's files through a mount under the run directory"
-grep -q " /run/hotserve-backup" /proc/self/mountinfo \
-	&& die "purge left mounts under the run directory: $(grep ' /run/hotserve-backup' /proc/self/mountinfo | awk '{print $5}' | tr '\n' ' ')" || true
-[ ! -e /run/hotserve-backup ] || die "purge left /run/hotserve-backup: $(find /run/hotserve-backup)"
+grep -q " /run/motel-backup" /proc/self/mountinfo \
+	&& die "purge left mounts under the run directory: $(grep ' /run/motel-backup' /proc/self/mountinfo | awk '{print $5}' | tr '\n' ' ')" || true
+[ ! -e /run/motel-backup ] || die "purge left /run/motel-backup: $(find /run/motel-backup)"
 echo "mounts of other names under the run directory: taken away by the engine's sweep, and nothing of the app's with them"
 
 stage "stage 8: purge where the mount table cannot be read"
@@ -2071,127 +2071,127 @@ stage "stage 8: purge where the mount table cannot be read"
 # on #155). Run in a mount namespace of its own with /proc gone, the
 # script as the package shipped it, against a bind of the app's data
 # sitting right on a run directory.
-[ -f /tmp/hotserve.postrm ] || die "the package's postremove was not kept for this stage"
+[ -f /tmp/motel.postrm ] || die "the package's postremove was not kept for this stage"
 unshare --mount --propagation private sh -c '
 	set -e
 	# Right on a run directory, whose files purge removes one by one
 	# once it believes nothing is mounted there.
-	mkdir -p /run/hotserve-backup/0123456789ab
-	mount --bind /var/lib/liveswap/demo/shared /run/hotserve-backup/0123456789ab
-	[ -f /run/hotserve-backup/0123456789ab/app.db ] || { echo "FIXTURE: the bind shows nothing"; exit 3; }
+	mkdir -p /run/motel-backup/0123456789ab
+	mount --bind /var/lib/liveswap/demo/shared /run/motel-backup/0123456789ab
+	[ -f /run/motel-backup/0123456789ab/app.db ] || { echo "FIXTURE: the bind shows nothing"; exit 3; }
 	umount -l /proc
 	[ ! -r /proc/self/mountinfo ] || { echo "FIXTURE: /proc is still there"; exit 3; }
-	sh /tmp/hotserve.postrm purge >/tmp/purge-noproc.log 2>&1 || true
-	[ -f /run/hotserve-backup/0123456789ab/app.db ] || { echo "GONE"; exit 4; }
+	sh /tmp/motel.postrm purge >/tmp/purge-noproc.log 2>&1 || true
+	[ -f /run/motel-backup/0123456789ab/app.db ] || { echo "GONE"; exit 4; }
 ' ; rc=$?
 [ "$rc" != 3 ] || die "the mount table could still be read: the row proves nothing"
 [ "$rc" = 0 ] || die "purge with no mount table removed the app's files through a mount under the run directory (exit $rc): $(cat /tmp/purge-noproc.log)"
 [ -f /var/lib/liveswap/demo/shared/app.db ] && [ -f /var/lib/liveswap/demo/shared/uploads/a.png ] || die "purge with no mount table removed the app's files"
-grep -q "hotserve: kept /run/hotserve-backup: something is mounted at or under it, or what is mounted cannot be read; nothing under it is removed" /tmp/purge-noproc.log \
+grep -q "motel: kept /run/motel-backup: something is mounted at or under it, or what is mounted cannot be read; nothing under it is removed" /tmp/purge-noproc.log \
 	|| die "postremove did not say that it could not read the mount table: $(cat /tmp/purge-noproc.log)"
-rm -rf /run/hotserve-backup
+rm -rf /run/motel-backup
 echo "no mount table: purge removed nothing under the run directory, and said why"
 # And a mount on the run directory itself, with /proc there: purge
 # removes the run directory's own files by name, and through such a
 # mount those would be the app's (Copilot on #155).
-mkdir -p /run/hotserve-backup /tmp/at-run
+mkdir -p /run/motel-backup /tmp/at-run
 echo "the app's" >/tmp/at-run/lock
 echo "the app's" >/tmp/at-run/units
-mount --bind /tmp/at-run /run/hotserve-backup
-sh /tmp/hotserve.postrm purge >/tmp/purge-atrun.log 2>&1 || true
-umount /run/hotserve-backup
+mount --bind /tmp/at-run /run/motel-backup
+sh /tmp/motel.postrm purge >/tmp/purge-atrun.log 2>&1 || true
+umount /run/motel-backup
 [ -f /tmp/at-run/lock ] && [ -f /tmp/at-run/units ] || die "purge removed files through a mount on the run directory itself: $(ls -la /tmp/at-run)"
-grep -q "hotserve: kept /run/hotserve-backup: something is mounted at or under it" /tmp/purge-atrun.log \
+grep -q "motel: kept /run/motel-backup: something is mounted at or under it" /tmp/purge-atrun.log \
 	|| die "postremove did not say why it kept the run directory: $(cat /tmp/purge-atrun.log)"
-rm -rf /run/hotserve-backup /tmp/at-run
+rm -rf /run/motel-backup /tmp/at-run
 echo "a mount on the run directory itself: purge removed nothing through it, and said why"
 # And a command that holds the run lock with nothing mounted — a
 # restore waiting at its prompt: purge leaves the lock, the list of
 # its units and the init marker to it, and says so (the owner's
 # review of #155: they were removed from under it, and the units it
 # had started had no record left for any sweep).
-mkdir -p /run/hotserve-backup
-chmod 700 /run/hotserve-backup
-echo hotserve_backup_upload_demo_0123456789ab.service >/run/hotserve-backup/units
-echo hotserve_backup_init_0123456789ab.service >/run/hotserve-backup/init-unit
-flock /run/hotserve-backup/lock -c 'echo "pid $$, since 2026-09-27T00:00:00Z" >/run/hotserve-backup/lock; exec sleep 300' &
+mkdir -p /run/motel-backup
+chmod 700 /run/motel-backup
+echo motel_backup_upload_demo_0123456789ab.service >/run/motel-backup/units
+echo motel_backup_init_0123456789ab.service >/run/motel-backup/init-unit
+flock /run/motel-backup/lock -c 'echo "pid $$, since 2026-09-27T00:00:00Z" >/run/motel-backup/lock; exec sleep 300' &
 holder=$!
 i=0
-until ! flock -n /run/hotserve-backup/lock true 2>/dev/null; do
+until ! flock -n /run/motel-backup/lock true 2>/dev/null; do
 	i=$((i + 1))
 	[ "$i" -ge 50 ] && die "could not hold the run lock: the row would prove nothing"
 	sleep 0.1
 done
-sh /tmp/hotserve.postrm purge >/tmp/purge-locked.log 2>&1 || true
+sh /tmp/motel.postrm purge >/tmp/purge-locked.log 2>&1 || true
 pkill -P "$holder" 2>/dev/null || true
 kill "$holder" 2>/dev/null || true
-[ -f /run/hotserve-backup/units ] && [ -f /run/hotserve-backup/init-unit ] && [ -f /run/hotserve-backup/lock ] \
-	|| die "purge removed the run directory's files from under a command that holds the run lock: $(ls -la /run/hotserve-backup 2>&1)"
-grep -q "hotserve: kept /run/hotserve-backup: the run lock is held (pid [0-9]*, since 2026-09-27T00:00:00Z)" /tmp/purge-locked.log \
+[ -f /run/motel-backup/units ] && [ -f /run/motel-backup/init-unit ] && [ -f /run/motel-backup/lock ] \
+	|| die "purge removed the run directory's files from under a command that holds the run lock: $(ls -la /run/motel-backup 2>&1)"
+grep -q "motel: kept /run/motel-backup: the run lock is held (pid [0-9]*, since 2026-09-27T00:00:00Z)" /tmp/purge-locked.log \
 	|| die "postremove did not say that the run lock is held: $(cat /tmp/purge-locked.log)"
-rm -rf /run/hotserve-backup
+rm -rf /run/motel-backup
 echo "a command holding the run lock: purge left its files, and said why"
 # A command from a shell, killed between a remove and a purge: its
 # upload unit, which no service ends, still runs with the credential,
 # and its mounts are there. The program is gone, so no sweep: purge
 # stops the units the command recorded, by the engine's grammar, and
 # leaves the mounts, as it says (Copilot on #155).
-LEFT=hotserve_backup_upload_demo_0123456789ab.service
+LEFT=motel_backup_upload_demo_0123456789ab.service
 systemd-run --quiet --unit="$LEFT" /usr/bin/sleep 600 || die "could not stage a unit a killed command left running"
 systemd-run --quiet --unit=smoke-bystander.service /usr/bin/sleep 600 || die "could not stage a unit that is none of the engine's"
-mkdir -p /run/hotserve-backup/0123456789ab/mount-1
-chmod 700 /run/hotserve-backup
-mount --bind /var/lib/liveswap/demo/shared /run/hotserve-backup/0123456789ab/mount-1 || die "could not stage a killed command's mount"
-printf '%s\nsmoke-bystander.service\n' "$LEFT" >/run/hotserve-backup/units
-sh /tmp/hotserve.postrm purge >/tmp/purge-killed.log 2>&1 || true
+mkdir -p /run/motel-backup/0123456789ab/mount-1
+chmod 700 /run/motel-backup
+mount --bind /var/lib/liveswap/demo/shared /run/motel-backup/0123456789ab/mount-1 || die "could not stage a killed command's mount"
+printf '%s\nsmoke-bystander.service\n' "$LEFT" >/run/motel-backup/units
+sh /tmp/motel.postrm purge >/tmp/purge-killed.log 2>&1 || true
 [ "$(systemctl is-active "$LEFT" || true)" != active ] \
 	|| die "purge left a killed command's upload unit running, with the credential: $(cat /tmp/purge-killed.log)"
 [ "$(systemctl is-active smoke-bystander.service || true)" = active ] || die "purge stopped a unit that is none of the engine's"
 systemctl stop smoke-bystander.service
-mountpoint -q /run/hotserve-backup/0123456789ab/mount-1 || die "purge took a mount away without the engine's sweep"
+mountpoint -q /run/motel-backup/0123456789ab/mount-1 || die "purge took a mount away without the engine's sweep"
 [ -f /var/lib/liveswap/demo/shared/app.db ] || die "purge removed the app's files"
-grep -q "hotserve: kept /run/hotserve-backup: something is mounted at or under it" /tmp/purge-killed.log || die "purge did not say why it kept the run directory"
-umount /run/hotserve-backup/0123456789ab/mount-1
-rm -rf /run/hotserve-backup
+grep -q "motel: kept /run/motel-backup: something is mounted at or under it" /tmp/purge-killed.log || die "purge did not say why it kept the run directory"
+umount /run/motel-backup/0123456789ab/mount-1
+rm -rf /run/motel-backup
 echo "a killed command's units after a remove: stopped by purge, by their recorded names; its mount left, and said"
 # And one that will not stop: said, by name, and its record kept, so
 # that the name is not lost with the credential still in its
 # environment (Copilot on #155).
-STUCK=hotserve_backup_upload_demo_0123456789ab.service
+STUCK=motel_backup_upload_demo_0123456789ab.service
 mkdir -p "/run/systemd/system/$STUCK.d"
 printf '[Unit]\nRefuseManualStop=yes\n' >"/run/systemd/system/$STUCK.d/10-smoke.conf"
 systemd-run --quiet --unit="$STUCK" /usr/bin/sleep 600 || die "could not stage a unit that will not stop"
 systemctl daemon-reload
-mkdir -p /run/hotserve-backup
-chmod 700 /run/hotserve-backup
-echo "$STUCK" >/run/hotserve-backup/units
-sh /tmp/hotserve.postrm purge >/tmp/purge-stuck.log 2>&1 || true
+mkdir -p /run/motel-backup
+chmod 700 /run/motel-backup
+echo "$STUCK" >/run/motel-backup/units
+sh /tmp/motel.postrm purge >/tmp/purge-stuck.log 2>&1 || true
 [ "$(systemctl is-active "$STUCK" || true)" = active ] || die "the unit staged as one that will not stop stopped: the row proves nothing"
-grep -q "hotserve: $STUCK, which a backup command left running, would not stop" /tmp/purge-stuck.log \
+grep -q "motel: $STUCK, which a backup command left running, would not stop" /tmp/purge-stuck.log \
 	|| die "purge did not say that a unit would not stop: $(cat /tmp/purge-stuck.log)"
-grep -qx "$STUCK" /run/hotserve-backup/units 2>/dev/null || die "purge removed the record of a unit that would not stop"
+grep -qx "$STUCK" /run/motel-backup/units 2>/dev/null || die "purge removed the record of a unit that would not stop"
 rm -rf "/run/systemd/system/$STUCK.d"
 systemctl daemon-reload
 systemctl stop "$STUCK" 2>/dev/null || true
-rm -rf /run/hotserve-backup
+rm -rf /run/motel-backup
 echo "a unit that would not stop: said by name, and its record kept"
 # And the manager unreachable: its state cannot be asked, which is no
 # "gone" — a missing unit reads "inactive" [measured] — so it is said,
 # and the record kept (Copilot on #155).
-LEFT=hotserve_backup_upload_demo_0123456789ab.service
+LEFT=motel_backup_upload_demo_0123456789ab.service
 systemd-run --quiet --unit="$LEFT" /usr/bin/sleep 600 || die "could not stage a unit a killed command left running"
-mkdir -p /run/hotserve-backup
-chmod 700 /run/hotserve-backup
-echo "$LEFT" >/run/hotserve-backup/units
+mkdir -p /run/motel-backup
+chmod 700 /run/motel-backup
+echo "$LEFT" >/run/motel-backup/units
 mv /run/systemd/private /run/systemd/private.smoke-aside
 systemctl show -p ActiveState --value "$LEFT" >/dev/null 2>&1 && { mv /run/systemd/private.smoke-aside /run/systemd/private; die "the manager still answered: the row proves nothing"; }
-sh /tmp/hotserve.postrm purge >/tmp/purge-nobus.log 2>&1 || true
+sh /tmp/motel.postrm purge >/tmp/purge-nobus.log 2>&1 || true
 mv /run/systemd/private.smoke-aside /run/systemd/private
-grep -qx "$LEFT" /run/hotserve-backup/units 2>/dev/null || die "purge removed the record of a unit whose state could not be asked: $(cat /tmp/purge-nobus.log)"
-grep -q "hotserve: $LEFT, which a backup command left running, could not be asked about" /tmp/purge-nobus.log \
+grep -qx "$LEFT" /run/motel-backup/units 2>/dev/null || die "purge removed the record of a unit whose state could not be asked: $(cat /tmp/purge-nobus.log)"
+grep -q "motel: $LEFT, which a backup command left running, could not be asked about" /tmp/purge-nobus.log \
 	|| die "purge did not say that it could not ask about a unit: $(cat /tmp/purge-nobus.log)"
 systemctl stop "$LEFT" 2>/dev/null || true
-rm -rf /run/hotserve-backup
+rm -rf /run/motel-backup
 echo "the manager unreachable: said, and the record kept"
 
 echo ""

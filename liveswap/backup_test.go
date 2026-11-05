@@ -11,7 +11,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
 )
 
 func unmarshalApps(t *testing.T, appBody string) (*App, error) {
@@ -165,7 +165,7 @@ func TestProvisionChecksTheRootBeforeResolvingIt(t *testing.T) {
 	}
 }
 
-// The declaration reaches its reader as the JSON `hotserve adapt`
+// The declaration reaches its reader as the JSON `motel adapt`
 // prints, so the shape is part of the contract.
 func TestBackupJSONShape(t *testing.T) {
 	a, err := unmarshalApps(t, "backup {\n sqlite app.db\n files uploads\n}")

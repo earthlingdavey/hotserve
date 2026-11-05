@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 const snapB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -420,7 +420,7 @@ func toParent(t *testing.T) string {
 		t.Skip("--to needs a parent that is root's own: run as root")
 	}
 	// Not t.TempDir: /tmp is everyone's to add to, and the rule says no.
-	dir, err := os.MkdirTemp("/root", "hotserve-backup-test-")
+	dir, err := os.MkdirTemp("/root", "motel-backup-test-")
 	must(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
@@ -568,7 +568,7 @@ func TestTheFirstBackupProvesItsOwnRestoreAndLaterRunsKeepIt(t *testing.T) {
 // failed or to a drill.
 func TestWhatARestoreBackedUpFirstIsNeverTheNewest(t *testing.T) {
 	const pre = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	history := fmt.Sprintf(`[{"id":%q,"time":"2026-09-01T00:00:00Z","tags":["hotserve","app:blog"]},{"id":%q,"time":"2026-09-02T00:00:00Z","tags":["hotserve","app:blog","pre-restore"]}]`, snapB, pre)
+	history := fmt.Sprintf(`[{"id":%q,"time":"2026-09-01T00:00:00Z","tags":["motel","app:blog"]},{"id":%q,"time":"2026-09-02T00:00:00Z","tags":["motel","app:blog","pre-restore"]}]`, snapB, pre)
 
 	b := restoreBox(t)
 	b.history = history
@@ -880,7 +880,7 @@ func TestARunLeavesALargeFirstDrillToTheDrill(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := st.Apps["blog"]
-	if b.started("fetch") || app.RestoreProven != nil || app.RestoreDrill == nil || !strings.Contains(app.RestoreDrill.Detail, "hotserve-backup drill") || !strings.Contains(app.RestoreDrill.Detail, "1025 MiB") {
+	if b.started("fetch") || app.RestoreProven != nil || app.RestoreDrill == nil || !strings.Contains(app.RestoreDrill.Detail, "motel-backup drill") || !strings.Contains(app.RestoreDrill.Detail, "1025 MiB") {
 		t.Fatalf("%s; %+v", b.roles(), app.RestoreDrill)
 	}
 	// The drill itself has no such limit, and proves it (given the room).

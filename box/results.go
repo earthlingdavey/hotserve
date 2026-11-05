@@ -9,7 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // Phases (DESIGN-box.md, "States" and Glossary): a result's phase is
@@ -39,13 +39,13 @@ func terminal(phase string) bool {
 // The applier's messages, word for word from DESIGN-box.md's Message
 // catalogue. The proof's and the walk's refusals carry their own.
 const (
-	msgNotRunning         = "hotserve is not running; nothing applied"
-	msgStillStarting      = "hotserve is still starting after 300 s; nothing applied"
-	msgNoSigner           = "the Caddyfile this box runs lists no signer; hotserve init is the way back"
+	msgNotRunning         = "motel is not running; nothing applied"
+	msgStillStarting      = "motel is still starting after 300 s; nothing applied"
+	msgNoSigner           = "the Caddyfile this box runs lists no signer; motel init is the way back"
 	msgInterrupted        = "interrupted before the Caddyfile changed; nothing changed"
-	msgInterruptedStopped = "interrupted; the previous Caddyfile is on disk; hotserve is not running — systemctl reset-failed hotserve, then systemctl start hotserve, loads it"
+	msgInterruptedStopped = "interrupted; the previous Caddyfile is on disk; motel is not running — systemctl reset-failed motel, then systemctl start motel, loads it"
 	msgNoRecord           = "the box has no record of this push; push again"
-	msgReloadFailed       = "the reload failed; the previous Caddyfile is back and running — journalctl -u hotserve -n 50 on the box says why"
+	msgReloadFailed       = "the reload failed; the previous Caddyfile is back and running — journalctl -u motel -n 50 on the box says why"
 	msgRecordAfterReload  = "the record could not be updated after a successful reload (disk full); rolled back to keep the file and the record consistent"
 	// The swap landed, then the `swapped` record or the swap's own fsync
 	// failed: nothing was reloaded before the rollback.
@@ -53,10 +53,10 @@ const (
 	// A crash fell after the swap: recovery rolled back, the reload's
 	// outcome unknown.
 	msgRolledBackInterrupted = "interrupted after the Caddyfile changed; rolled back: the previous Caddyfile is back and running"
-	msgBothReloads           = "the reload failed and so did the reload of the previous file; the previous file is on disk; journalctl -u hotserve"
+	msgBothReloads           = "the reload failed and so did the reload of the previous file; the previous file is on disk; journalctl -u motel"
 	// The reload of the previous file failed in a rollback whose first
 	// reload did not (bothFailed).
-	msgPrevReloadFailed = "rolled back, but the reload of the previous file failed; the previous file is on disk; journalctl -u hotserve"
+	msgPrevReloadFailed = "rolled back, but the reload of the previous file failed; the previous file is on disk; journalctl -u motel"
 	msgChanged          = "the Caddyfile changed during the transaction; it is left as found"
 	msgDiskFull         = "disk full; the previous Caddyfile could not be restored"
 	// The texts for a set with env files in it, where the catalogue
@@ -68,19 +68,19 @@ const (
 	msgRolledBackInterruptedFiles = "interrupted after the box's files changed; rolled back: the previous files are back"
 	msgEnvChanged                 = "the env file for <app> changed during the transaction; it is left as found"
 	msgEnvDiskFull                = "disk full; the previous env file for <app> could not be restored"
-	// msgInitRemedy follows init's refusal on a hotserve that is not up
+	// msgInitRemedy follows init's refusal on a motel that is not up
 	// ("Console commands"); %[1]s is init's argument and %[2]s its
 	// directory, absolute, since the operator may read it after a
-	// one-shot ssh and follow it from another. hotserve starts on the
+	// one-shot ssh and follow it from another. motel starts on the
 	// file it has, so init's own swap and rollback still stand between
 	// the change and the box; the old file is never touched by hand. A
 	// restart, not a start: a start joins one already in flight, which
 	// read the old file; reset-failed first, as msgInterruptedStopped
 	// says, since a unit at its start limit refuses a restart.
-	msgInitRemedy = `the Caddyfile is accepted only by a running hotserve. Start it on the file it has, then run init again:
-  systemctl enable hotserve && systemctl reset-failed hotserve && systemctl restart hotserve
-  cd %[2]s && hotserve init %[1]s
-If it will not start, journalctl -u hotserve says why.`
+	msgInitRemedy = `the Caddyfile is accepted only by a running motel. Start it on the file it has, then run init again:
+  systemctl enable motel && systemctl reset-failed motel && systemctl restart motel
+  cd %[2]s && motel init %[1]s
+If it will not start, journalctl -u motel says why.`
 )
 
 // installFailed is `failed` for an install that stopped before the
@@ -105,7 +105,7 @@ func baselineUnrecorded(o origin, phase, commit string) string {
 	}
 	switch {
 	case o == originInit:
-		return what + " the baseline could not be recorded; hotserve init " + commit + " again, which ends no_change and records it"
+		return what + " the baseline could not be recorded; motel init " + commit + " again, which ends no_change and records it"
 	case phase == phaseNoChange:
 		// The file did not change, so a push of the same chain is
 		// verified as this one was.
@@ -115,7 +115,7 @@ func baselineUnrecorded(o origin, phase, commit string) string {
 	// is verified again against the file now installed, and refused.
 	// applied.json keeps the previous digest (D1), so step 10 flags the
 	// file the next push finds.
-	return what + " the baseline could not be recorded; hotserve box baseline " + commit + " on the box records it (the next push then reports the file as edited out of band; it was not)"
+	return what + " the baseline could not be recorded; motel box baseline " + commit + " on the box records it (the next push then reports the file as edited out of band; it was not)"
 }
 
 // result is out/<id>.json (DESIGN-box.md, "Record and result fields"):
@@ -286,7 +286,7 @@ func namesIDs(named []string) bool {
 // written by the handler's admission after the bundle is in in/: the
 // time of admission. The applier reads it
 // for two things only — the order it takes bundles in, by `posted`, and
-// Retention's age — and never trusts it for anything else: the hotserve
+// Retention's age — and never trusts it for anything else: the motel
 // uid writes stage/, and a marker is that uid's claim.
 type marker struct {
 	Posted time.Time `json:"posted"`

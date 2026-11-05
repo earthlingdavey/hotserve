@@ -15,14 +15,14 @@ import (
 
 // Where the box keeps its state (DESIGN-box.md, "Paths, owners, and
 // who may touch what"). The handler reads applied.json, which the
-// applier (apply.go), `init` and `hotserve box baseline` write
+// applier (apply.go), `init` and `motel box baseline` write
 // with the type below, so that the reader and the writers cannot
 // disagree about a field. The applier writes the results and the
 // transaction record too (results.go, txn.go); the markers are the
 // handler's admission's, which the applier only reads.
 const (
-	installedFile = "/etc/hotserve/Caddyfile"
-	exchangeDir   = "/var/lib/hotserve-box"
+	installedFile = "/etc/motel/Caddyfile"
+	exchangeDir   = "/var/lib/motel-box"
 )
 
 // Read caps on the exchange tree (DESIGN-box.md, "Caps").
@@ -164,7 +164,7 @@ func (e *tooLargeError) Error() string {
 
 // readApplied reads applied.json, refusing a symlink at its name (the
 // exchange tree's directories come from tmpfiles.d, in a base
-// directory the hotserve uid cannot write).
+// directory the motel uid cannot write).
 func readApplied(dir string) (*applied, error) {
 	path := filepath.Join(dir, "applied.json")
 	b, err := readFile(path, maxApplied, false)

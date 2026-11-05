@@ -20,11 +20,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/smallhoursorg/hotserve/backups/dump"
-	"github.com/smallhoursorg/hotserve/backups/envfile"
-	"github.com/smallhoursorg/hotserve/backups/plan"
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/dump"
+	"github.com/smallhoursorg/motel/backups/envfile"
+	"github.com/smallhoursorg/motel/backups/plan"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // Terminal is the operator at a terminal: what setup asks, with echo
@@ -77,7 +77,7 @@ var (
 // against a box that lacks them.
 var (
 	haveProgram = func(path string) bool {
-		// Run as hotserve-backup and as the app's own uid, never as root:
+		// Run as motel-backup and as the app's own uid, never as root:
 		// the execute bit that counts is the one for everyone.
 		st, err := os.Stat(path)
 		return err == nil && st.Mode().IsRegular() && st.Mode()&0o001 != 0
@@ -117,8 +117,8 @@ var (
 // package's postinstall makes it with the same line, before setup ever
 // runs (TestPostinstallMakesTheAccountAsSetupDoes).
 //
-// Its comment is the mark that it is hotserve's (accountMark): the one
-// account every restic unit runs as is one hotserve made, or none —
+// Its comment is the mark that it is motel's (accountMark): the one
+// account every restic unit runs as is one motel made, or none —
 // an account of that name on the box for another reason is refused,
 // never taken by its name. The mark lives with the account, which
 // outlives a purge, so a reinstall finds it still ours.
@@ -141,8 +141,8 @@ var localAccount = func(ctx context.Context, name string) (passwd, error) {
 	return passwd{}, fmt.Errorf("%s -s files passwd %s: exit status %d", getent, name, exit)
 }
 
-// accountMark is the comment hotserve gives the account it makes.
-const accountMark = "made-by-hotserve"
+// accountMark is the comment motel gives the account it makes.
+const accountMark = "made-by-motel"
 
 const getent = "/usr/bin/getent"
 
@@ -206,13 +206,13 @@ type passwd struct {
 func useraddArgv() string { return strings.Join(useradd, " ") }
 
 // accountUsable is what setup, and every run, restore and drill, ask
-// of an account that is there: that hotserve made it. Every restic unit
+// of an account that is there: that motel made it. Every restic unit
 // runs as it, and whoever is it, or can log in as it, reads the
 // repository credential from a running restic's environment. So the
-// account is hotserve's own, made with its mark, or it is refused —
+// account is motel's own, made with its mark, or it is refused —
 // an account of that name on the box for another reason is never
 // taken by its name, and never changed (the owner, 2026-09-27). What
-// root does to hotserve's account after is root's: root reads the
+// root does to motel's account after is root's: root reads the
 // credential file itself.
 //
 // Ours is local as well as marked: the account in /etc/passwd, and the
@@ -220,10 +220,10 @@ func useraddArgv() string { return strings.Join(useradd, " ") }
 // name carries whatever comment its administrator gives it, the mark
 // among them (the owner's review of #155).
 func accountUsable(ctx context.Context, acct passwd) error {
-	remedy := fmt.Sprintf("as root, remove it (userdel %s) and run hotserve-backup setup <repository>, which makes it (%s); or, if it is one you made for hotserve, mark it: usermod --comment %s %s",
+	remedy := fmt.Sprintf("as root, remove it (userdel %s) and run motel-backup setup <repository>, which makes it (%s); or, if it is one you made for motel, mark it: usermod --comment %s %s",
 		backupUser, useraddArgv(), accountMark, backupUser)
 	if acct.comment != accountMark {
-		return fmt.Errorf("the %s account on this box was not made by hotserve (its comment is %q, not %q): every restic unit runs as it, so hotserve uses only an account it made itself; %s",
+		return fmt.Errorf("the %s account on this box was not made by motel (its comment is %q, not %q): every restic unit runs as it, so motel uses only an account it made itself; %s",
 			backupUser, record.Text(acct.comment), accountMark, remedy)
 	}
 	local, err := localAccount(ctx, backupUser)
@@ -232,13 +232,13 @@ func accountUsable(ctx context.Context, acct passwd) error {
 	}
 	switch {
 	case !local.exists:
-		return fmt.Errorf("the %s account this box resolves is not in /etc/passwd — a directory's, whose comment is its administrator's to write — so it is not one hotserve made: every restic unit runs as it; %s",
+		return fmt.Errorf("the %s account this box resolves is not in /etc/passwd — a directory's, whose comment is its administrator's to write — so it is not one motel made: every restic unit runs as it; %s",
 			backupUser, remedy)
 	case local.uid != acct.uid || local.comment != acct.comment || local.line != acct.line:
 		// The whole line, not the uid and the mark alone: a source asked
 		// before files can answer with both, and a shell or a home of
 		// its own (Copilot on #155).
-		return fmt.Errorf("the %s account this box resolves is not the one in /etc/passwd (%s, where /etc/passwd has %s): another source answers for the name first, so it is not one hotserve made; %s",
+		return fmt.Errorf("the %s account this box resolves is not the one in /etc/passwd (%s, where /etc/passwd has %s): another source answers for the name first, so it is not one motel made; %s",
 			backupUser, record.Text(acct.line), record.Text(local.line), remedy)
 	}
 	return nil
@@ -250,7 +250,7 @@ func accountUsable(ctx context.Context, acct passwd) error {
 func AccountReady(ctx context.Context) error { _, err := accountReady(ctx); return err }
 
 // accountReady is what a run, a restore and a drill ask of the account
-// restic runs as, before any unit: that it is there, and hotserve's —
+// restic runs as, before any unit: that it is there, and motel's —
 // what setup asks of one that exists, held at every run, since it is
 // the run that puts the credential in that account's environment. Not there: a box with a credential file written by
 // hand and no account, whose units would end 217/USER.
@@ -264,7 +264,7 @@ func accountReady(ctx context.Context) (passwd, error) {
 		return passwd{}, err
 	}
 	if !acct.exists {
-		return passwd{}, fmt.Errorf("the %s account is not there: hotserve-backup setup <repository>, as root, makes it (%s)", backupUser, useraddArgv())
+		return passwd{}, fmt.Errorf("the %s account is not there: motel-backup setup <repository>, as root, makes it (%s)", backupUser, useraddArgv())
 	}
 	return acct, accountUsable(ctx, acct)
 }
@@ -277,10 +277,10 @@ func accountReady(ctx context.Context) (passwd, error) {
 // the colon so that the remedy stays the line's tail, as its siblings'.
 func programsInstalled(cfg Config) error {
 	for _, p := range []struct{ name, path, fix string }{
-		{"restic, the backup program hotserve-backup runs,", cfg.Restic, ": apt install restic"},
+		{"restic, the backup program motel-backup runs,", cfg.Restic, ": apt install restic"},
 		{"sqlite3", dump.Program(), ": apt install sqlite3"},
-		{"hotserve", plan.Program(), ""},
-		{"hotserve-backup", cfg.Self, ", where the units run it"},
+		{"motel", plan.Program(), ""},
+		{"motel-backup", cfg.Self, ", where the units run it"},
 	} {
 		if !haveProgram(p.path) {
 			return fmt.Errorf("%s is not installed at %s%s", p.name, p.path, p.fix)
@@ -421,13 +421,13 @@ func b2Refused(repo string) error {
 // b2RunRefused is a run's, a restore's and a drill's word on a file that
 // names a b2: repository: what to run, first, so that the record's cut
 // (record.Text, 300 runes) takes the reason before the remedy — short,
-// so that the cut takes neither for a bucket and path of up to 55
+// so that the cut takes neither for a bucket and path of up to 58
 // characters as escaped (b2AsS3), the slash between them counted. The URL is in single quotes, so that the command pasted as
 // it is reaches setup whole: the placeholder's < and >, and a $, & or ;
 // the path may hold, are the shell's otherwise; b2AsS3 leaves no ' in it
 // to end the quotes.
 func b2RunRefused(repo string) error {
-	return fmt.Errorf("the repository is b2:, which is not supported: as root, hotserve-backup setup '%s' moves it to B2's S3-compatible endpoint, with an application key; %s", b2AsS3(repo), b2Why)
+	return fmt.Errorf("the repository is b2:, which is not supported: as root, motel-backup setup '%s' moves it to B2's S3-compatible endpoint, with an application key; %s", b2AsS3(repo), b2Why)
 }
 
 // b2AsS3 is a b2: repository's URL at B2's S3-compatible endpoint: the
@@ -649,7 +649,7 @@ func OldEnvFileNote(cfg Config) string {
 	if _, err := os.Lstat(cfg.OldEnvFile); cfg.OldEnvFile == "" || err != nil {
 		return ""
 	}
-	return fmt.Sprintf(" (%s is from before this version and is not read: run `hotserve-backup setup <its RESTIC_REPOSITORY>` as root, which asks for its RESTIC_PASSWORD; then remove it)", cfg.OldEnvFile)
+	return fmt.Sprintf(" (%s is from before this version and is not read: run `motel-backup setup <its RESTIC_REPOSITORY>` as root, which asks for its RESTIC_PASSWORD; then remove it)", cfg.OldEnvFile)
 }
 
 // setup is one setup under way: the run whose lock it holds, the
@@ -1696,7 +1696,7 @@ func (s *setup) repository(ctx context.Context, role string, within time.Duratio
 	if !known {
 		what = role + " the repository"
 	}
-	spec := resticUnit(s.name(role, ""), "hotserve backup: "+what, s.staged, argv, s.outFile(role))
+	spec := resticUnit(s.name(role, ""), "motel backup: "+what, s.staged, argv, s.outFile(role))
 	spec.StderrFile = errFile
 	if role != "init" {
 		o, err := s.startWithin(ctx, within, spec)

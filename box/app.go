@@ -9,8 +9,8 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 )
 
 func init() {
@@ -23,7 +23,7 @@ func init() {
 //
 // The verifiers are what box_webhook authenticates against. The
 // signers are held here only so that a bad line fails config load, and
-// with it `hotserve validate`; the signer list the box trusts is read
+// with it `motel validate`; the signer list the box trusts is read
 // from the installed file's raw tokens (Walk), never from the running
 // configuration (step 10).
 type App struct {

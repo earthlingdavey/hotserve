@@ -5,13 +5,13 @@
 # and config-reload survival.
 set -u
 
-PROXY="http://e2e-hotserve:8080"
-HOOK="http://e2e-hotserve:8081/demo"
-ADMIN="http://e2e-hotserve:2019"
+PROXY="http://e2e-motel:8080"
+HOOK="http://e2e-motel:8081/demo"
+ADMIN="http://e2e-motel:2019"
 ART="http://e2e-artifacts:8080/artifacts"
 . /lib.sh
 
-# The hotserve container mints a local deploy token into the shared
+# The motel container mints a local deploy token into the shared
 # volume at startup (see e2e/mint-token.sh); wait for it, then use it
 # as the deploy bearer. This is the `deploy_trust local` path standing
 # in for a real CI OIDC provider, which the offline compose network has
@@ -48,7 +48,7 @@ assert_all_200() { # <file> <label>
 	fi
 }
 
-echo "=== waiting for e2e-hotserve and e2e-artifacts to become ready ==="
+echo "=== waiting for e2e-motel and e2e-artifacts to become ready ==="
 i=0
 until curl -fs -o /dev/null "$ART/demo-v1.tar.gz" \
 	&& [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HOOK")" = "200" ]; do
@@ -395,7 +395,7 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TO
 # The examples are the apps newcomers copy. Each tarball comes from its
 # own scripts/bundle.sh (artifacts image, standing in for the release
 # its workflow publishes), its app-block lines from its own
-# hotserve.caddy (imported by e2e/Caddyfile), and it is deployed here
+# motel.caddy (imported by e2e/Caddyfile), and it is deployed here
 # by its own scripts/deploy.sh — so a change to the app contract, or a
 # runtime release that changes what the flags mean, fails here rather
 # than in someone's first deploy. First by URL (the CI path), then a
@@ -406,16 +406,16 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TO
 # running version is untouched.
 #
 # The e2e box's webhook is plain http on the compose network, and
-# deploy.sh refuses a non-https HOTSERVE_URL (it would send the token
+# deploy.sh refuses a non-https MOTEL_URL (it would send the token
 # in the clear) unless told this is a test box.
-export HOTSERVE_ALLOW_HTTP=1
+export MOTEL_ALLOW_HTTP=1
 example_scenario() { # <app> <port> <deploy.sh path> <version prefix>
-	app=$1 hook="http://e2e-hotserve:8081/$1" proxy="http://e2e-hotserve:$2" script=$3 pre=$4
+	app=$1 hook="http://e2e-motel:8081/$1" proxy="http://e2e-motel:$2" script=$3 pre=$4
 	# The auth header is what the workflow sends for a release asset;
 	# the artifacts server ignores it, and a file upload has no URL to
 	# send it with. Set here so deploy.sh's JSON-escaping of it is run.
 	ex_deploy() { # <version> <artifact URL or file>
-		HOTSERVE_URL=$hook HOTSERVE_TOKEN=$TOKEN VERSION=$1 ARTIFACT_AUTH_HEADER="token e2e" \
+		MOTEL_URL=$hook MOTEL_TOKEN=$TOKEN VERSION=$1 ARTIFACT_AUTH_HEADER="token e2e" \
 			sh "$script" "$2" >/tmp/ex-deploy.out 2>&1
 	}
 	ex_body() { curl -s --max-time 5 "$proxy/"; }
@@ -441,7 +441,7 @@ example_scenario() { # <app> <port> <deploy.sh path> <version prefix>
 	# URL carries a trailing slash, which the box accepts, and the
 	# summary must still name the app.
 	: >/tmp/ex-summary.md
-	if HOTSERVE_URL="$hook/" HOTSERVE_TOKEN=$TOKEN GITHUB_ACTIONS=1 GITHUB_STEP_SUMMARY=/tmp/ex-summary.md \
+	if MOTEL_URL="$hook/" MOTEL_TOKEN=$TOKEN GITHUB_ACTIONS=1 GITHUB_STEP_SUMMARY=/tmp/ex-summary.md \
 		sh "$script" --rollback "${pre}1" >/tmp/ex-deploy.out 2>&1; then
 		pass "$app: deploy.sh --rollback relaunched ${pre}1"
 	else
@@ -470,7 +470,7 @@ example_scenario() { # <app> <port> <deploy.sh path> <version prefix>
 		fail "$app: in Actions, deploy.sh exited 0 on a failed deploy"
 	else
 		case "$(cat /tmp/ex-deploy.out)" in
-		*'::group::deploying '*'"error"'*404*'::endgroup::'*'::error title=hotserve%3A '*' failed::in downloading: '*404*)
+		*'::group::deploying '*'"error"'*404*'::endgroup::'*'::error title=motel%3A '*' failed::in downloading: '*404*)
 			pass "$app: in Actions, a failure is grouped and annotated with its phase and cause" ;;
 		*) fail "$app: Actions-mode failure output: $(cat /tmp/ex-deploy.out)" ;;
 		esac
@@ -479,11 +479,11 @@ example_scenario() { # <app> <port> <deploy.sh path> <version prefix>
 	fi
 	# A failure with no JSON body — nothing listening — still gets an
 	# annotation, pointing at the output instead of a cause.
-	if HOTSERVE_URL="http://e2e-hotserve:1/$app" HOTSERVE_TOKEN=$TOKEN VERSION="${pre}3" \
+	if MOTEL_URL="http://e2e-motel:1/$app" MOTEL_TOKEN=$TOKEN VERSION="${pre}3" \
 		GITHUB_ACTIONS=1 GITHUB_STEP_SUMMARY=/tmp/ex-summary.md sh "$script" "/tmp/$app.tgz" >/tmp/ex-deploy.out 2>&1; then
 		fail "$app: deploy.sh exited 0 with nothing listening"
 	else
-		grep -q '::error title=hotserve%3A .* failed::see the response above' /tmp/ex-deploy.out \
+		grep -q '::error title=motel%3A .* failed::see the response above' /tmp/ex-deploy.out \
 			&& pass "$app: a failure without a JSON body is annotated too" \
 			|| fail "$app: non-JSON failure output: $(cat /tmp/ex-deploy.out)"
 	fi

@@ -7,8 +7,8 @@
 #
 # What it holds the commands to:
 #
-#	hotserve-backup restore <app> [--snapshot <id>] [--to <dir>] [--no-pre-backup] [--yes]
-#	hotserve-backup drill
+#	motel-backup restore <app> [--snapshot <id>] [--to <dir>] [--no-pre-backup] [--yes]
+#	motel-backup drill
 #
 # restore puts the newest snapshot of <app> — or the one named, by its
 # hex id and nothing else — into place: each database copy checked and
@@ -25,7 +25,7 @@
 . /lib-backup.sh
 
 REPO=s3:http://e2e-s3:9000/restorerepo
-RESTAGING=/var/lib/hotserve-backup/restore
+RESTAGING=/var/lib/motel-backup/restore
 BLOG=/var/lib/liveswap/blog/shared
 SHOP=/var/lib/liveswap/shop/shared
 
@@ -33,15 +33,15 @@ wait_for_systemd
 [ -f /root/Caddyfile.base ] || cp "$CADDYFILE" /root/Caddyfile.base
 cp /root/Caddyfile.base "$CADDYFILE"
 
-restore() { hotserve-backup restore "$@" >"$OUT" 2>&1; }
-drill() { hotserve-backup drill >"$OUT" 2>&1; }
+restore() { motel-backup restore "$@" >"$OUT" 2>&1; }
+drill() { motel-backup drill >"$OUT" 2>&1; }
 # What a restore fetched: anything at all inside an app's own directory
 # there — a directory's name is plaintext too.
 restaged() { [ -d "$RESTAGING" ] && find "$RESTAGING" -mindepth 2 | wc -l; }
 nothing_left_of_a_restore() { # <what>
 	nothing_left "$1"
 	[ "$(restaged)" = 0 ] && pass "$1: nothing that was fetched is left on disk" || fail "$1: left in $RESTAGING: $(find "$RESTAGING" -mindepth 2 | head -5)"
-	[ "$(find /var/lib/liveswap -user root -o -user hotserve-backup | wc -l)" = 0 ] && pass "$1: nothing in the apps' data belongs to anyone but the app" || fail "$1: in the apps' data: $(find /var/lib/liveswap \( -user root -o -user hotserve-backup \) -printf '%p (%u) ')"
+	[ "$(find /var/lib/liveswap -user root -o -user motel-backup | wc -l)" = 0 ] && pass "$1: nothing in the apps' data belongs to anyone but the app" || fail "$1: in the apps' data: $(find /var/lib/liveswap \( -user root -o -user motel-backup \) -printf '%p (%u) ')"
 }
 # fingerprint <shared dir> <database> <table>: what is there — the
 # database's rows, and every other entry's name, type, owner, mode,
@@ -116,7 +116,7 @@ pre=$(newest blog)
 rm -rf /root/restored && rr restore -q --no-lock "$pre:/backup/blog/sqlite" --target /root/restored >/dev/null 2>&1
 [ "$(sqlite3 /root/restored/app.db 'select count(*) from posts where n = 7' 2>&1)" = 1 ] && pass "that backup holds what the restore overwrote" || fail "the pre-restore snapshot does not hold the overwritten row: $(sqlite3 /root/restored/app.db 'select n from posts' 2>&1 | tr '\n' ' ')"
 rm -rf /root/restored
-[ "$(stat -c '%U %a' "$BLOG/uploads/pub" "$BLOG/uploads/pub/b.png" | tr '\n' ' ')" = "hotserve 755 hotserve 644 " ] && pass "a directory and a file that were gone are back with the modes they had, not the ones a restore writes with" || fail "uploads/pub: $(stat -c '%U %a %n' "$BLOG/uploads/pub" "$BLOG/uploads/pub/b.png" 2>&1 | tr '\n' ' ')"
+[ "$(stat -c '%U %a' "$BLOG/uploads/pub" "$BLOG/uploads/pub/b.png" | tr '\n' ' ')" = "motel 755 motel 644 " ] && pass "a directory and a file that were gone are back with the modes they had, not the ones a restore writes with" || fail "uploads/pub: $(stat -c '%U %a %n' "$BLOG/uploads/pub" "$BLOG/uploads/pub/b.png" 2>&1 | tr '\n' ' ')"
 [ "$(stat -c %a "$BLOG/uploads/ro")" = 555 ] && [ "$(cat "$BLOG/uploads/ro/f")" = ro ] && [ "$(cat "$BLOG/uploads/ro/g")" = changed ] && pass "a directory that is closed to writing in place is restored into, left closed, and what it held besides is still there" || fail "uploads/ro: $(stat -c %a "$BLOG/uploads/ro") $(ls -la "$BLOG/uploads/ro")"
 # A second try takes the newest snapshot a backup run made: never the one
 # the restore before it made of what it was restoring over.
@@ -128,16 +128,16 @@ echo "=== restore 3: a restore asks first, and changes nothing until it is answe
 as_app sh -c "cd $BLOG && sqlite3 -cmd '.timeout 5000' app.db 'delete from posts where n = 99; insert into posts values (8);'"
 blog0=$(blog_print)
 before=$(snapshots)
-if hotserve-backup restore blog </dev/null >"$OUT" 2>&1; then fail "a restore with nobody to ask and no --yes exited 0"; else grep -q -e '--yes' "$OUT" && pass "with nobody to ask, a restore refuses and names --yes" || fail "nobody to ask: $(cat "$OUT")"; fi
+if motel-backup restore blog </dev/null >"$OUT" 2>&1; then fail "a restore with nobody to ask and no --yes exited 0"; else grep -q -e '--yes' "$OUT" && pass "with nobody to ask, a restore refuses and names --yes" || fail "nobody to ask: $(cat "$OUT")"; fi
 unchanged "$blog0" "$(blog_print)" "and changed nothing"
 [ "$(snapshots)" = "$before" ] && pass "and made no backup either: nothing happens before the answer" || fail "snapshots went from $before to $(snapshots) before anyone said yes"
 for answer in n y yes shop; do
-	if printf '%s\n' "$answer" | hotserve-backup restore blog >"$OUT" 2>&1; then fail "a restore answered '$answer' exited 0"; else grep -qi "nothing was changed" "$OUT" && pass "answered '$answer', a restore exits non-zero and says nothing was changed: only the app's own name is a yes" || fail "answered '$answer': $(cat "$OUT")"; fi
+	if printf '%s\n' "$answer" | motel-backup restore blog >"$OUT" 2>&1; then fail "a restore answered '$answer' exited 0"; else grep -qi "nothing was changed" "$OUT" && pass "answered '$answer', a restore exits non-zero and says nothing was changed: only the app's own name is a yes" || fail "answered '$answer': $(cat "$OUT")"; fi
 done
 unchanged "$blog0" "$(blog_print)" "and changed nothing"
 # The app's name, typed, is a yes.
 before=$(snapshots)
-if printf 'blog\n' | hotserve-backup restore blog --snapshot "$first_blog" >"$OUT" 2>&1; then grep -q "blog: restored from snapshot" "$OUT" && [ "$(snapshots)" = $((before + 1)) ] && pass "typed the app's name, the restore backs up first and goes on" || fail "typed the name: $(cat "$OUT")"; else fail "typed the name: $(cat "$OUT")"; fi
+if printf 'blog\n' | motel-backup restore blog --snapshot "$first_blog" >"$OUT" 2>&1; then grep -q "blog: restored from snapshot" "$OUT" && [ "$(snapshots)" = $((before + 1)) ] && pass "typed the app's name, the restore backs up first and goes on" || fail "typed the name: $(cat "$OUT")"; else fail "typed the name: $(cat "$OUT")"; fi
 blog0=$(blog_print)
 for flag in --to --snapshot; do
 	if restore blog "$flag" "" --yes; then fail "$flag '' exited 0"; else [ "$(units_left)" = 0 ] && grep -q "nothing in it" "$OUT" && pass "$flag given with nothing in it is refused: it is not the same restore without the flag" || fail "$flag '': $(cat "$OUT")"; fi
@@ -206,14 +206,14 @@ hostile() { # <name> <plan.json, or - for none> <what> <a word of the reason>
 	if restore blog --snapshot "$id" --yes --no-pre-backup; then fail "$3: the restore exited 0"; else grep -q "$4" "$OUT" && pass "$3: the restore exits non-zero, and says why ($4)" || fail "$3: $(cat "$OUT")"; fi
 	unchanged "$blog0" "$(blog_print)" "$3: blog is unchanged"
 	unchanged "$shop0" "$(shop_print)" "$3: shop is unchanged"
-	[ "$(find /var/lib/liveswap /etc/hotserve -name 'crafted*' | wc -l)" = 0 ] && pass "$3: nothing of the snapshot's was installed anywhere" || fail "$3: installed: $(find /var/lib/liveswap /etc/hotserve -name 'crafted*')"
+	[ "$(find /var/lib/liveswap /etc/motel -name 'crafted*' | wc -l)" = 0 ] && pass "$3: nothing of the snapshot's was installed anywhere" || fail "$3: installed: $(find /var/lib/liveswap /etc/motel -name 'crafted*')"
 	forget "$id"
 }
 hostile noplan - "a snapshot with no plan.json" "holds none"
 hostile garbage 'not json' "a plan.json that is not one" "invalid character"
 hostile unknown '{"sqlite":["app.db"],"files":["uploads"],"install_to":"/etc"}' "a plan.json with a field nobody knows" install_to
 hostile dotdot '{"sqlite":["../../shop/shared/data/shop.db"],"files":["uploads"]}' "a plan.json whose database path leaves the app" "outside the app's shared dir"
-hostile absolute '{"files":["/etc/hotserve"]}' "a plan.json with an absolute path" "not absolute"
+hostile absolute '{"files":["/etc/motel"]}' "a plan.json with an absolute path" "not absolute"
 hostile lacks '{"sqlite":["app.db","missing.db"],"files":["uploads"]}' "a snapshot that lacks a database its plan.json declares" missing.db
 hostile empty '{"files":["avatars"]}' "a snapshot that holds nothing of what its plan.json declares" avatars
 nothing_left_of_a_restore "hostile snapshots"
@@ -306,13 +306,13 @@ if restore blog --snapshot "$first_blog" --to /srv/exists; then fail "--to a dir
 # Every directory on the way has to be root's own and writable by
 # nobody else: not /tmp, where anyone could have put a link first.
 if restore blog --snapshot "$first_blog" --to /tmp/out; then fail "--to under /tmp exited 0"; else grep -q "written by others" "$OUT" && [ ! -e /tmp/out ] && pass "--to under /tmp is refused: anyone could have put a link there first" || fail "--to /tmp/out: $(cat "$OUT")"; fi
-install -d -o hotserve -g hotserve -m 0700 /srv/theirs
+install -d -o motel -g motel -m 0700 /srv/theirs
 if restore blog --snapshot "$first_blog" --to /srv/theirs/out; then fail "--to under the app user's directory exited 0"; else grep -q "not root" "$OUT" && [ ! -e /srv/theirs/out ] && pass "--to under a directory the app's user owns is refused" || fail "--to /srv/theirs/out: $(cat "$OUT")"; fi
 rmdir /srv/theirs
 rm -rf /srv/out
 if restore blog --snapshot "$first_blog" --to /srv/out; then pass "--to a new directory exits 0, asking nothing"; else fail "--to: $(cat "$OUT")"; fi
 [ "$(rows /srv/out/app.db 'select count(*) from posts')" = "ok 2 " ] && [ "$(cat /srv/out/uploads/a.png 2>/dev/null)" = img ] && pass "it holds the app's data laid out as its shared dir is" || fail "/srv/out: $(find /srv/out | head -10)"
-[ "$(find /srv/out ! -user hotserve | wc -l)" = 0 ] && pass "all of it the app's user's" || fail "in /srv/out: $(find /srv/out ! -user hotserve -printf '%p (%u) ')"
+[ "$(find /srv/out ! -user motel | wc -l)" = 0 ] && pass "all of it the app's user's" || fail "in /srv/out: $(find /srv/out ! -user motel -printf '%p (%u) ')"
 unchanged "$blog0" "$(blog_print)" "the live data is unchanged"
 [ "$(snapshots)" = "$before" ] && pass "and no backup was made first: nothing was to be overwritten" || fail "snapshots went from $before to $(snapshots)"
 rm -rf /srv/out /srv/exists
@@ -338,14 +338,14 @@ run && pass "a run with a large file exits 0" || fail "the run: $(cat "$OUT")"
 big=$(newest blog)
 as_app sh -c "echo after >$BLOG/uploads/big.bin"
 blog0=$(blog_print)
-hotserve-backup restore blog --snapshot "$big" --yes --no-pre-backup >/root/first.out 2>&1 &
+motel-backup restore blog --snapshot "$big" --yes --no-pre-backup >/root/first.out 2>&1 &
 first=$!
 if hold_restic 'restic restore'; then
 	pass "a restore is under way, its restic held still"
 	run && fail "a backup run exited 0 while a restore was under way" || { grep -q "in progress: pid $first" "$OUT" && pass "a backup run refuses meanwhile, and says who holds the lock" || fail "the run during a restore: $(cat "$OUT")"; }
 	kill -KILL "$first"
 	wait "$first" 2>/dev/null
-	left=$(systemctl list-units --plain --no-legend --state=activating 'hotserve_backup_*' | awk '{print $1}')
+	left=$(systemctl list-units --plain --no-legend --state=activating 'motel_backup_*' | awk '{print $1}')
 	[ -n "$left" ] && pass "the killed restore left its unit running ($left)" || fail "no unit was left running to sweep: the scenario proved nothing"
 	unchanged "$blog0" "$(blog_print)" "the killed restore had changed nothing"
 	run && pass "the next run exits 0" || fail "the run after a killed restore: $(cat "$OUT")"
@@ -354,7 +354,7 @@ if hold_restic 'restic restore'; then
 else
 	fail "no 'restic restore' appeared to hold still"
 fi
-hotserve-backup restore blog --snapshot "$big" --yes --no-pre-backup >/root/first.out 2>&1 &
+motel-backup restore blog --snapshot "$big" --yes --no-pre-backup >/root/first.out 2>&1 &
 first=$!
 if hold_restic 'restic restore'; then
 	kill -INT "$first"
@@ -370,7 +370,7 @@ if hold_restic 'restic restore'; then
 		wait "$first"
 		[ $? != 0 ] && pass "interrupted, a restore exits non-zero (after ${i}s)" || fail "an interrupted restore exited 0"
 	fi
-	[ "$(units_running)" = 0 ] && pass "having stopped its own unit" || fail "units still running after Ctrl-C: $(systemctl list-units --plain --no-legend 'hotserve_backup_*')"
+	[ "$(units_running)" = 0 ] && pass "having stopped its own unit" || fail "units still running after Ctrl-C: $(systemctl list-units --plain --no-legend 'motel_backup_*')"
 	pgrep -x restic >/dev/null && fail "restic is still running" || pass "restic is gone"
 	unchanged "$blog0" "$(blog_print)" "and changed nothing"
 	nothing_left_of_a_restore "after Ctrl-C, with no later run to tidy up"
@@ -388,7 +388,7 @@ big=$(newest blog)
 size=$(rr stats --no-lock --json --mode restore-size "$big" 2>/dev/null | sed -n 's/.*"total_size":\([0-9]*\).*/\1/p')
 [ "${size:-0}" -gt 8388608 ] && pass "fixture: blog's newest snapshot is ${size} bytes restored, more than the 8 MiB there will be" || fail "fixture: blog's newest snapshot is ${size:-unknown} bytes: the scenario proves nothing"
 mount -t tmpfs -o size=8m,mode=0700 tmpfs "$RESTAGING" || fail "fixture: no small filesystem could be put under $RESTAGING"
-fetches() { journalctl --sync >/dev/null 2>&1; journalctl --no-pager -o cat | grep -c 'Starting hotserve_backup_fetch_'; }
+fetches() { journalctl --sync >/dev/null 2>&1; journalctl --no-pager -o cat | grep -c 'Starting motel_backup_fetch_'; }
 before=$(fetches)
 rm -rf /srv/out
 if restore blog --snapshot "$big" --to /srv/out; then fail "a restore with no room for the fetch exited 0"; else grep -q "no room" "$OUT" && grep -q "MiB" "$OUT" && pass "with no room for it, a restore stops and says how much it needs and how much there is" || fail "no room: $(cat "$OUT")"; fi
@@ -427,21 +427,21 @@ blog0=$(blog_print)
 as_app sh -c "cd $BLOG && sqlite3 app.db 'begin exclusive; select 1;' '.shell sleep 60' 'commit;'" >/dev/null 2>&1 &
 holder=$!
 sleep 1
-hotserve-backup restore blog --snapshot "$first_blog" --yes --no-pre-backup >/root/first.out 2>&1 &
+motel-backup restore blog --snapshot "$first_blog" --yes --no-pre-backup >/root/first.out 2>&1 &
 first=$!
 i=0
-until [ "$(systemctl list-units --plain --no-legend --state=activating 'hotserve_backup_install_*' | wc -l)" != 0 ]; do
+until [ "$(systemctl list-units --plain --no-legend --state=activating 'motel_backup_install_*' | wc -l)" != 0 ]; do
 	i=$((i + 1))
 	[ "$i" -ge 600 ] && break
 	sleep 0.1
 done
-if [ "$(systemctl list-units --plain --no-legend --state=activating 'hotserve_backup_install_*' | wc -l)" != 0 ]; then
+if [ "$(systemctl list-units --plain --no-legend --state=activating 'motel_backup_install_*' | wc -l)" != 0 ]; then
 	pass "the install unit is running, waiting on the database"
 	sleep 2
 	kill -INT "$first"
 	wait "$first"
 	[ $? != 0 ] && grep -q "partly restored" /root/first.out && pass "interrupted there, the restore exits non-zero and says the data may be partly restored" || fail "interrupted in the install: $(cat /root/first.out)"
-	[ "$(units_running)" = 0 ] && pass "its unit was stopped with it, not left writing with nobody watching" || fail "units still running: $(systemctl list-units --plain --no-legend 'hotserve_backup_*')"
+	[ "$(units_running)" = 0 ] && pass "its unit was stopped with it, not left writing with nobody watching" || fail "units still running: $(systemctl list-units --plain --no-legend 'motel_backup_*')"
 else
 	fail "the install unit never started: $(cat /root/first.out)"
 	kill -KILL "$first" 2>/dev/null
@@ -482,21 +482,21 @@ nothing_left_of_a_restore "a drill of a damaged snapshot"
 
 echo "=== restore 15: a rebuilt box: no record, no data, another uid for the app's user ==="
 # Last, because it renumbers the account everything above ran as.
-old_uid=$(id -u hotserve)
-old_gid=$(id -g hotserve)
+old_uid=$(id -u motel)
+old_gid=$(id -g motel)
 rebuilt=$(newest blog)
-loginctl disable-linger hotserve 2>/dev/null
+loginctl disable-linger motel 2>/dev/null
 systemctl stop "user@$old_uid.service" 2>/dev/null
-err=$(groupmod -g 4242 hotserve 2>&1 && usermod -u 4242 -g 4242 hotserve 2>&1) || fail "fixture: the hotserve user could not be renumbered: $err"
-find / -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) -exec chown -h hotserve:hotserve {} + 2>/dev/null
-[ "$(id -u hotserve)" = 4242 ] && pass "fixture: hotserve is now uid 4242, not $old_uid as when the snapshot was made" || fail "fixture: hotserve is uid $(id -u hotserve)"
+err=$(groupmod -g 4242 motel 2>&1 && usermod -u 4242 -g 4242 motel 2>&1) || fail "fixture: the motel user could not be renumbered: $err"
+find / -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) -exec chown -h motel:motel {} + 2>/dev/null
+[ "$(id -u motel)" = 4242 ] && pass "fixture: motel is now uid 4242, not $old_uid as when the snapshot was made" || fail "fixture: motel is uid $(id -u motel)"
 rm -rf /var/lib/liveswap/blog "$STATUS"
 # A restore that makes the shared dir and then fails takes it away
 # again: an hourly run would otherwise take an empty directory for the
 # app's data, where before it knew the data was missing.
 # Too small for even this snapshot: the preflight refuses the fetch.
 mount -t tmpfs -o size=4k,mode=0700 tmpfs "$RESTAGING" || fail "fixture: no small filesystem under $RESTAGING"
-made() { journalctl --sync >/dev/null 2>&1; journalctl --no-pager -o cat | grep -c 'Starting hotserve_backup_mkshared_'; }
+made() { journalctl --sync >/dev/null 2>&1; journalctl --no-pager -o cat | grep -c 'Starting motel_backup_mkshared_'; }
 before=$(made)
 restore blog --yes && fail "a restore with no room for its fetch exited 0" || true
 [ "$(made)" != "$before" ] && pass "fixture: the restore made the shared dir before it failed" || fail "fixture: the shared dir was never made, so the scenario proves nothing: $(cat "$OUT")"
@@ -505,7 +505,7 @@ umount "$RESTAGING"
 if restore blog --yes; then pass "with no record and no data dir, a restore exits 0"; else fail "a restore on a rebuilt box: $(cat "$OUT")"; fi
 grep -q "snapshot $(echo "$rebuilt" | cut -c1-8)" "$OUT" && pass "it found the newest snapshot in the repository alone" || fail "the restore's own words: $(cat "$OUT")"
 [ "$(rows "$BLOG/app.db" 'select count(*) from posts')" = "ok 2 " ] && [ "$(cat "$BLOG/uploads/a.png" 2>/dev/null)" = img ] && pass "the data is back" || fail "blog's data: $(find /var/lib/liveswap/blog | head -10)"
-[ -d "$BLOG" ] && [ "$(find /var/lib/liveswap/blog ! -uid 4242 | wc -l)" = 0 ] && pass "all of it owned by hotserve as this box numbers it: by name, not by the uid in the snapshot" || fail "not hotserve's: $(find /var/lib/liveswap/blog ! -uid 4242 -printf '%p (%U) ')"
+[ -d "$BLOG" ] && [ "$(find /var/lib/liveswap/blog ! -uid 4242 | wc -l)" = 0 ] && pass "all of it owned by motel as this box numbers it: by name, not by the uid in the snapshot" || fail "not motel's: $(find /var/lib/liveswap/blog ! -uid 4242 -printf '%p (%U) ')"
 case "$(stat -c %a "$BLOG" 2>/dev/null)" in *0) pass "the shared dir it made is closed to other users ($(stat -c %a "$BLOG"))" ;; *) fail "the shared dir it made is mode $(stat -c %a "$BLOG")" ;; esac
 run && pass "and the next backup run exits 0" || fail "the run after a restore on a rebuilt box: $(cat "$OUT")"
 nothing_left_of_a_restore "a rebuilt box"

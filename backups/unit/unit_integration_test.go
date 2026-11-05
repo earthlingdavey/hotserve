@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/smallhoursorg/hotserve/backups/envfile"
+	"github.com/smallhoursorg/motel/backups/envfile"
 )
 
 // These run as root against a real system manager (make
@@ -23,14 +23,14 @@ import (
 // here, and none of them can be made of a fake.
 
 // testUser runs what no test cares about the owner of.
-const testUser = "hotserve-backup"
+const testUser = "motel-backup"
 
 func runner(t *testing.T) *Runner {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root and a system manager")
 	}
-	ensureUser(t, "hotserve")
+	ensureUser(t, "motel")
 	ensureUser(t, testUser)
 	r, err := NewSystemRunner(context.Background())
 	if err != nil {
@@ -59,7 +59,7 @@ func ensureUser(t *testing.T, name string) {
 
 func name(t *testing.T) string {
 	n := strings.ToLower(strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()))
-	return "hotserve_backup_test_" + n + ".service"
+	return "motel_backup_test_" + n + ".service"
 }
 
 // outFile is somewhere the manager can write and no unit can see.
@@ -145,12 +145,12 @@ func TestIntegrationViewIsWhatIsNamed(t *testing.T) {
 	// propagate into the namespace through, closed to the unit. Nothing
 	// else of /run/systemd — the manager's sockets least of all — is
 	// there unless a Spec names it.
-	script := `for p in /etc/shadow /root /home /var/lib /etc/hotserve /run/dbus /run/systemd/private /run/systemd/journal; do [ -e "$p" ] && echo "present: $p"; done
+	script := `for p in /etc/shadow /root /home /var/lib /etc/motel /run/dbus /run/systemd/private /run/systemd/journal; do [ -e "$p" ] && echo "present: $p"; done
 ls /run/systemd | grep -v -x -e incoming -e resolve | sed 's/^/present: \/run\/systemd\//'; echo done`
 	for who, spec := range map[string]Spec{
 		"a user":                   {User: testUser},
 		"a user with a capability": {User: testUser, Capabilities: []Capability{CapDACReadSearch}},
-		"a user in its namespaces": {User: "hotserve", SameUIDNamespaces: true},
+		"a user in its namespaces": {User: "motel", SameUIDNamespaces: true},
 		"a user with the network":  {User: testUser, Network: true},
 		"root with one capability": {AsRoot: true, Capabilities: []Capability{CapChown}},
 	} {
@@ -229,16 +229,16 @@ func TestIntegrationMaskedPathsReadEmptyAndAMissingOneIsSkipped(t *testing.T) {
 
 func TestIntegrationCapabilityReadsAnotherUsersFileAndWritesNothing(t *testing.T) {
 	r := runner(t)
-	ensureUser(t, "hotserve")
-	ensureUser(t, "hotserve-backup")
+	ensureUser(t, "motel")
+	ensureUser(t, "motel-backup")
 	dir, _ := os.MkdirTemp("/root", "unit-cap-")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if out, err := exec.Command("sh", "-c", "chmod 0755 "+dir+" && install -d -o hotserve -g hotserve -m 0700 "+dir+"/shared && install -o hotserve -g hotserve -m 0600 /dev/null "+dir+"/shared/secret && echo private > "+dir+"/shared/secret").CombinedOutput(); err != nil {
+	if out, err := exec.Command("sh", "-c", "chmod 0755 "+dir+" && install -d -o motel -g motel -m 0700 "+dir+"/shared && install -o motel -g motel -m 0600 /dev/null "+dir+"/shared/secret && echo private > "+dir+"/shared/secret").CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	spec := func(caps []Capability) Spec {
 		return Spec{
-			Name: name(t), User: "hotserve-backup", Capabilities: caps, StdoutFile: outFile(t),
+			Name: name(t), User: "motel-backup", Capabilities: caps, StdoutFile: outFile(t),
 			Argv:  []string{"/bin/sh", "-c", "cat /backup/x/files/secret; touch /backup/x/files/new 2>/dev/null && echo WROTE; true"},
 			Binds: []Bind{{Source: dir + "/shared", Dest: "/backup/x/files"}},
 		}
@@ -261,10 +261,10 @@ func TestIntegrationCapabilityReadsAnotherUsersFileAndWritesNothing(t *testing.T
 
 func TestIntegrationSameUIDNamespaces(t *testing.T) {
 	r := runner(t)
-	ensureUser(t, "hotserve")
+	ensureUser(t, "motel")
 	stdout := outFile(t)
 	script := `read _ _ n < /proc/self/uid_map; echo "range=$n pid=$$"`
-	out, err := r.Run(context.Background(), Spec{Name: name(t), Argv: []string{"/bin/sh", "-c", script}, User: "hotserve", SameUIDNamespaces: true, StdoutFile: stdout})
+	out, err := r.Run(context.Background(), Spec{Name: name(t), Argv: []string{"/bin/sh", "-c", script}, User: "motel", SameUIDNamespaces: true, StdoutFile: stdout})
 	if err != nil || !out.OK() {
 		t.Fatalf("%+v, %v", out, err)
 	}
@@ -363,7 +363,7 @@ func TestIntegrationListActiveSaysWhatIsRunningAndSinceWhen(t *testing.T) {
 		_, _ = r.Run(ctx, Spec{Name: n, Argv: []string{"/bin/sleep", "602"}, User: testUser})
 	}()
 	waitFor(t, n, "activating")
-	got, err := ListActive(context.Background(), "hotserve_backup_test_*")
+	got, err := ListActive(context.Background(), "motel_backup_test_*")
 	must(t, err)
 	found := false
 	for _, a := range got {
@@ -379,7 +379,7 @@ func TestIntegrationListActiveSaysWhatIsRunningAndSinceWhen(t *testing.T) {
 	}
 	cancel()
 	<-done
-	got, err = ListActive(context.Background(), "hotserve_backup_test_*")
+	got, err = ListActive(context.Background(), "motel_backup_test_*")
 	must(t, err)
 	for _, a := range got {
 		if a.Name == n {
@@ -401,7 +401,7 @@ func waitFor(t *testing.T, unit, state string) {
 // what it started, and Run says the command gave no verdict.
 func TestIntegrationBindsToEndsTheUnitWhenItsOrchestratorIsKilled(t *testing.T) {
 	r := runner(t)
-	orch := "hotserve_backup_test_orchestrator.service"
+	orch := "motel_backup_test_orchestrator.service"
 	t.Cleanup(func() { _ = exec.Command("systemctl", "stop", orch).Run() })
 	go func() {
 		_, _ = r.Run(context.Background(), Spec{Name: orch, Argv: []string{"/bin/sleep", "601"}, User: testUser})
@@ -619,7 +619,7 @@ func TestIntegrationWaitReturnsOnceTheUnitEndsOnItsOwn(t *testing.T) {
 	if out := <-done; !out.OK() {
 		t.Fatalf("the unit Wait watched: %+v", out)
 	}
-	if err := r.Wait(context.Background(), "hotserve_backup_test_never_started.service"); err != nil {
+	if err := r.Wait(context.Background(), "motel_backup_test_never_started.service"); err != nil {
 		t.Fatalf("Wait on a unit that is not there: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -662,7 +662,7 @@ func TestIntegrationScheduledSaysWhetherAUnitIs(t *testing.T) {
 	if active, _, err := r.Scheduled(context.Background(), name(t)); err != nil || active {
 		t.Fatalf("an ended unit: active=%v, err=%v", active, err)
 	}
-	if active, enabled, err := r.Scheduled(context.Background(), "hotserve_backup_never_loaded_0123456789ab.timer"); err != nil || active || enabled {
+	if active, enabled, err := r.Scheduled(context.Background(), "motel_backup_never_loaded_0123456789ab.timer"); err != nil || active || enabled {
 		t.Fatalf("a unit that was never loaded: active=%v enabled=%v, err=%v", active, enabled, err)
 	}
 }
@@ -734,7 +734,7 @@ func TestIntegrationSeesAMountOfTheManagersNamespace(t *testing.T) {
 }
 
 // probeEnv, set, makes this test binary a probe a unit runs (TestMain).
-const probeEnv = "HOTSERVE_BACKUP_UNIT_PROBE"
+const probeEnv = "MOTEL_BACKUP_UNIT_PROBE"
 
 func TestMain(m *testing.M) {
 	if os.Getenv(probeEnv) == "open_by_handle_at" {
@@ -785,7 +785,7 @@ func TestIntegrationTheFilterDeniesOpenByHandleAtWhereTheCapabilityIsHeld(t *tes
 	raw, err := os.ReadFile(self)
 	must(t, err)
 	// Where the unit's view holds it.
-	probe := "/usr/local/bin/hotserve-backup-unit-probe"
+	probe := "/usr/local/bin/motel-backup-unit-probe"
 	must(t, os.WriteFile(probe, raw, 0o755))
 	t.Cleanup(func() { _ = os.Remove(probe) })
 	stdout := outFile(t)

@@ -24,7 +24,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/go-jose/go-jose/v4/jwt"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // localTrust is a local source for a test public key, built directly:
@@ -86,9 +86,9 @@ func TestOIDCPresetRequiresIdentityClaim(t *testing.T) {
 	// Audience alone must be rejected — any repo/project can mint a token
 	// for an arbitrary audience.
 	for _, tc := range []TrustConfig{
-		{Kind: "github", Audience: "hotserve"},
-		{Kind: "gitlab", Audience: "hotserve"},
-		{Kind: "oidc", Issuer: "https://idp.example", Audience: "hotserve"},
+		{Kind: "github", Audience: "motel"},
+		{Kind: "gitlab", Audience: "motel"},
+		{Kind: "oidc", Issuer: "https://idp.example", Audience: "motel"},
 	} {
 		if _, err := Build([]TrustConfig{tc}, nil); err == nil {
 			t.Errorf("%s with only an audience must be rejected", tc.Kind)
@@ -96,9 +96,9 @@ func TestOIDCPresetRequiresIdentityClaim(t *testing.T) {
 	}
 	// With an identity claim it is accepted.
 	ok := []TrustConfig{
-		{Kind: "github", Audience: "hotserve", Claims: map[string]string{"repository": "o/r"}},
-		{Kind: "gitlab", Audience: "hotserve", Claims: map[string]string{"project_path": "o/r"}},
-		{Kind: "oidc", Issuer: "https://idp.example", Audience: "hotserve", Claims: map[string]string{"sub": "ci"}},
+		{Kind: "github", Audience: "motel", Claims: map[string]string{"repository": "o/r"}},
+		{Kind: "gitlab", Audience: "motel", Claims: map[string]string{"project_path": "o/r"}},
+		{Kind: "oidc", Issuer: "https://idp.example", Audience: "motel", Claims: map[string]string{"sub": "ci"}},
 	}
 	for _, tc := range ok {
 		if _, err := Build([]TrustConfig{tc}, nil); err != nil {
@@ -145,20 +145,20 @@ func TestResolveTrustPlaceholdersFoldsTheJSONSubject(t *testing.T) {
 	// The JSON subject becomes the sub claim at resolution, as the
 	// Caddyfile parser already makes it, so an empty resolution is a
 	// fail-closed constraint rather than a vanished one.
-	t.Setenv("HOTSERVE_TEST_SUB", "repo:o/r:ref:refs/heads/main")
-	tcs := []TrustConfig{{Kind: "github", Audience: "a", Subject: "{env.HOTSERVE_TEST_SUB}", Claims: map[string]string{"repository": "o/r"}}}
+	t.Setenv("MOTEL_TEST_SUB", "repo:o/r:ref:refs/heads/main")
+	tcs := []TrustConfig{{Kind: "github", Audience: "a", Subject: "{env.MOTEL_TEST_SUB}", Claims: map[string]string{"repository": "o/r"}}}
 	ResolvePlaceholders(caddy.NewReplacer(), tcs)
 	if tcs[0].Subject != "" || tcs[0].Claims["sub"] != "repo:o/r:ref:refs/heads/main" {
 		t.Fatalf("subject must become the resolved sub claim, got %+v", tcs[0])
 	}
-	t.Setenv("HOTSERVE_TEST_SUB", "")
-	tcs = []TrustConfig{{Kind: "github", Audience: "a", Subject: "{env.HOTSERVE_TEST_SUB}", Claims: map[string]string{"repository": "o/r"}}}
+	t.Setenv("MOTEL_TEST_SUB", "")
+	tcs = []TrustConfig{{Kind: "github", Audience: "a", Subject: "{env.MOTEL_TEST_SUB}", Claims: map[string]string{"repository": "o/r"}}}
 	ResolvePlaceholders(caddy.NewReplacer(), tcs)
 	if v, ok := tcs[0].Claims["sub"]; !ok || v != "" {
 		t.Fatalf("an empty subject must stay a sub=\"\" constraint, got %+v", tcs[0])
 	}
 	// Beside a claims.sub it is left as written, and the pair is refused.
-	tcs = []TrustConfig{{Kind: "github", Audience: "a", Subject: "{env.HOTSERVE_TEST_SUB}", Claims: map[string]string{"repository": "o/r", "sub": "x"}}}
+	tcs = []TrustConfig{{Kind: "github", Audience: "a", Subject: "{env.MOTEL_TEST_SUB}", Claims: map[string]string{"repository": "o/r", "sub": "x"}}}
 	ResolvePlaceholders(caddy.NewReplacer(), tcs)
 	if _, err := Build(tcs, nil); err == nil || !strings.Contains(err.Error(), "both set") {
 		t.Fatalf("subject beside claim sub must be refused after resolution, got %v", err)
@@ -334,13 +334,13 @@ func TestOIDCVerifier(t *testing.T) {
 	iss := trusttest.NewIssuer(t)
 	want := map[string]string{"repository": "org/app"}
 	base := func(t *testing.T) *oidcVerifier {
-		v := &oidcVerifier{issuer: iss.URL, audience: "hotserve", claims: want, client: iss.Client}
+		v := &oidcVerifier{issuer: iss.URL, audience: "motel", claims: want, client: iss.Client}
 		settled(t, v)
 		return v
 	}
 	ctx := context.Background()
 
-	if _, err := base(t).verify(ctx, iss.Mint(t, iss.Priv, "hotserve", want, time.Now().Add(5*time.Minute))); err != nil {
+	if _, err := base(t).verify(ctx, iss.Mint(t, iss.Priv, "motel", want, time.Now().Add(5*time.Minute))); err != nil {
 		t.Fatalf("valid token rejected: %v", err)
 	}
 
@@ -352,17 +352,17 @@ func TestOIDCVerifier(t *testing.T) {
 			return iss.Mint(t, iss.Priv, "other", want, time.Now().Add(5*time.Minute))
 		}},
 		{"claim mismatch", func() string {
-			return iss.Mint(t, iss.Priv, "hotserve", map[string]string{"repository": "evil/app"}, time.Now().Add(5*time.Minute))
+			return iss.Mint(t, iss.Priv, "motel", map[string]string{"repository": "evil/app"}, time.Now().Add(5*time.Minute))
 		}},
 		{"missing claim", func() string {
-			return iss.Mint(t, iss.Priv, "hotserve", nil, time.Now().Add(5*time.Minute))
+			return iss.Mint(t, iss.Priv, "motel", nil, time.Now().Add(5*time.Minute))
 		}},
 		{"expired", func() string {
-			return iss.Mint(t, iss.Priv, "hotserve", want, time.Now().Add(-time.Hour))
+			return iss.Mint(t, iss.Priv, "motel", want, time.Now().Add(-time.Hour))
 		}},
 		{"unknown signing key", func() string {
 			other, _ := rsa.GenerateKey(rand.Reader, 2048)
-			return iss.Mint(t, other, "hotserve", want, time.Now().Add(5*time.Minute))
+			return iss.Mint(t, other, "motel", want, time.Now().Add(5*time.Minute))
 		}},
 	}
 	for _, tc := range cases {
@@ -383,18 +383,18 @@ func TestOIDCVerifier(t *testing.T) {
 func TestOIDCVerifierNumericClaim(t *testing.T) {
 	iss := trusttest.NewIssuer(t)
 	v := &oidcVerifier{
-		issuer: iss.URL, audience: "hotserve",
+		issuer: iss.URL, audience: "motel",
 		claims: map[string]string{"repository_id": "100000000"},
 		client: iss.Client,
 	}
 	settled(t, v)
-	tok := iss.MintClaims(t, "hotserve", time.Now().Add(5*time.Minute),
+	tok := iss.MintClaims(t, "motel", time.Now().Add(5*time.Minute),
 		map[string]any{"repository_id": 100000000})
 	if _, err := v.verify(context.Background(), tok); err != nil {
 		t.Fatalf("token with numeric repository_id rejected: %v", err)
 	}
 	// A different numeric id must still be rejected.
-	bad := iss.MintClaims(t, "hotserve", time.Now().Add(5*time.Minute),
+	bad := iss.MintClaims(t, "motel", time.Now().Add(5*time.Minute),
 		map[string]any{"repository_id": 999})
 	if _, err := v.verify(context.Background(), bad); err == nil {
 		t.Fatal("wrong repository_id must be rejected")
@@ -406,12 +406,12 @@ func TestOIDCVerifierNumericClaim(t *testing.T) {
 	// reformatting (which would round 2^53+1 down to 2^53).
 	const big = int64(9007199254740993) // 2^53 + 1
 	bigV := &oidcVerifier{
-		issuer: iss.URL, audience: "hotserve",
+		issuer: iss.URL, audience: "motel",
 		claims: map[string]string{"repository_id": "9007199254740993"},
 		client: iss.Client,
 	}
 	settled(t, bigV)
-	bigTok := iss.MintClaims(t, "hotserve", time.Now().Add(5*time.Minute),
+	bigTok := iss.MintClaims(t, "motel", time.Now().Add(5*time.Minute),
 		map[string]any{"repository_id": big})
 	if _, err := bigV.verify(context.Background(), bigTok); err != nil {
 		t.Fatalf("token with a >2^53 repository_id rejected: %v", err)
@@ -438,10 +438,10 @@ func TestOIDCVerifierIssuerDown(t *testing.T) {
 	// Each case its own issuer, since every source of one issuer shares
 	// its state (issuerState).
 	source := func(iss *trusttest.Issuer) *oidcVerifier {
-		return &oidcVerifier{issuer: iss.URL, audience: "hotserve", claims: want, client: iss.Client, clock: c}
+		return &oidcVerifier{issuer: iss.URL, audience: "motel", claims: want, client: iss.Client, clock: c}
 	}
 	valid := func(iss *trusttest.Issuer) string {
-		return iss.Mint(t, iss.Priv, "hotserve", want, time.Now().Add(5*time.Minute))
+		return iss.Mint(t, iss.Priv, "motel", want, time.Now().Add(5*time.Minute))
 	}
 	wantDown := func(t *testing.T, iss *trusttest.Issuer, err error, what string) unavailable {
 		t.Helper()
@@ -567,7 +567,7 @@ func TestOIDCVerifierIssuerDown(t *testing.T) {
 	// So is a bad signature under a kid the box holds: refused on the
 	// spot, with no fetch to fail.
 	other, _ := rsa.GenerateKey(rand.Reader, 2048)
-	_, err = v.verify(ctx, iss.Mint(t, other, "hotserve", want, time.Now().Add(5*time.Minute)))
+	_, err = v.verify(ctx, iss.Mint(t, other, "motel", want, time.Now().Add(5*time.Minute)))
 	wantPlain(t, err, "bad signature under a held kid during an outage")
 	if n := iss.JWKSFetches.Load(); n != before {
 		t.Fatalf("issuer down with keys cached: %d fetches, want none", n-before)
@@ -578,7 +578,7 @@ func TestOIDCVerifierIssuerDown(t *testing.T) {
 	// the interval is the outage's, without fetching again.
 	c.Advance(RefetchInterval)
 	unknown := func() error {
-		_, err := v.verify(ctx, iss.MintKID(t, other, "unknown", "hotserve", want, time.Now().Add(5*time.Minute)))
+		_, err := v.verify(ctx, iss.MintKID(t, other, "unknown", "motel", want, time.Now().Add(5*time.Minute)))
 		return err
 	}
 	wantPlain(t, unknown(), "unknown kid beginning a fetch during an outage")
@@ -600,9 +600,9 @@ func TestAuthorizeNamesEverySourceItCouldNotConsult(t *testing.T) {
 	iss := trusttest.NewIssuer(t)
 	iss.DiscoveryDown.Store(true)
 	priv, pub := trusttest.GenerateKey()
-	local := &localVerifier{audience: "hotserve", pub: pub, keyPath: "/k.pem", maxTTL: DefaultMaxTokenTTL}
+	local := &localVerifier{audience: "motel", pub: pub, keyPath: "/k.pem", maxTTL: DefaultMaxTokenTTL}
 	c := trusttest.NewClock()
-	down := &oidcVerifier{issuer: iss.URL, audience: "hotserve", client: iss.Client, clock: c}
+	down := &oidcVerifier{issuer: iss.URL, audience: "motel", client: iss.Client, clock: c}
 	settled(t, down) // its discovery has failed: an outage, not a source not yet ready
 	labels := func(down []unavailable) string {
 		var out []string
@@ -624,14 +624,14 @@ func TestAuthorizeNamesEverySourceItCouldNotConsult(t *testing.T) {
 	// Two sources down: both named, in config order.
 	iss2 := trusttest.NewIssuer(t)
 	iss2.DiscoveryDown.Store(true)
-	down2 := &oidcVerifier{issuer: iss2.URL, audience: "hotserve", client: iss2.Client}
+	down2 := &oidcVerifier{issuer: iss2.URL, audience: "motel", client: iss2.Client}
 	settled(t, down2)
 	if _, got, err := authorize(context.Background(), []Verifier{down, local, down2}, bad); err == nil || labels(got) != down.Label()+" "+down2.Label() {
 		t.Fatalf("two sources down: err = %v, down = %q, want both", err, labels(got))
 	}
 	// A source after the down one accepts the token: authorized, and
 	// the down one is still named.
-	good := trusttest.Mint(t, priv, "hotserve", nil)
+	good := trusttest.Mint(t, priv, "motel", nil)
 	if by, got, err := authorize(context.Background(), []Verifier{down, local}, good); err != nil || by.By != local.Label() || labels(got) != down.Label() {
 		t.Fatalf("accepted past a down source: by = %q, down = %q, err = %v", by.By, labels(got), err)
 	}
@@ -726,11 +726,11 @@ func TestAuthorizeAttributes(t *testing.T) {
 
 	iss := trusttest.NewIssuer(t)
 	gh := Verifiers([]Source{{
-		kind: "oidc", issuer: iss.URL, audience: "hotserve",
+		kind: "oidc", issuer: iss.URL, audience: "motel",
 		claims: map[string]string{"repository": "org/blog"}, attribution: attributionClaims["github"],
 	}}, iss.Client)
 	settled(t, gh...)
-	tok := iss.Mint(t, iss.Priv, "hotserve", map[string]string{
+	tok := iss.Mint(t, iss.Priv, "motel", map[string]string{
 		"repository": "org/blog", "ref": "refs/heads/main", "actor": "alice",
 		"sub": "repo:org/blog:ref:refs/heads/main",
 	}, time.Now().Add(5*time.Minute))
@@ -751,7 +751,7 @@ func TestAuthorizeSaysWhy(t *testing.T) {
 	local := Verifiers([]Source{localTrust(pub, "aud1")}, nil)
 	iss := trusttest.NewIssuer(t)
 	gh := Verifiers([]Source{{
-		kind: "oidc", issuer: iss.URL, audience: "hotserve",
+		kind: "oidc", issuer: iss.URL, audience: "motel",
 		claims: map[string]string{"repository": "org/blog"}, attribution: attributionClaims["github"],
 	}}, iss.Client)
 	settled(t, gh...)
@@ -771,12 +771,12 @@ func TestAuthorizeSaysWhy(t *testing.T) {
 		{"garbage", local, "not-a-jwt", []string{"local:test-key: "}},
 		{"wrong audience", local, trusttest.Mint(t, priv, "other", nil), []string{"local:test-key: ", "aud"}},
 		{"expired", local, trusttest.MintExpired(t, priv, "aud1", nil), []string{"local:test-key: ", "exp"}},
-		{"bad signature under a held kid names the reload", gh, iss.Mint(t, otherRSA, "hotserve", nil, time.Now().Add(time.Minute)),
-			[]string{"oidc:" + iss.URL + ": ", `kid "` + iss.KID + `": the token is another issuer's, or, if the issuer replaced that key, systemctl reload hotserve`}},
+		{"bad signature under a held kid names the reload", gh, iss.Mint(t, otherRSA, "motel", nil, time.Now().Add(time.Minute)),
+			[]string{"oidc:" + iss.URL + ": ", `kid "` + iss.KID + `": the token is another issuer's, or, if the issuer replaced that key, systemctl reload motel`}},
 		{"claim mismatch names who tried", gh,
-			mint("hotserve", map[string]string{"repository": "org/other", "ref": "refs/heads/main", "actor": "alice"}),
+			mint("motel", map[string]string{"repository": "org/other", "ref": "refs/heads/main", "actor": "alice"}),
 			[]string{"oidc:" + iss.URL + ": claim \"repository\" mismatch, presented repository=org/other ref=refs/heads/main actor=alice"}},
-		{"claim absent, nothing presented", gh, mint("hotserve", nil), []string{"claim \"repository\" absent from token, presented nothing"}},
+		{"claim absent, nothing presented", gh, mint("motel", nil), []string{"claim \"repository\" absent from token, presented nothing"}},
 		{"every source, config order", both, "not-a-jwt", []string{"oidc:" + iss.URL + ": ", "; local:test-key: "}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -802,9 +802,9 @@ func TestAuthorizeSaysWhy(t *testing.T) {
 	// the cut takes the identity, never the reason in front of it.
 	for name, tok := range map[string]string{
 		"long audience":       mint(strings.Repeat("a", 10_000), nil),
-		"long ascii identity": mint("hotserve", map[string]string{"repository": "org/" + strings.Repeat("r", 400)}),
-		"long emoji identity": mint("hotserve", map[string]string{"repository": "org/" + strings.Repeat("😀", 200), "ref": "refs/heads/é"}),
-		"control in identity": mint("hotserve", map[string]string{"repository": "org/" + strings.Repeat("a\n", 200)}),
+		"long ascii identity": mint("motel", map[string]string{"repository": "org/" + strings.Repeat("r", 400)}),
+		"long emoji identity": mint("motel", map[string]string{"repository": "org/" + strings.Repeat("😀", 200), "ref": "refs/heads/é"}),
+		"control in identity": mint("motel", map[string]string{"repository": "org/" + strings.Repeat("a\n", 200)}),
 	} {
 		by, _, err := authorize(ctx, gh, tok)
 		if err == nil {

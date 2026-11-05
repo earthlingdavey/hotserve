@@ -36,8 +36,8 @@ func newNonce() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// socketRef is one instance's socket as hotserve dials it. The app
-// binds path, under run/, which the app can write; hotserve never
+// socketRef is one instance's socket as motel dials it. The app
+// binds path, under run/, which the app can write; motel never
 // dials that name. The first successful dial verifies it is a socket
 // (a symlink is refused, not followed) and hard-links the inode to
 // pinned, under proxy/, which no app's view contains — and every dial
@@ -45,13 +45,13 @@ func newNonce() (string, error) {
 // What the app does to its own name afterwards changes nothing; the
 // consequence for apps is to bind the socket once per instance, since
 // an instance that unlinks and re-binds its path is dialling nobody
-// as far as hotserve is concerned and the watchdog restarts it. The
+// as far as motel is concerned and the watchdog restarts it. The
 // pinned name is unique per instance and never reused, so a request
 // that dials it after the instance is retired gets nobody — never
 // another app.
 type socketRef struct {
 	path   string // what the app binds
-	pinned string // what hotserve dials
+	pinned string // what motel dials
 	dir    string // the instance's own run dir, removed with the pin; "" = none
 
 	mu      sync.Mutex
@@ -73,7 +73,7 @@ func (s *socketRef) dial() (string, error) {
 	}
 	if !s.linked {
 		if st, err := os.Lstat(s.pinned); err == nil && st.Mode()&os.ModeSocket != 0 {
-			// Pinned by an earlier hotserve: a reattach finds the
+			// Pinned by an earlier motel: a reattach finds the
 			// link it left, which is the inode the unit still serves.
 			s.linked = true
 			return s.pinned, nil
@@ -138,7 +138,7 @@ var ownerLocks sync.Map // app name → *sync.Mutex; one per name ever seen
 // and the one being launched, whose run dir already exists. retire
 // removes an instance's run dir and pin (the unit removes nothing
 // itself: it has one Exec*=, #311); this is the belt for anything left behind — an
-// instance that died while hotserve was down — run when the manager's
+// instance that died while motel was down — run when the manager's
 // word is that nothing else is running. Best-effort: what cannot be
 // removed is logged, and the next launch's fresh nonce never collides
 // with it anyway.
@@ -154,7 +154,7 @@ var ownerLocks sync.Map // app name → *sync.Mutex; one per name ever seen
 // (resolveBindSources); proxy/ is no bind source, so a linked proxy/
 // launches, and this check is what keeps its prune off the sibling's
 // pins. The check is on the pathname, so a link swapped in after it is
-// followed. Under a root only hotserve can write, only the hotserve
+// followed. Under a root only motel can write, only the motel
 // uid could swap one in, and it could remove the socket directly
 // anyway.
 func pruneSockets(d appDirs, keep []string, logger *zap.Logger) {
@@ -191,7 +191,7 @@ func pruneSockets(d appDirs, keep []string, logger *zap.Logger) {
 
 // validateSocketPath refuses a root and app name whose socket paths
 // would not fit in sun_path — the one the app binds under run/ and
-// the longer one hotserve dials under proxy/. Checked at config load
+// the longer one motel dials under proxy/. Checked at config load
 // because the bind, or every connect, would otherwise fail at deploy
 // time with an error that names no cause.
 func validateSocketPath(root, name string) error {

@@ -124,7 +124,7 @@ can succeed. Seen failing first: the six-loop reproduction above,
   journal gives it. CI's rate: 0 in 8.
 - **Reproduced, the unmodified test, journald stopped for its first
   2 s: 3/3 failed** — `runner_systemd_integration_test.go:386: journal
-  tail of hotserve-itest.journaltail.0a1b2c3d0a1b2c3d.prestart.service:
+  tail of motel-itest.journaltail.0a1b2c3d0a1b2c3d.prestart.service:
   [], <nil>` (5.11–5.14 s), the natural failure's message. Control:
   pass, 0.07 s.
 - Not measured, from the source only: that the stream's peer is the
@@ -141,7 +141,7 @@ cgroup; nothing an app writes can set it). The options:
   --output-fields=_STREAM_ID` learns the streams, from lines
   attributed to the units **or** written by a unit's main process
   (`_PID=` the manager's `ExecMainPID`, with `SYSLOG_IDENTIFIER=
-  hotserve-<app>`); a second reads `_SYSTEMD_USER_UNIT=… +
+  motel-<app>`); a second reads `_SYSTEMD_USER_UNIT=… +
   _STREAM_ID=…` as the tail. Recovers the flake's lines (the main
   process's) **and children's last lines (0/20 today)**. Trust: a
   stream id is journald's, and only the unit's own processes hold the
@@ -151,10 +151,10 @@ cgroup; nothing an app writes can set it). The options:
   exit (one fake runner), the reader's two runs; ~100–150 lines with
   tests.
 - **(B) The main process's pid only.** One run: `_SYSTEMD_USER_UNIT=…
-  + _PID=<main pid> SYSLOG_IDENTIFIER=hotserve-<app>`. Fixes the
+  + _PID=<main pid> SYSLOG_IDENTIFIER=motel-<app>`. Fixes the
   flake; a child's last lines stay lost every time. ~50–70 lines.
 - **(C) Say so only.** When nothing is attributed, `log_tail_error`
-  says why and names `journalctl -t hotserve-<app>`. No line
+  says why and names `journalctl -t motel-<app>`. No line
   recovered; a tail missing a child's last line stays silent. Changes
   `TestFailureDetail…` "an empty journal is no tail and no error".
 
@@ -163,7 +163,7 @@ journald stopped through the unit's life (the message above); a
 child's one line in the tail, journald idle (lost 20/20 today);
 unit rows for the query's arguments.
 
-### 2.3 Measured for (A)'s reader (a throwaway `hotserve-dev-systemd`, systemd 257)
+### 2.3 Measured for (A)'s reader (a throwaway `motel-dev-systemd`, systemd 257)
 
 - `journalctl -F _STREAM_ID` takes no matches: "Extraneous arguments
   starting with '_SYSTEMD_USER_UNIT=…'". So the streams are learnt
@@ -215,17 +215,17 @@ rows written and seen failing, then the fill.
 | stream ids read from journalctl's JSON; a cut line, a wrong shape, a repeat skipped | unit | `streamIDs` |
 | a child's one line is in the tail, journald idle | integration | the stream (0/20 attributed today) |
 | journald stopped through the unit's life: both lines in the tail | integration | the pid step (the flake) |
-| e2e 5b: the crash release's `fatal: cannot start` comes from a child | e2e | the whole path as the `hotserve` user, the system journal |
+| e2e 5b: the crash release's `fatal: cannot start` comes from a child | e2e | the whole path as the `motel` user, the system journal |
 
 **Seen failing (2026-10-02), the signatures in, nothing filled** (pids
 0, the reader asking by unit only, stubs for the new pieces):
 
-- `app_detail_test.go:69: journal asked by pids [] under "hotserve-demo", want [731] under hotserve-demo`
+- `app_detail_test.go:69: journal asked by pids [] under "motel-demo", want [731] under motel-demo`
 - `app_detail_test.go:104: journal asked by pids [], want the app's [4242]`
 - `TestJournalArgs`: all five cases `got []`, each `want` the list in the table
 - `app_detail_test.go:252: stream ids = "", want "0123…,fedc…"`
-- `runner_systemd_integration_test.go:376: journal tail of [hotserve-itest.journaltail.0a1b2c3d0a1b2c3d.prestart.service] (pids [0]): ["first line" "second line"], <nil>` (5.18 s) — the child's line missing
-- `runner_systemd_integration_test.go:402: journal tail of [hotserve-itest.journaltailwhenjournaldisbehind.0a1b2c3d0a1b2c3d.prestart.service] (pids [0]): [], <nil>` (5.22 s) — the flake
+- `runner_systemd_integration_test.go:376: journal tail of [motel-itest.journaltail.0a1b2c3d0a1b2c3d.prestart.service] (pids [0]): ["first line" "second line"], <nil>` (5.18 s) — the child's line missing
+- `runner_systemd_integration_test.go:402: journal tail of [motel-itest.journaltailwhenjournaldisbehind.0a1b2c3d0a1b2c3d.prestart.service] (pids [0]): [], <nil>` (5.22 s) — the flake
 - `make e2e`: `FAIL: stderr line missing from the tail: … "detail":{"exit":"exit status 3","log_tail":["starting with SECRET=[redacted:SECRET]"]}` — 1 assertion of the suite
 
 ## 4b. `/code-review xhigh` on 7b at `fb8a45b` (2026-10-02): seven findings, ranked before any work
@@ -289,7 +289,7 @@ After all of it: both tests 5/5 idle, 10/10 at six loops (refusals max
 | F1 | streams are learnt only from attributed lines or the main pid's: a silent wrapper (`sh` → `node`) whose child prints and exits still gives an empty tail; the README's "their child processes' lines are in it too" is false for it | high | the shape through the reader; can a sandboxed app reach journald's sockets (a full fix would trust unattributed streams — the security model) |
 | F2 | `failureDetail` stops after two empty reads (~200 ms): journald behind by more → no tail, no error; the tests poll 5 s on their own | medium | a pre_start failure through `failureDetail`, journald paused |
 | F4 | a pre_start that succeeded records no pid: its unattributed lines are lost if the app then fails | medium-low | is `ExecMainPID` readable when a successful oneshot's job returns |
-| F3 | an app hotserve stops (health timeout, probe) passes no pid | medium-low | unit row |
+| F3 | an app motel stops (health timeout, probe) passes no pid | medium-low | unit row |
 | F9 | the instance's pid path (`Start`, `Exit`, the watcher's snapshot) is tested only through a fake | medium (test gap) | integration row |
 | F8 | `pauseJournald` resumes from `t.Cleanup` only: a panic leaves journald stopped for the lane | low-medium | a resume that outlives the test binary |
 | F6 | lines sent to the journal directly fill the learning window's n+1 slots | low | can apps reach the socket; `_TRANSPORT=stdout` |
@@ -328,7 +328,7 @@ out, as before this PR, and the docs say which lines the tail recovers.
 **Decided, each fixed as a row seen failing first:**
 
 - **F1/F4 — said.** README `log_tail`, `journalctlReader`'s comment:
-  the two shapes named, `journalctl -t hotserve-<app>` for every line.
+  the two shapes named, `journalctl -t motel-<app>` for every line.
 - **F2 — fixed.** Before: `app_detail_test.go:145: a journal two reads
   behind: detail &{Exit:exit status 3 … LogTail:[] …} after 2 reads`.
   The loop gives up on "no growth" only once it has lines; with none it
@@ -343,7 +343,7 @@ out, as before this PR, and the docs say which lines the tail recovers.
   `Start`, journald paused through the instance's life, `Exit`'s pid
   finds both lines. Passes; with `Exit` reporting pid 0 (overlay):
   `runner_systemd_integration_test.go:435: journal tail of
-  [hotserve-itest.journaltailofaninstance.0a1b2c3d0a1b2c3d.service]
+  [motel-itest.journaltailofaninstance.0a1b2c3d0a1b2c3d.service]
   (pid 0): [], <nil>`.
 - **F10 — fixed.** Before: `TestJournalArgs` wanting `-o cat`, and
   `stream ids = ""` on cat output. After: `-o cat

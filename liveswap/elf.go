@@ -30,7 +30,7 @@ import (
 
 // preflightError is a refusal the deployer can act on — the release
 // or the box's runtime layout as given — which the deploy reports as
-// a 422. Any other error from a pre-flight is hotserve's own (a bind
+// a 422. Any other error from a pre-flight is motel's own (a bind
 // source that cannot be resolved, a file that cannot be read) and is
 // reported as such.
 type preflightError struct{ msg string }

@@ -1,26 +1,26 @@
 #!/bin/bash
 # Inside a fresh install-test container: a rebuilt box. System users made
-# first, so that `hotserve` gets another uid than the first box's 996; the
+# first, so that `motel` gets another uid than the first box's 996; the
 # RC .deb; the same Caddyfile (app demo, its backup block); nothing deployed
 # and no data — "A rebuilt box" restores before the first deploy.
 set -eu
 mount --make-rshared /
 useradd --system other1; useradd --system other2; useradd --system other3
-cd /root && cp /rc/hotserve_0.3.0.rc1_arm64.deb .
+cd /root && cp /rc/motel_0.3.0.rc1_arm64.deb .
 apt-get update -qq
-apt-get install -y ./hotserve_0.3.0.rc1_arm64.deb >/dev/null 2>&1
-systemctl enable --now hotserve >/dev/null 2>&1
-hotserve deploy-keygen --out /etc/hotserve/deploy.key >/dev/null
-cat >/etc/hotserve/Caddyfile <<'EOF'
+apt-get install -y ./motel_0.3.0.rc1_arm64.deb >/dev/null 2>&1
+systemctl enable --now motel >/dev/null 2>&1
+motel deploy-keygen --out /etc/motel/deploy.key >/dev/null
+cat >/etc/motel/Caddyfile <<'EOF'
 {
-	admin unix//run/hotserve/admin.sock
+	admin unix//run/motel/admin.sock
 	auto_https off
 	liveswap {
 		root /var/lib/liveswap
 		allow_insecure_http
 		artifact_allowlist 127.0.0.1:8200
 		deploy_trust local {
-			public_key /etc/hotserve/deploy.key.pub
+			public_key /etc/motel/deploy.key.pub
 			audience rc
 		}
 		app demo {
@@ -41,7 +41,7 @@ cat >/etc/hotserve/Caddyfile <<'EOF'
 	liveswap_webhook
 }
 EOF
-systemctl reload hotserve
+systemctl reload motel
 adduser --disabled-password --comment "" bob >/dev/null; usermod -aG sudo,adm bob
 echo 'bob ALL=(ALL:ALL) NOPASSWD: ALL' >/etc/sudoers.d/bob && chmod 0440 /etc/sudoers.d/bob
-echo "rebuilt box ready: $(dpkg -s hotserve | grep '^Version'), hotserve uid $(id -u hotserve) (the first box's: 996); /var/lib/liveswap holds: $(ls /var/lib/liveswap | tr '\n' ' ')"
+echo "rebuilt box ready: $(dpkg -s motel | grep '^Version'), motel uid $(id -u motel) (the first box's: 996); /var/lib/liveswap holds: $(ls /var/lib/liveswap | tr '\n' ' ')"

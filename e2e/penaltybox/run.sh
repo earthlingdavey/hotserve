@@ -5,8 +5,8 @@
 # don't contaminate each other's budgets.
 set -u
 
-BASE="http://e2e-hotserve:9080"
-CACHED_BASE="http://e2e-hotserve:9090" # same module + Souin cache (Otter storage)
+BASE="http://e2e-motel:9080"
+CACHED_BASE="http://e2e-motel:9090" # same module + Souin cache (Otter storage)
 . /lib.sh
 
 # code <client-ip> <query> -> prints HTTP status code
@@ -33,12 +33,12 @@ cache_status() {
 	cheaders "$1" "$2" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-status" {print $2}'
 }
 
-echo "=== waiting for e2e-hotserve to become ready ==="
+echo "=== waiting for e2e-motel to become ready ==="
 i=0
 until curl -fs -o /dev/null "$BASE/?level=1" 2>/dev/null; do
 	i=$((i + 1))
 	if [ "$i" -ge 30 ]; then
-		echo "FATAL: e2e-hotserve did not become ready within 30s"
+		echo "FATAL: e2e-motel did not become ready within 30s"
 		exit 1
 	fi
 	sleep 1
@@ -122,7 +122,7 @@ else
 fi
 
 echo "=== scenario 6b: two-tier policy (tight tier 3, loose tier 2) ==="
-TIER_BASE="http://e2e-hotserve:9091"
+TIER_BASE="http://e2e-motel:9091"
 tcode() {
 	curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: $1" "$TIER_BASE/?$2"
 }

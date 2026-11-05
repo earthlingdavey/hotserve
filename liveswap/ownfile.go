@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// The files hotserve keeps in an app's directory — the deploy records
+// The files motel keeps in an app's directory — the deploy records
 // (deploys.go) and state.json (state.go) — are written and read by the
 // two functions here, so the stores hold one set of rules rather than
 // two copies of it. These names sit in the app dir itself, which no
@@ -30,7 +30,7 @@ import (
 //     before the rename leaves it, for its store to remove. No fsync.
 //   - A read does not follow a link at the name (O_NOFOLLOW), does not
 //     block on a FIFO (O_NONBLOCK), and refuses anything but a regular
-//     file, and a file larger than its store's bound: no file hotserve
+//     file, and a file larger than its store's bound: no file motel
 //     wrote is.
 //
 // The directory is the caller's to vouch for: recordsDir checks the

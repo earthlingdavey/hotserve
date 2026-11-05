@@ -39,12 +39,12 @@ func file(s string) []byte {
 }
 
 const good = `{
-	admin unix//run/hotserve/admin.sock
+	admin unix//run/motel/admin.sock
 	email {$ACME_EMAIL:ops@example.com}
 
 	box {
 		deploy_trust github {
-			audience hotserve
+			audience motel
 			claim repository your-org/boxes
 		}
 		# signers
@@ -139,8 +139,8 @@ func TestWalkRefuses(t *testing.T) {
 		"no signer":                      {strings.Replace(strings.Replace(good, "\t\tsigner alice@example.com ssh-ed25519 K1\n", "", 1), "\t\tsigner bob ssh-ed25519 K2\n", "", 1), "has no signer"},
 		"box empty":                      {strings.Replace(good, "\tbox {\n", "\tbox {\n\t}\n\tbox_ {\n", 1), "has no signer"},
 		"box without a block":            {strings.Replace(good, "\tbox {\n", "\tbox\n\tbox_ {\n", 1), "has no signer"},
-		"no deploy_trust":                {strings.Replace(good, "\t\tdeploy_trust github {\n\t\t\taudience hotserve\n\t\t\tclaim repository your-org/boxes\n\t\t}\n", "", 1), "has no deploy_trust"},
-		"empty deploy_trust":             {strings.Replace(good, "\t\tdeploy_trust github {\n\t\t\taudience hotserve\n\t\t\tclaim repository your-org/boxes\n\t\t}\n", "\t\tdeploy_trust github {\n\t\t}\n", 1), "has no deploy_trust"},
+		"no deploy_trust":                {strings.Replace(good, "\t\tdeploy_trust github {\n\t\t\taudience motel\n\t\t\tclaim repository your-org/boxes\n\t\t}\n", "", 1), "has no deploy_trust"},
+		"empty deploy_trust":             {strings.Replace(good, "\t\tdeploy_trust github {\n\t\t\taudience motel\n\t\t\tclaim repository your-org/boxes\n\t\t}\n", "\t\tdeploy_trust github {\n\t\t}\n", 1), "has no deploy_trust"},
 		"signer two args":                {strings.Replace(good, "signer bob ssh-ed25519 K2", "signer bob K2", 1), "has a signer line that is not `signer <principal> <key-type> <base64>`"},
 		"signer four args":               {strings.Replace(good, "signer bob ssh-ed25519 K2", "signer bob ssh-ed25519 K2 extra", 1), "has a signer line that is not"},
 		"signer with a block":            {strings.Replace(good, "signer bob ssh-ed25519 K2", "signer bob ssh-ed25519 K2 {\n\t\t}", 1), "has a signer line that is not"},
@@ -170,7 +170,7 @@ func TestWalkRefuses(t *testing.T) {
 		"placeholder directive":          {strings.Replace(good, "\tbox_webhook\n", "\t{$DIRECTIVE:respond} ok\n\tbox_webhook\n", 1), "has a placeholder where a directive name, a site address or a box line goes ({$DIRECTIVE:respond})"},
 		"placeholder option":             {strings.Replace(good, "\tadmin unix", "\t{$ADMIN:admin} unix", 1), "has a placeholder where"},
 		"placeholder signer":             {strings.Replace(good, "ssh-ed25519 K2", "ssh-ed25519 {$BOB_KEY}", 1), "has a placeholder where a directive name, a site address or a box line goes ({$BOB_KEY})"},
-		"placeholder in trust":           {strings.Replace(good, "audience hotserve", "audience {$AUD}", 1), "has a placeholder where"},
+		"placeholder in trust":           {strings.Replace(good, "audience motel", "audience {$AUD}", 1), "has a placeholder where"},
 		"placeholder box line":           {strings.Replace(good, "\t\t# signers\n", "\t\t{$X:signer} a b c\n", 1), "has a placeholder where"},
 		"import top":                     {"import snippets/*\n" + good, "imports snippets/*; inline the snippet"},
 		"import in global":               {strings.Replace(good, "\tadmin unix", "\timport common\n\tadmin unix", 1), "imports common;"},
@@ -260,7 +260,7 @@ func TestExpandEmptyEnvIsLinear(t *testing.T) {
 // evil` is a line of its own. Caddy's own parser confirms it would
 // import.
 func TestWalkSeesThroughPlaceholderQuotes(t *testing.T) {
-	in := file(strings.Replace(good, "\tbox_webhook\n", "\tbox_webhook\n\trespond {$HOTSERVE_BOX_TEST_UNSET_Q:\"} \"a\nimport evil\" {$HOTSERVE_BOX_TEST_UNSET_R:\"}\n", 1))
+	in := file(strings.Replace(good, "\tbox_webhook\n", "\tbox_webhook\n\trespond {$MOTEL_BOX_TEST_UNSET_Q:\"} \"a\nimport evil\" {$MOTEL_BOX_TEST_UNSET_R:\"}\n", 1))
 	// The raw reading alone is fooled.
 	if _, err := walk(in); err != nil {
 		t.Fatalf("the raw reading should pass: %v", err)
@@ -270,7 +270,7 @@ func TestWalkSeesThroughPlaceholderQuotes(t *testing.T) {
 	if !errors.As(err, &r) || !strings.HasPrefix(r.Reason, "imports ") {
 		t.Fatalf("got %v", err)
 	}
-	unsetForTest(t, "HOTSERVE_BOX_TEST_UNSET_Q", "HOTSERVE_BOX_TEST_UNSET_R")
+	unsetForTest(t, "MOTEL_BOX_TEST_UNSET_Q", "MOTEL_BOX_TEST_UNSET_R")
 	if _, err := caddyfile.Parse("Caddyfile", in); err == nil || !strings.Contains(err.Error(), "import") {
 		t.Fatalf("Caddy's parser should try the import: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestWalkSeesThroughPlaceholderQuotes(t *testing.T) {
 // for an input whose placeholder names are unset, the tokens Parse
 // makes are the tokens of the input expanded here, braces aside.
 func TestExpandEmptyEnvPinsCaddy(t *testing.T) {
-	const a, b = "HOTSERVE_BOX_TEST_UNSET_A", "HOTSERVE_BOX_TEST_UNSET_B"
+	const a, b = "MOTEL_BOX_TEST_UNSET_A", "MOTEL_BOX_TEST_UNSET_B"
 	unsetForTest(t, a, b)
 	for _, in := range []string{
 		"x {$" + a + ":dflt} y",

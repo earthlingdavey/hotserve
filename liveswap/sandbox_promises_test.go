@@ -55,7 +55,7 @@ func TestSandboxedEnvCarriesNoSupervisorSecrets(t *testing.T) {
 	secrets := map[string]string{
 		"ACME_DNS_TOKEN":           "s3cret",
 		"AWS_SECRET_ACCESS_KEY":    "s3cret",
-		"CADDY_ADMIN":              "/run/hotserve/admin.sock",
+		"CADDY_ADMIN":              "/run/motel/admin.sock",
 		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/997/bus",
 		"XDG_RUNTIME_DIR":          "/run/user/997",
 		"INVOCATION_ID":            "abc",
@@ -79,7 +79,7 @@ func TestSandboxedEnvCarriesNoSupervisorSecrets(t *testing.T) {
 
 // Promise: "`HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME` MUST be set
 // to a writable in-sandbox path. Inherited they point at
-// /var/lib/hotserve — outside the view — and every runtime that
+// /var/lib/motel — outside the view — and every runtime that
 // touches $HOME would ENOENT."
 //
 // Satisfied by not inheriting the XDG pair at all rather than by
@@ -88,9 +88,9 @@ func TestSandboxedEnvCarriesNoSupervisorSecrets(t *testing.T) {
 // that matters — nothing in the app's environment names a path outside
 // its view — is what this asserts, in both directions.
 func TestSandboxedEnvNamesNoPathOutsideTheView(t *testing.T) {
-	t.Setenv("HOME", "/var/lib/hotserve")
-	t.Setenv("XDG_DATA_HOME", "/var/lib/hotserve/caddy")
-	t.Setenv("XDG_CONFIG_HOME", "/var/lib/hotserve/config")
+	t.Setenv("HOME", "/var/lib/motel")
+	t.Setenv("XDG_DATA_HOME", "/var/lib/motel/caddy")
+	t.Setenv("XDG_CONFIG_HOME", "/var/lib/motel/config")
 	spec := testSpec(t)
 	env, err := buildEnv(spec, "v1", spec.dirs.socket("0a1b2c3d0a1b2c3d"), spec.dirs.release("v1"))
 	must(t, err)
@@ -109,7 +109,7 @@ func TestSandboxedEnvNamesNoPathOutsideTheView(t *testing.T) {
 }
 
 // Promise: "The network namespace MUST be shared: apps make outbound
-// calls, and hotserve reaches the app's socket at its real host path."
+// calls, and motel reaches the app's socket at its real host path."
 //
 // Nothing asserts the absence of the properties that would break it,
 // and unsharing the netns is a one-line change that no filesystem test
@@ -256,7 +256,7 @@ func TestTwoRoutesAroundTheAddressFamilyFilterAreClosed(t *testing.T) {
 // protocol's module on the first socket() that names it, as any user:
 // sctp, l2tp_ip, l2tp_ip6 and smc are modules on Debian 13, carry the
 // alias, and gate nothing at creation; dccp, tipc and rds load only by
-// root's hand and complete the CIS Debian set. hotserve ships nothing
+// root's hand and complete the CIS Debian set. motel ships nothing
 // for it, so the one thing to hold is the page: its one printf line
 // writes exactly this list, in order, to the file the page names, and
 // nothing else on the page writes that file. The list here is the one
@@ -268,7 +268,7 @@ func TestHardeningStepBlocksTheModuleBackedProtocols(t *testing.T) {
 		t.Fatalf("the hardening page: %v", err)
 	}
 	const form = `printf 'install %s /bin/false\n' `
-	const file = " > /etc/modprobe.d/hotserve-protocols.conf"
+	const file = " > /etc/modprobe.d/motel-protocols.conf"
 	want := []string{"sctp", "l2tp_ip", "l2tp_ip6", "smc", "dccp", "tipc", "rds"}
 	var got []string
 	writes := 0
@@ -286,7 +286,7 @@ func TestHardeningStepBlocksTheModuleBackedProtocols(t *testing.T) {
 		got = strings.Fields(line[i+len(form) : j])
 	}
 	if writes != 1 {
-		t.Fatalf("docs/hardening.md writes /etc/modprobe.d/hotserve-protocols.conf %d times, want once", writes)
+		t.Fatalf("docs/hardening.md writes /etc/modprobe.d/motel-protocols.conf %d times, want once", writes)
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the hardening step blocks %v, want %v (the design's list; change both together)", got, want)
@@ -341,7 +341,7 @@ func TestSocketIsInsideTheViewAndUniquePerInstance(t *testing.T) {
 	}
 	// And neither instance's view contains the other's run dir: the
 	// old instance a deploy replaces, running alongside, cannot reach
-	// the new socket's name before hotserve pins it.
+	// the new socket's name before motel pins it.
 	for i, spec := range specs {
 		other := specs[1-i]
 		if theirs := rig.spec.dirs.socket(other.nonce); spec.sandbox.inView(theirs) {
@@ -408,8 +408,8 @@ func TestEnvFileMayNotLandInAnotherAppsView(t *testing.T) {
 			"shop": app("/usr/local/etc/shop.env"),
 		}, "EVERY app's sandbox"},
 		{"the documented location is fine", map[string]*AppConfig{
-			"blog": app("/etc/hotserve/blog.env"),
-			"shop": app("/etc/hotserve/shop.env"),
+			"blog": app("/etc/motel/blog.env"),
+			"shop": app("/etc/motel/shop.env"),
 		}, ""},
 		// A neighbour's own dirs are bound into its unit: shared/
 		// read-WRITE, releases/ read-only. With nothing else able to
@@ -579,14 +579,14 @@ func TestEnvFileIsolationComparesBothSpellingsOfASiblingsDirs(t *testing.T) {
 // into every other app's sandbox. There is no sandbox setting that
 // could make such a root harmless, so there is no case in which it
 // loads. The supervisor-state rule is refused for its own reason: a
-// root inside hotserve's own keys is a mistake with or without a view.
+// root inside motel's own keys is a mistake with or without a view.
 func TestRootUnderTheBaseViewIsRefused(t *testing.T) {
 	const underBaseView = "/usr/local/liveswap"
 	if err := validateSandboxRoot(underBaseView); err == nil {
 		t.Fatal("a root under the base view must be refused: every app would read every other's data")
 	}
-	if err := validateSandboxRoot("/var/lib/hotserve/apps"); err == nil {
-		t.Error("a root inside hotserve's own state must always be refused")
+	if err := validateSandboxRoot("/var/lib/motel/apps"); err == nil {
+		t.Error("a root inside motel's own state must always be refused")
 	}
 	// And end to end, through Validate.
 	a := &App{

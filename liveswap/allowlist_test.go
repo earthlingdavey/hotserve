@@ -63,12 +63,12 @@ func TestMatchAllowlist(t *testing.T) {
 	)
 	for rawURL, want := range map[string]string{
 		// the org pin
-		"https://github.com/smallhoursorg/hotserve/releases/download/v1/a.tgz": admitted,
-		"https://github.com/smallhoursorg":                                     admitted,   // the prefix itself
-		"https://GITHUB.COM/smallhoursorg/x":                                   admitted,   // host case folds
-		"https://github.com/SmallHoursOrg/x":                                   notCovered, // path bytes are literal
-		"https://github.com/smallhoursorg-e/x":                                 notCovered, // segment boundary
-		"https://github.com/evilorg/x":                                         notCovered,
+		"https://github.com/smallhoursorg/motel/releases/download/v1/a.tgz": admitted,
+		"https://github.com/smallhoursorg":                                  admitted,   // the prefix itself
+		"https://GITHUB.COM/smallhoursorg/x":                                admitted,   // host case folds
+		"https://github.com/SmallHoursOrg/x":                                notCovered, // path bytes are literal
+		"https://github.com/smallhoursorg-e/x":                              notCovered, // segment boundary
+		"https://github.com/evilorg/x":                                      notCovered,
 		// the bare host
 		"https://artifacts.corp/anything/at/all.tgz":  admitted,
 		"https://ARTIFACTS.CORP/x":                    admitted,
@@ -120,7 +120,7 @@ func TestPinnedURLString(t *testing.T) {
 
 	for rawURL, want := range map[string]string{
 		// host case comes from config, not from the caller
-		"https://GITHUB.COM/smallhoursorg/hotserve/releases/v1.tgz": "https://github.com/smallhoursorg/hotserve/releases/v1.tgz",
+		"https://GITHUB.COM/smallhoursorg/motel/releases/v1.tgz": "https://github.com/smallhoursorg/motel/releases/v1.tgz",
 		// the prefix itself, no suffix
 		"https://github.com/smallhoursorg": "https://github.com/smallhoursorg",
 		// query survives (signed URLs), fragment and userinfo do not

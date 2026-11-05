@@ -27,7 +27,7 @@ func testHealthConfig() healthConfig {
 func alwaysAlive() bool { return true }
 
 // unixServer serves h on a unix socket, the way an app does under
-// hotserve, and returns the socket path.
+// motel, and returns the socket path.
 func unixServer(t *testing.T, h http.Handler) string {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "a.sock")
@@ -285,10 +285,10 @@ func TestProbeOnceNobodyListening(t *testing.T) {
 	}
 }
 
-// Promise: hotserve dials the socket by its pinned name under proxy/,
+// Promise: motel dials the socket by its pinned name under proxy/,
 // never by the app-writable one. A symlink planted under the app's
 // name is refused (it is not a socket); once pinned, replacing the
-// name changes nothing about where hotserve connects; and a retired
+// name changes nothing about where motel connects; and a retired
 // instance is never re-pinned, its pinned name removed.
 func TestSocketRefPinsTheSocketAndRefusesASymlink(t *testing.T) {
 	victim := unixServer(t, statusHandler(http.StatusTeapot)) // "the admin socket"

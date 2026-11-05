@@ -13,7 +13,7 @@ import (
 // The webhook's auth-failure throttle samples the journal; it does not
 // limit requests. Token forgery is infeasible (no private key on the
 // box), so failed authentications are not a guessing oracle; what an
-// unauthenticated caller can do with them is make hotserve write a
+// unauthenticated caller can do with them is make motel write a
 // Warn per request, without bound — a journal-fill primitive. The
 // throttle bounds that: an address's failures are counted up to
 // FailBudget per FailWindow, and further ones are neither counted nor

@@ -1,9 +1,9 @@
-// The hotserve product module: builds the shipped binary (cmd/hotserve).
+// The motel product module: builds the shipped binary (cmd/motel).
 // The liveswap and penaltybox modules stay independent so standalone
 // xcaddy users don't inherit Souin/Otter's dependency graphs; replace
 // directives are fine here because this module is only ever built from
 // this repo, never fetched with `go get`.
-module github.com/smallhoursorg/hotserve
+module github.com/smallhoursorg/motel
 
 go 1.27.1
 
@@ -11,9 +11,9 @@ require (
 	github.com/caddyserver/caddy/v2 v2.11.7
 	github.com/darkweak/souin/plugins/caddy v1.7.9
 	github.com/darkweak/storages/otter/caddy v0.0.22
-	github.com/smallhoursorg/hotserve/box v0.0.0-00010101000000-000000000000
-	github.com/smallhoursorg/hotserve/liveswap v0.0.0-00010101000000-000000000000
-	github.com/smallhoursorg/hotserve/penaltybox v0.0.0-00010101000000-000000000000
+	github.com/smallhoursorg/motel/box v0.0.0-00010101000000-000000000000
+	github.com/smallhoursorg/motel/liveswap v0.0.0-00010101000000-000000000000
+	github.com/smallhoursorg/motel/penaltybox v0.0.0-00010101000000-000000000000
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 )
@@ -199,9 +199,9 @@ require (
 )
 
 replace (
-	github.com/smallhoursorg/hotserve/box => ./box
-	github.com/smallhoursorg/hotserve/liveswap => ./liveswap
-	github.com/smallhoursorg/hotserve/penaltybox => ./penaltybox
+	github.com/smallhoursorg/motel/box => ./box
+	github.com/smallhoursorg/motel/liveswap => ./liveswap
+	github.com/smallhoursorg/motel/penaltybox => ./penaltybox
 )
 
 // govulncheck is a tool dependency (never compiled into the product,

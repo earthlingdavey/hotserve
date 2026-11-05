@@ -15,7 +15,7 @@ func TestCaddyfileUnmarshalFullConfig(t *testing.T) {
 	d := caddyfile.NewTestDispenser(`liveswap {
 		root /srv/liveswap
 		deploy_trust github {
-			audience hotserve
+			audience motel
 			claim repository smallhoursorg/site
 		}
 		allow_insecure_http
@@ -28,7 +28,7 @@ func TestCaddyfileUnmarshalFullConfig(t *testing.T) {
 			env DB sqlite:{shared_dir}/blog.db
 			env_file /etc/liveswap/blog.env
 			deploy_trust local {
-				public_key /etc/hotserve/blog.pub
+				public_key /etc/motel/blog.pub
 				subject ci@smallhours
 			}
 			health_path /healthz
@@ -65,7 +65,7 @@ func TestCaddyfileUnmarshalFullConfig(t *testing.T) {
 		t.Fatalf("globals wrong: %+v", a)
 	}
 	if len(a.DeployTrust) != 1 || a.DeployTrust[0].Kind != "github" ||
-		a.DeployTrust[0].Audience != "hotserve" ||
+		a.DeployTrust[0].Audience != "motel" ||
 		a.DeployTrust[0].Claims["repository"] != "smallhoursorg/site" {
 		t.Fatalf("global deploy_trust wrong: %+v", a.DeployTrust)
 	}
@@ -90,7 +90,7 @@ func TestCaddyfileUnmarshalFullConfig(t *testing.T) {
 		t.Fatalf("env_file wrong: %+v", blog)
 	}
 	if len(blog.DeployTrust) != 1 || blog.DeployTrust[0].Kind != "local" ||
-		blog.DeployTrust[0].PublicKey != "/etc/hotserve/blog.pub" ||
+		blog.DeployTrust[0].PublicKey != "/etc/motel/blog.pub" ||
 		blog.DeployTrust[0].Claims["sub"] != "ci@smallhours" {
 		t.Fatalf("per-app deploy_trust wrong: %+v", blog.DeployTrust)
 	}

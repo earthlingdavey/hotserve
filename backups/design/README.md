@@ -1,6 +1,6 @@
 # Backups: the design record
 
-The working notes behind `hotserve-backup`, kept as they were when the
+The working notes behind `motel-backup`, kept as they were when the
 feature was put on ice (2026-10-09). They are a record, not a guide: the
 operator guide is [docs/backups.md](../../docs/backups.md) and the reference is
 [backups/README.md](../README.md).
@@ -27,7 +27,7 @@ that held when they were written.
   `release-candidate.md` that runs restic against B2 is run again
   there, its new ones (9–12) among them; the native results stay in
   `rc-runs/` as the record they are.
-- Open work is labelled [`backup`](https://github.com/smallhoursorg/hotserve/issues?q=is%3Aopen+label%3Abackup).
+- Open work is labelled [`backup`](https://github.com/smallhoursorg/motel/issues?q=is%3Aopen+label%3Abackup).
   #172 (the threat model's Backups section) is the gate before `backup`
   merges into `main`.
 

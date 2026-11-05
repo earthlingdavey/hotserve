@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/smallhoursorg/hotserve/backups/restore"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/restore"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // Both apps run as one uid, so the unit that installs a restore could
@@ -37,8 +37,8 @@ func TestIntegrationARestoreNeverLandsInASiblingsDataWhateverTheAppDoesToTheName
 		}
 	}
 	// The command the unit runs, where a unit's view holds it.
-	self := "/usr/local/bin/hotserve-backup-restore-race"
-	if out, err := exec.Command("go", "build", "-o", self, "../cmd/hotserve-backup").CombinedOutput(); err != nil {
+	self := "/usr/local/bin/motel-backup-restore-race"
+	if out, err := exec.Command("go", "build", "-o", self, "../cmd/motel-backup").CombinedOutput(); err != nil {
 		t.Fatalf("building the command: %v: %s", err, out)
 	}
 	t.Cleanup(func() { _ = os.Remove(self) })
@@ -111,7 +111,7 @@ func TestIntegrationARestoreNeverLandsInASiblingsDataWhateverTheAppDoesToTheName
 		must(t, err)
 		out := filepath.Join(base, "stdout")
 		o, err := r.Run(context.Background(), unit.Spec{
-			Name: "hotserve_backup_test_restorerace_" + strconv.Itoa(i) + ".service",
+			Name: "motel_backup_test_restorerace_" + strconv.Itoa(i) + ".service",
 			Argv: []string{self, "install"},
 			User: dataUser, SameUIDNamespaces: true,
 			Binds:      []unit.Bind{{Source: fetched, Dest: "/restore"}, {Source: target, Dest: "/target", Writable: true}},

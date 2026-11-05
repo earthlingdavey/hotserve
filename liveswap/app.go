@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 	"go.uber.org/zap"
 )
 
@@ -244,7 +244,7 @@ type instance struct {
 	version string
 	nonce   string     // names the unit and the socket (newNonce)
 	socket  string     // the unix socket the app listens on
-	sock    *socketRef // how hotserve dials it: pinned by inode under proxy/, never by the app's name
+	sock    *socketRef // how motel dials it: pinned by inode under proxy/, never by the app's name
 	handle  handle
 }
 
@@ -364,7 +364,7 @@ func (ma *managedApp) rememberSecrets(path string, kvs []string) {
 // remembered secrets, with the versions the status names exempt from
 // the heuristics (a git SHA as a version is high-entropy by design).
 //
-// After a hotserve restart the app is reattached without a launch, so
+// After a motel restart the app is reattached without a launch, so
 // nothing has rendered its env_file yet; and a reload can name a
 // different env_file than the last launch rendered. Either way the
 // current spec's file is unread, and the filter reads it here. A file
@@ -581,7 +581,7 @@ func (ma *managedApp) takePhases(finished time.Time) []phaseTiming {
 }
 
 // preflightResult classifies a pre-flight's outcome: a refusal is the
-// deployer's (422); anything else is hotserve's own failure to check.
+// deployer's (422); anything else is motel's own failure to check.
 func preflightResult(what string, err error) error {
 	if err == nil {
 		return nil
@@ -595,7 +595,7 @@ func preflightResult(what string, err error) error {
 
 // failureDetail is the app's side of a failed deploy, gathered after
 // the fact: the exit the runner recorded (the pre_start's from its
-// error; the app's as read before hotserve stopped it, and only when
+// error; the app's as read before motel stopped it, and only when
 // it died on its own), the last probe's answer, and the last lines the
 // launch's units wrote. Nil when a launch left nothing to say.
 func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, appExit string, appPID int, l launch, since time.Time) *deployDetail {
@@ -719,7 +719,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	accepted := false        // the request passed its checks: from here on, what happens is the version's history
 	var detail *deployDetail // filled by the failure-detail defer below, which runs first
 	launched := false        // a pre_start or Start was attempted: there are units to ask about
-	appExit := ""            // the app's exit, read before hotserve stops a failed instance
+	appExit := ""            // the app's exit, read before motel stops a failed instance
 	appPID := 0              // and its main process's pid (runner.Exit)
 	// marked: this deploy wrote the deploy marker (deploying.go).
 	// Declared before the record's defer, so it runs after it: the
@@ -851,7 +851,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	// relaunch is fetched as a rollback of the running version.
 	extracted := !req.rollback && !relaunch
 	if extracted {
-		// Before anything is extracted: a hotserve that stops from here
+		// Before anything is extracted: a motel that stops from here
 		// on leaves the marker naming this release (deploying.go).
 		if err := saveDeployMarker(spec.dirs, deployMarker{Version: req.version, StartedAt: started}); err != nil {
 			return fmt.Errorf("writing the deploy marker: %w", err)
@@ -950,7 +950,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	}
 	if len(spec.preStart) > 0 && extracted {
 		pre := l.startSpec(spec, spec.preStart)
-		// Bounded on the unit too: a hotserve that stops during it takes
+		// Bounded on the unit too: a motel that stops during it takes
 		// preCtx with it, and the migration runs on (DESIGN-liveswap.md).
 		pre.startTimeout = spec.deadline
 		if err := preflightResult("pre-flight of pre_start", c.runner.Preflight(pre)); err != nil {
@@ -1051,7 +1051,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	// Nothing is deleted while anything but the new instance may be
 	// running out of a release dir: the sweep settles that against
 	// the runner's own ledger (an unconfirmed stop above, a unit an
-	// earlier hotserve left behind), and any doubt skips GC — the next
+	// earlier motel left behind), and any doubt skips GC — the next
 	// successful deploy catches up.
 	if !ma.sweep(c, newInst, "") {
 		logger.Warn("skipping release GC for this deploy")
@@ -1252,7 +1252,7 @@ func (ma *managedApp) ensureRunning() error {
 		ma.wd.setLastFailure("") // a recovery that gave up, or a refusal, is over
 		c.logger.Info("reattached to running instance", zap.String("version", st.CurrentVersion))
 		ma.pokeWatchdog()
-		ma.syncCaps() // the config may have changed its caps while hotserve was down
+		ma.syncCaps() // the config may have changed its caps while motel was down
 		if err := ma.sweepOrWhy(c, inst, ""); err != nil {
 			// Serving, but the ledger is unsettled: recover() retries
 			// and the retry path above sweeps again.
@@ -1361,7 +1361,7 @@ func (ma *managedApp) recover(ctx context.Context, logger *zap.Logger) {
 
 // sweep stops every unit of this app other than keep — the runner's
 // ledger, not ours, decides what is running. Recovery calls it so a
-// unit hotserve lost track of (a state.json write that failed, an
+// unit motel lost track of (a state.json write that failed, an
 // earlier stop that could not be confirmed) does not outlive the next
 // start; deploys call it before GC. Returns false if something may
 // still be running, in which case callers must not delete anything.
@@ -1416,7 +1416,7 @@ func (ma *managedApp) launchVersion(c collaborators, version string) (*instance,
 	}
 	ma.rememberSecrets(spec.envFile, l.secrets)
 	// No Start without a confirmed sweep: whatever the manager still
-	// runs for this app (a unit an earlier hotserve lost track of, a
+	// runs for this app (a unit an earlier motel lost track of, a
 	// stop that could not be confirmed) is settled first, or nothing
 	// is launched beside it.
 	if err := ma.sweepOrWhy(c, nil, l.nonce); err != nil {
@@ -1509,7 +1509,7 @@ func (l launch) startSpec(spec *appSpec, command []string) startSpec {
 // its unit carries others: a reload's changed memory_max, tasks_max or
 // cpu_quota applies to the running app rather than waiting for its
 // next launch, and a cap a reload removed is lifted. A unit reattached
-// after a hotserve restart carries whatever it was started with, which
+// after a motel restart carries whatever it was started with, which
 // this brings up to date too. A failure is a warning, not an error:
 // the caps apply at the next launch regardless (startSpec).
 //
@@ -1630,9 +1630,9 @@ type statusSnapshot struct {
 	Phase          string `json:"phase"`
 	CurrentVersion string `json:"current_version,omitempty"`
 	// Socket is the unix socket the instance listens on, under its
-	// run/ dir. It is what the app bound, not what hotserve dials:
+	// run/ dir. It is what the app bound, not what motel dials:
 	// that is a hard link to the same inode under proxy/, outside
-	// the app's reach. Reachable by the hotserve user (run/ is 0750).
+	// the app's reach. Reachable by the motel user (run/ is 0750).
 	Socket string `json:"socket,omitempty"`
 	PID    int    `json:"pid,omitempty"`
 	// Command is the argv the manager reports for the running unit —
@@ -1803,9 +1803,9 @@ func (ma *managedApp) restoreSpec(owner any) bool {
 // flight to spawn a fresh process after the one below is stopped.
 //
 // On process exit the instance is deliberately left running: it is a
-// systemd unit that does not depend on hotserve, state.json names it,
-// and the next hotserve start reattaches to it — that is how apps
-// survive hotserve restarts and upgrades. Only removing the app from
+// systemd unit that does not depend on motel, state.json names it,
+// and the next motel start reattaches to it — that is how apps
+// survive motel restarts and upgrades. Only removing the app from
 // the config stops it.
 func (ma *managedApp) Destruct() error {
 	ma.stopWatchdog()
@@ -1929,7 +1929,7 @@ func inheritedEnv() []string {
 // buildEnv assembles the child environment. Precedence, lowest to
 // highest: the allowlisted slice of Caddy's environment (PATH, LANG,
 // TZ, LC_*), the sandbox HOME, env_file, inline env, then the injected
-// SOCKET contract. HOME is never inherited: hotserve's own state
+// SOCKET contract. HOME is never inherited: motel's own state
 // dir does not exist inside the unit at all, so the app's HOME is its
 // shared dir — the one writable, persistent place in the view. Not a
 // nicety: every runtime that touches $HOME would ENOENT, which is the
@@ -1983,12 +1983,12 @@ func shellOwnedEnvKey(key string) bool { return shellOwnedEnvKeys[key] }
 
 const shellOwnedEnvKeyMsg = "is set by the shell every app unit runs behind (/bin/sh resets IFS, OPTIND, PPID and PWD at its start), so an app cannot be given it"
 
-// The env_file mode check. hotserve reads the file as the hotserve
-// user, so its mode is not hotserve's concern; the documented
-// `install -m 0640 -o root -g hotserve` is for everyone else on the
+// The env_file mode check. motel reads the file as the motel
+// user, so its mode is not motel's concern; the documented
+// `install -m 0640 -o root -g motel` is for everyone else on the
 // box — an account that can read the file holds every secret in it,
 // and one that can write it chooses the app's next environment. Apps
-// are not among those accounts whatever the mode: /etc/hotserve is
+// are not among those accounts whatever the mode: /etc/motel is
 // outside every view, validateEnvFileIsolation refuses an env_file
 // inside the base view or a sibling's dirs, and one inside the app's
 // own dirs is warnEnvFileInView's warning. A warning, never a refusal,
@@ -2045,7 +2045,7 @@ func warnEnvFileModeBits(logger *zap.Logger, app, path string, perm os.FileMode)
 		return
 	}
 	mode := zap.String("mode", fmt.Sprintf("%04o", perm))
-	fix := zap.String("fix", "chmod 0640 and chown root:hotserve — the documented `install -m 0640 -o root -g hotserve`")
+	fix := zap.String("fix", "chmod 0640 and chown root:motel — the documented `install -m 0640 -o root -g motel`")
 	if perm&0o004 != 0 {
 		logger.Warn("env_file is world-readable: any account that can reach it holds every value in it",
 			zap.String("app", app), zap.String("env_file", path), mode, fix)

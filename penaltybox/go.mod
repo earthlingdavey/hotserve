@@ -1,4 +1,4 @@
-module github.com/smallhoursorg/hotserve/penaltybox
+module github.com/smallhoursorg/motel/penaltybox
 
 // The Go toolchain is pinned by the golang image in docker-compose.yml —
 // no toolchain directive needed here.

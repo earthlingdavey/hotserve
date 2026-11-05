@@ -14,10 +14,10 @@
 . /lib-backup.sh
 
 REPO=s3:http://e2e-s3:9000/unitsrepo
-S=hotserve-backup.service
-D=hotserve-backup-drill.service
-T=hotserve-backup.timer
-DT=hotserve-backup-drill.timer
+S=motel-backup.service
+D=motel-backup-drill.service
+T=motel-backup.timer
+DT=motel-backup-drill.timer
 
 wait_for_systemd
 cp "$CADDYFILE" /root/Caddyfile.base
@@ -25,7 +25,7 @@ rm -f "$ENVFILE"
 systemctl reset-failed 2>/dev/null
 
 prop() { systemctl show -p "$2" --value "$1"; } # <unit> <property>
-failed_units() { systemctl list-units --failed --plain --no-legend 'hotserve-backup*' | awk '{print $1}' | tr '\n' ' '; }
+failed_units() { systemctl list-units --failed --plain --no-legend 'motel-backup*' | awk '{print $1}' | tr '\n' ' '; }
 says() { grep -q -e "$1" "$OUT"; }
 # until_state <unit> <ActiveState> [<seconds>]: waits for the unit to reach it
 until_state() {
@@ -39,10 +39,10 @@ until_state() {
 big() { as_app sh -c 'head -c 50000000 /dev/urandom >/var/lib/liveswap/blog/shared/uploads/big.bin'; }
 
 echo "=== units 0: the unit files, as the manager reads them ==="
-systemd-analyze verify /lib/systemd/system/hotserve-backup.service /lib/systemd/system/hotserve-backup.timer /lib/systemd/system/hotserve-backup-drill.service /lib/systemd/system/hotserve-backup-drill.timer >"$OUT" 2>&1
+systemd-analyze verify /lib/systemd/system/motel-backup.service /lib/systemd/system/motel-backup.timer /lib/systemd/system/motel-backup-drill.service /lib/systemd/system/motel-backup-drill.timer >"$OUT" 2>&1
 [ $? = 0 ] && [ ! -s "$OUT" ] && pass "systemd-analyze verify has nothing to say of the four files" || fail "systemd-analyze verify: $(cat "$OUT")"
 for u in $S $D; do
-	for row in "Type=oneshot" "PrivateMounts=no" "ProtectSystem=no" "ProtectHome=no" "PrivateTmp=no" "PrivateNetwork=no" "ProtectKernelModules=no" "RestrictAddressFamilies=AF_UNIX" "NoNewPrivileges=yes" "RestrictSUIDSGID=yes" "CapabilityBoundingSet=cap_chown cap_dac_read_search cap_fowner cap_sys_admin" "Environment=HOTSERVE_BACKUP_UNIT=$u" "TimeoutStartUSec=infinity" "TimeoutStopUSec=3min" "Result=success" "ActiveState=inactive"; do
+	for row in "Type=oneshot" "PrivateMounts=no" "ProtectSystem=no" "ProtectHome=no" "PrivateTmp=no" "PrivateNetwork=no" "ProtectKernelModules=no" "RestrictAddressFamilies=AF_UNIX" "NoNewPrivileges=yes" "RestrictSUIDSGID=yes" "CapabilityBoundingSet=cap_chown cap_dac_read_search cap_fowner cap_sys_admin" "Environment=MOTEL_BACKUP_UNIT=$u" "TimeoutStartUSec=infinity" "TimeoutStopUSec=3min" "Result=success" "ActiveState=inactive"; do
 		k=${row%%=*}
 		want=${row#*=}
 		got=$(prop "$u" "$k")
@@ -73,8 +73,8 @@ for u in $S $D; do
 	journalctl --sync >/dev/null 2>&1
 	journalctl -u "$u" --no-pager | grep -q "unmet condition" && pass "$u: the journal says the condition was not met" || fail "$u: the journal: $(journalctl -u "$u" --no-pager | tail -3)"
 done
-[ -z "$(failed_units)" ] && pass "no hotserve-backup unit is failed" || fail "failed: $(failed_units)"
-[ "$(units_left)" = 0 ] && pass "and no unit of a run was started" || fail "units: $(systemctl list-units --all --no-legend 'hotserve_backup_*')"
+[ -z "$(failed_units)" ] && pass "no motel-backup unit is failed" || fail "failed: $(failed_units)"
+[ "$(units_left)" = 0 ] && pass "and no unit of a run was started" || fail "units: $(systemctl list-units --all --no-legend 'motel_backup_*')"
 
 echo "=== units 2: a run as the shipped service works under its hardening, and its units are bound to it ==="
 seed
@@ -84,7 +84,7 @@ big
 systemctl start --no-block $S
 if hold_restic "restic backup"; then
 	[ "$(prop $S ActiveState)" = activating ] && pass "the service is activating while its run works" || fail "the service is $(prop $S ActiveState) with its restic held"
-	upload=$(systemctl list-units --plain --no-legend --state=activating 'hotserve_backup_upload_*' | awk '{print $1}' | head -1)
+	upload=$(systemctl list-units --plain --no-legend --state=activating 'motel_backup_upload_*' | awk '{print $1}' | head -1)
 	[ -n "$upload" ] && [ "$(prop "$upload" BindsTo)" = "$S" ] && pass "the upload unit is BindsTo= the service ($upload)" || fail "the upload unit's BindsTo=: '$(prop "$upload" BindsTo)' ($upload)"
 	systemctl kill --signal=SIGKILL $S
 	i=0
@@ -92,7 +92,7 @@ if hold_restic "restic backup"; then
 		i=$((i + 1))
 		sleep 1
 	done
-	[ "$i" -lt 30 ] && pass "SIGKILLed mid-upload, the service's units were ended by systemd within ${i}s" || fail "units still running 30s after the service was killed: $(systemctl list-units --plain --no-legend 'hotserve_backup_*')"
+	[ "$i" -lt 30 ] && pass "SIGKILLed mid-upload, the service's units were ended by systemd within ${i}s" || fail "units still running 30s after the service was killed: $(systemctl list-units --plain --no-legend 'motel_backup_*')"
 	pgrep -x restic >/dev/null && fail "restic is still running" || pass "and restic is gone"
 	until_state $S failed 10 && [ "$(prop $S Result)" = signal ] && pass "the service is failed, by the signal" || fail "the killed service: $(systemctl show -p ActiveState,Result $S | tr '\n' ' ')"
 	systemctl reset-failed $S
@@ -109,8 +109,8 @@ systemctl start --no-block $S
 if hold_restic "restic backup"; then
 	[ "$(staged)" != 0 ] && pass "fixture: a copy is in staging while the upload is held" || fail "fixture: nothing is staged: the stop below proves nothing of plaintext"
 	systemctl stop $S
-	[ "$(units_running)" = 0 ] && pass "stopped mid-upload, the service's units are gone" || fail "units still running after the stop: $(systemctl list-units --plain --no-legend 'hotserve_backup_*')"
-	[ "$(staged)" = 0 ] && pass "and the run removed its plaintext on its way out, with no later run to tidy up" || fail "left in staging by a stopped run: $(find /var/lib/hotserve-backup/staging -mindepth 2) — $(journalctl -u $S --no-pager | tail -4)"
+	[ "$(units_running)" = 0 ] && pass "stopped mid-upload, the service's units are gone" || fail "units still running after the stop: $(systemctl list-units --plain --no-legend 'motel_backup_*')"
+	[ "$(staged)" = 0 ] && pass "and the run removed its plaintext on its way out, with no later run to tidy up" || fail "left in staging by a stopped run: $(find /var/lib/motel-backup/staging -mindepth 2) — $(journalctl -u $S --no-pager | tail -4)"
 	pgrep -x restic >/dev/null && fail "restic is still running" || pass "and restic is gone"
 else
 	fail "no restic appeared under the service: the stop row proves nothing"
@@ -126,17 +126,17 @@ expect_class shop ok "as the service"
 [ "$(stat -c %Y "$STATUS")" -ge "$t0" ] && pass "the record was written by that run" || fail "the record is older than the run"
 [ -n "$(proven blog)" ] && pass "the first drill proved blog's restore, under the same hardening" || fail "no proof of blog after its first run as the service: $(app_json blog)"
 nothing_left "as the service"
-[ "$(find /run/hotserve-backup -mindepth 1 -type d 2>/dev/null | wc -l)" = 0 ] && pass "no mount point of the run is left under /run/hotserve-backup" || fail "left under /run/hotserve-backup: $(find /run/hotserve-backup -mindepth 1)"
+[ "$(find /run/motel-backup -mindepth 1 -type d 2>/dev/null | wc -l)" = 0 ] && pass "no mount point of the run is left under /run/motel-backup" || fail "left under /run/motel-backup: $(find /run/motel-backup -mindepth 1)"
 
 echo "=== units 3: a run or a drill that fails is a failed unit, and the journal says why ==="
 mv /usr/bin/restic /usr/bin/restic.aside
 systemctl start $S >"$OUT" 2>&1 && fail "the service exited 0 without restic" || pass "the service exits non-zero without restic"
 [ "$(prop $S Result)" = exit-code ] && [ "$(failed_units)" = "$S " ] && pass "the run's service is failed, in systemctl --failed" || fail "after a run without restic: $(systemctl show -p ActiveState,Result $S | tr '\n' ' '); failed: $(failed_units)"
 journalctl --sync >/dev/null 2>&1
-journalctl -u $S --no-pager | grep -q "restic, the backup program hotserve-backup runs, is not installed at /usr/bin/restic: apt install restic" && pass "and the journal names the package to install, in setup's words" || fail "the journal: $(journalctl -u $S --no-pager | tail -5)"
+journalctl -u $S --no-pager | grep -q "restic, the backup program motel-backup runs, is not installed at /usr/bin/restic: apt install restic" && pass "and the journal names the package to install, in setup's words" || fail "the journal: $(journalctl -u $S --no-pager | tail -5)"
 mv /usr/bin/restic.aside /usr/bin/restic
 systemctl reset-failed $S
-[ "$(units_left)" = 0 ] && pass "no unit was started for it" || fail "units: $(systemctl list-units --all --no-legend 'hotserve_backup_*')"
+[ "$(units_left)" = 0 ] && pass "no unit was started for it" || fail "units: $(systemctl list-units --all --no-legend 'motel_backup_*')"
 mkdir -p /root/bare && echo x >/root/bare/f
 crafted=$(craft blog /root/bare)
 [ -n "$crafted" ] && pass "fixture: blog's newest snapshot is one with no plan in it" || fail "fixture: nothing was crafted: the drill's row proves nothing"
@@ -257,8 +257,8 @@ journalctl -u $S --no-pager | grep -q "this command runs in a mount namespace of
 journalctl -u $S --no-pager | grep -q "$S is given one by a property it must not have .* systemctl cat $S shows it" && pass "and where to look: systemctl cat, by the unit's name" || fail "the journal names no remedy: $(journalctl -u $S --no-pager | tail -3)"
 [ "$(snapshots)" = "$before" ] && pass "nothing was uploaded: the repository holds the $before snapshots it held" || fail "the repository held $before snapshots and holds $(snapshots): a run that refused uploaded"
 grep -q "runs in a mount namespace of its own" "$STATUS" && pass "and the record says why the run ended" || fail "the record: $(tr -d '\n' <"$STATUS" | cut -c1-300)"
-[ "$(units_left)" = 0 ] && pass "no unit was started for it" || fail "units: $(systemctl list-units --all --no-legend 'hotserve_backup_*')"
-grep -q " /run/hotserve-backup/" /proc/self/mountinfo && fail "the run left its own mount behind: $(grep ' /run/hotserve-backup/' /proc/self/mountinfo)" || pass "and the mount it asked about is gone"
+[ "$(units_left)" = 0 ] && pass "no unit was started for it" || fail "units: $(systemctl list-units --all --no-legend 'motel_backup_*')"
+grep -q " /run/motel-backup/" /proc/self/mountinfo && fail "the run left its own mount behind: $(grep ' /run/motel-backup/' /proc/self/mountinfo)" || pass "and the mount it asked about is gone"
 rm -rf /run/systemd/system/$S.d
 systemctl daemon-reload
 systemctl reset-failed $S 2>/dev/null
@@ -291,7 +291,7 @@ mount --make-rshared /
 [ "$(findmnt -no PROPAGATION /)" = shared ] && pass "fixture: the root mount is shared, as a booted box has it" || fail "fixture: the root mount is $(findmnt -no PROPAGATION /)"
 mkdir -p /root/disk
 echo on-the-disk >/root/disk/kept.txt
-chown -R hotserve:hotserve /root/disk
+chown -R motel:motel /root/disk
 as_app mkdir /var/lib/liveswap/blog/shared/uploads/disk
 mount --bind /root/disk /var/lib/liveswap/blog/shared/uploads/disk
 mountpoint -q /var/lib/liveswap/blog/shared/uploads/disk && pass "fixture: a disk is mounted inside blog's uploads" || fail "fixture: no disk is mounted: the row proves nothing"
@@ -299,7 +299,7 @@ if systemctl start $S >"$OUT" 2>&1; then pass "a run with a disk inside an app's
 expect_class blog ok "with a disk inside its data"
 mountpoint -q /var/lib/liveswap/blog/shared/uploads/disk && [ -f /var/lib/liveswap/blog/shared/uploads/disk/kept.txt ] && pass "the disk is still mounted where the operator put it" || fail "the run unmounted the operator's disk from under the app: $(grep liveswap/blog /proc/self/mountinfo | awk '{print $5}' | tr '\n' ' ')"
 rr ls --no-lock "$(newest blog)" 2>/dev/null | grep -q '^/backup/blog/files/uploads/disk/kept.txt$' && pass "and what is on it is in the snapshot" || fail "the snapshot does not hold the disk's file: $(rr ls --no-lock "$(newest blog)" 2>&1 | grep uploads | head -5)"
-grep -q " /run/hotserve-backup/" /proc/self/mountinfo && fail "mounts of the run are left: $(grep ' /run/hotserve-backup/' /proc/self/mountinfo | awk '{print $5}' | tr '\n' ' ')" || pass "and nothing of the run's is left mounted"
+grep -q " /run/motel-backup/" /proc/self/mountinfo && fail "mounts of the run are left: $(grep ' /run/motel-backup/' /proc/self/mountinfo | awk '{print $5}' | tr '\n' ' ')" || pass "and nothing of the run's is left mounted"
 umount /var/lib/liveswap/blog/shared/uploads/disk
 as_app rmdir /var/lib/liveswap/blog/shared/uploads/disk
 rm -rf /root/disk
@@ -319,17 +319,17 @@ big
 systemctl reset-failed $S 2>/dev/null
 systemctl start --no-block $S
 if hold_restic "restic backup"; then
-	cp /usr/bin/hotserve-backup /usr/bin/hotserve-backup.suite-aside
-	cp /usr/bin/hotserve-backup /usr/bin/.hotserve-backup.new
-	printf x >>/usr/bin/.hotserve-backup.new
-	mv /usr/bin/.hotserve-backup.new /usr/bin/hotserve-backup
+	cp /usr/bin/motel-backup /usr/bin/motel-backup.suite-aside
+	cp /usr/bin/motel-backup /usr/bin/.motel-backup.new
+	printf x >>/usr/bin/.motel-backup.new
+	mv /usr/bin/.motel-backup.new /usr/bin/motel-backup
 	kill -CONT "$pid"
 	until_state $S failed 240 && pass "the run whose helper was another version's is a failed unit" || fail "the run: $(systemctl show -p ActiveState,Result $S | tr '\n' ' ') — $(journalctl -u $S --no-pager | tail -5)"
 	expect_class blog ok "with its upload under way at the upgrade"
 	expect_class shop failed "whose helper was another version's"
 	app_json shop | grep -q "the package was upgraded while this command was under way: its dump helper is another version's, and did nothing" && pass "shop says the package was upgraded mid-run" || fail "shop: $(app_json shop)"
-	journalctl -u "hotserve_backup_dump_shop_*" --no-pager 2>/dev/null | grep -q "this helper is not the version of the command that started it" && pass "and the helper said so in its own journal" || fail "the dump helper's journal: $(journalctl --no-pager | grep -i 'dump_shop' | tail -3)"
-	mv /usr/bin/hotserve-backup.suite-aside /usr/bin/hotserve-backup
+	journalctl -u "motel_backup_dump_shop_*" --no-pager 2>/dev/null | grep -q "this helper is not the version of the command that started it" && pass "and the helper said so in its own journal" || fail "the dump helper's journal: $(journalctl --no-pager | grep -i 'dump_shop' | tail -3)"
+	mv /usr/bin/motel-backup.suite-aside /usr/bin/motel-backup
 	systemctl reset-failed $S
 	if systemctl start $S >"$OUT" 2>&1; then pass "the next run, of one version, works"; else fail "the next run: $(journalctl -u $S --no-pager | tail -10)"; fi
 	expect_class shop ok "the next run"

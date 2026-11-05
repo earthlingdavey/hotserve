@@ -56,7 +56,7 @@ settings, which do not need the box.
 
 An account that is not root, for reading the logs: for a second
 person, or to keep root's key for when it is needed. It reads
-hotserve's journal and every app's through the `adm` group, and that
+motel's journal and every app's through the `adm` group, and that
 is all it holds. It needs no `sudo`: the config changes only by signed
 pushes from the box's repository, and so do the apps' secrets kept
 there ([Secrets](secrets.md)).
@@ -80,11 +80,11 @@ usermod -aG adm alice
 Check from the laptop:
 
 ```sh
-ssh alice@box.example.com journalctl -u hotserve -n 5   # the journal, through adm
+ssh alice@box.example.com journalctl -u motel -n 5   # the journal, through adm
 ```
 
 What this grants: `adm` reads the whole system journal, not only
-hotserve's lines, so it is a trust grant in its own right. An app that
+motel's lines, so it is a trust grant in its own right. An app that
 writes a secret to its own output puts it there too.
 
 ## 4. Debian's updates on their own, if you want them
@@ -106,7 +106,7 @@ at its next launch (a deploy, a rollback, a relaunch after a crash),
 each SSH login, and the `ssh-keygen` a push to the box's repository
 runs.
 
-What it does not do: update hotserve, whose `.deb` comes from no
+What it does not do: update motel, whose `.deb` comes from no
 repository ([Upgrading](upgrading.md) is how), or an app's runtime
 that did not come from Debian, such as the Deno under
 `/usr/local/bin` or the Node example's own executable
@@ -171,15 +171,15 @@ them, and with them DCCP, TIPC and RDS, which the CIS Debian benchmark
 refuses on every server; those three load only by root's hand on
 Debian, and a loaded TIPC takes configuration from any program. Like
 steps 3 and 4 it is optional, and nothing in it stops or restarts an
-app. It is the box's setting, not hotserve's: it holds for every
-program on the box, which is why hotserve's package does not write it.
+app. It is the box's setting, not motel's: it holds for every
+program on the box, which is why motel's package does not write it.
 Skip it on a box that also runs an L2TP VPN server or an SCTP
-workload, which a hotserve box does not.
+workload, which a motel box does not.
 
 As root on the box:
 
 ```sh
-printf 'install %s /bin/false\n' sctp l2tp_ip l2tp_ip6 smc dccp tipc rds > /etc/modprobe.d/hotserve-protocols.conf
+printf 'install %s /bin/false\n' sctp l2tp_ip l2tp_ip6 smc dccp tipc rds > /etc/modprobe.d/motel-protocols.conf
 ```
 
 Check that the loader reads it, and that none of the seven is loaded
@@ -195,7 +195,7 @@ with a command that fails, so the kernel's autoload, a hand
 `modprobe`, and a module that depends on one of the seven all stop,
 with `Error running install command '/bin/false' for module <name>`
 on the hand run. The way back is
-`rm /etc/modprobe.d/hotserve-protocols.conf`; nothing else holds the
+`rm /etc/modprobe.d/motel-protocols.conf`; nothing else holds the
 setting.
 
 ## 6. A ceiling for all the apps together, if you want one
@@ -204,19 +204,19 @@ Each app can be bounded on its own (`memory_max`, `tasks_max` and
 `cpu_quota` in its block — [liveswap/README.md](../liveswap/README.md#resource-caps)),
 and that is what keeps one app's burst from stalling another. What
 that does not set is a ceiling for the apps *as a whole* against
-hotserve itself, which shares the box with them: hotserve runs in
-`system.slice` and every app under the `hotserve` user's slice, and
+motel itself, which shares the box with them: motel runs in
+`system.slice` and every app under the `motel` user's slice, and
 the two halves already split the CPU evenly under load, but nothing
 bounds the apps' memory as a set. If you want that, set it on the
 user's slice. Like the steps before it this is the box's setting, so
-hotserve's package does not write it, and nothing in it stops or
+motel's package does not write it, and nothing in it stops or
 restarts an app.
 
 As root on the box, with the sizes that fit it (here a 4 GB box
 keeping 1 GB back):
 
 ```sh
-systemctl set-property user-$(id -u hotserve).slice MemoryMax=3G CPUQuota=300%
+systemctl set-property user-$(id -u motel).slice MemoryMax=3G CPUQuota=300%
 ```
 
 It applies at once to everything under the slice and persists across
@@ -224,8 +224,8 @@ reboots (systemd writes it under `/etc/systemd/system.control/`).
 Check it:
 
 ```sh
-systemctl show user-$(id -u hotserve).slice -p MemoryMax,CPUQuotaPerSecUSec
-cat /sys/fs/cgroup/user.slice/user-$(id -u hotserve).slice/memory.max    # prints the bytes
+systemctl show user-$(id -u motel).slice -p MemoryMax,CPUQuotaPerSecUSec
+cat /sys/fs/cgroup/user.slice/user-$(id -u motel).slice/memory.max    # prints the bytes
 ```
 
 Use `set-property`, not a drop-in file: on Debian 13's systemd 257 a
@@ -233,8 +233,8 @@ drop-in under `/etc/systemd/system/user-<uid>.slice.d/` followed by
 `daemon-reload` shows the new value in `systemctl show` but does not
 re-apply it to the running slice (measured; systemd 255 and 259 do),
 so the ceiling would hold only from the next boot. The way back is
-`systemctl set-property user-$(id -u hotserve).slice MemoryMax=infinity CPUQuota=`,
-which lifts both at once; `systemctl revert user-$(id -u hotserve).slice`
+`systemctl set-property user-$(id -u motel).slice MemoryMax=infinity CPUQuota=`,
+which lifts both at once; `systemctl revert user-$(id -u motel).slice`
 then removes the files `set-property` left under `system.control`. Not
 `revert` on its own: it removes the files but leaves the live ceiling
 in the kernel until the next boot (measured, systemd 257).

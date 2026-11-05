@@ -6,7 +6,7 @@
 		root /var/lib/liveswap
 		artifact_allowlist example.com/
 		deploy_trust github {
-			audience hotserve
+			audience motel
 			claim repository your-org/app
 		}
 

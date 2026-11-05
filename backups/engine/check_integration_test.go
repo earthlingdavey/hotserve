@@ -177,7 +177,7 @@ func TestIntegrationACleanRunRecordIsASnapshotOfItsOwn(t *testing.T) {
 	must(t, os.MkdirAll(filepath.Join(base, "backup", "blog"), 0o755))
 	must(t, os.WriteFile(filepath.Join(base, "backup", "blog", "f"), []byte("data"), 0o644))
 	resticIn(t, base, time.Minute, restic, "init", "-q")
-	out, said, exit := resticIn(t, base, time.Minute, restic, "backup", "--quiet", "--json", "--host", "hotserve", "--tag", "hotserve", "--tag", "app:blog", "backup/blog")
+	out, said, exit := resticIn(t, base, time.Minute, restic, "backup", "--quiet", "--json", "--host", "motel", "--tag", "motel", "--tag", "app:blog", "backup/blog")
 	must(t, os.WriteFile(filepath.Join(base, "summary"), []byte(out), 0o600))
 	id := summaryID(filepath.Join(base, "summary"))
 	if exit != 0 || id == "" {
@@ -202,7 +202,7 @@ func TestIntegrationACleanRunRecordIsASnapshotOfItsOwn(t *testing.T) {
 	}
 	list := func(tag string) {
 		t.Helper()
-		out, said, exit := resticIn(t, base, time.Minute, restic, "snapshots", "--json", "--no-lock", "--host", "hotserve", "--tag", tag)
+		out, said, exit := resticIn(t, base, time.Minute, restic, "snapshots", "--json", "--no-lock", "--host", "motel", "--tag", tag)
 		snaps = nil
 		if exit != 0 || json.Unmarshal([]byte(out), &snaps) != nil {
 			t.Fatalf("snapshots --tag %s: exit %d, %q %s", tag, exit, out, said)
@@ -212,14 +212,14 @@ func TestIntegrationACleanRunRecordIsASnapshotOfItsOwn(t *testing.T) {
 	if len(snaps) != 1 || snaps[0].ID != id {
 		t.Errorf("the app's snapshots hold the record: %+v", snaps)
 	}
-	list("hotserve-clean")
-	if len(snaps) != 1 || snaps[0].ID != record || !slices.Equal(snaps[0].Paths, []string{"/hotserve-clean-blog"}) || !slices.Contains(snaps[0].Tags, "vouches:"+id) {
+	list("motel-clean")
+	if len(snaps) != 1 || snaps[0].ID != record || !slices.Equal(snaps[0].Paths, []string{"/motel-clean-blog"}) || !slices.Contains(snaps[0].Tags, "vouches:"+id) {
 		t.Errorf("the record: %+v", snaps)
 	}
 	if len(snaps) == 1 && !snaps[0].Time.Equal(made.Truncate(time.Second)) {
 		t.Errorf("the record's time is %s, not the snapshot's %s to the second", snaps[0].Time, made)
 	}
-	if held, _, exit := resticIn(t, base, time.Minute, restic, "dump", "--no-lock", record, "/hotserve-clean-blog"); exit != 0 || strings.TrimSpace(held) != id {
+	if held, _, exit := resticIn(t, base, time.Minute, restic, "dump", "--no-lock", record, "/motel-clean-blog"); exit != 0 || strings.TrimSpace(held) != id {
 		t.Errorf("the record holds %q (exit %d), not the id it vouches for", held, exit)
 	}
 	// Why it holds the id: a record of nothing is restic's exit 3.
@@ -258,7 +258,7 @@ func TestIntegrationAResticUnitStoresItsTimesInUTC(t *testing.T) {
 		t.Fatalf("fixture: restic in Berlin stored %s: the zone it runs in is not what it stores", got)
 	}
 	// The environment a restic unit is given.
-	for _, kv := range resticUnit("hotserve_backup_x_000000000000.service", "", "", []string{restic}, "").Environment {
+	for _, kv := range resticUnit("motel_backup_x_000000000000.service", "", "", []string{restic}, "").Environment {
 		k, v, _ := strings.Cut(kv, "=")
 		if k == "TZ" {
 			t.Setenv(k, v)

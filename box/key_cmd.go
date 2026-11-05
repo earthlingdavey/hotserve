@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
-// `hotserve box key` (DESIGN-box.md, "The box's key"): the box's key
+// `motel box key` (DESIGN-box.md, "The box's key"): the box's key
 // for secrets, made when there is none, and its recipient printed. Run
 // by postinstall on a live system, by init after its transaction, and
 // by the console. The rules:
@@ -21,22 +21,22 @@ import (
 //     is refused with nothing written.
 //  2. age.pub is rewritten only when it is missing, names another key,
 //     or is not a 0644 file of root's (the handler could not read it, or
-//     another account could change it): a temporary in /etc/hotserve,
+//     another account could change it): a temporary in /etc/motel,
 //     renamed over it, the directory
-//     fsynced (I8), under the flock on /etc/hotserve/age/ that guards the
+//     fsynced (I8), under the flock on /etc/motel/age/ that guards the
 //     identity, and from the identity as read under that lock — so two
 //     runs never write it from different keys; a temporary a crashed run
 //     left is removed first.
 //  3. Standard output is the `age1…` line alone, so that
-//     `$(ssh root@box hotserve box key)` is the key; what it did goes to
+//     `$(ssh root@box motel box key)` is the key; what it did goes to
 //     standard error.
 
-const msgKeyNotRoot = "hotserve box key runs as root: it reads the box's key for secrets"
+const msgKeyNotRoot = "motel box key runs as root: it reads the box's key for secrets"
 
 // agePubTemp is the pattern of age.pub's temporaries, beside it (Paths).
 const agePubTemp = ".age.pub.box-*"
 
-// runKey is `hotserve box key`.
+// runKey is `motel box key`.
 func runKey(euid int, a *Applier, out, errOut io.Writer) error {
 	if euid != 0 {
 		return errors.New(msgKeyNotRoot)

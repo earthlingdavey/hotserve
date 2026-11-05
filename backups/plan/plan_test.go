@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
 )
 
-// fromAdapted is what the plan step makes of `hotserve adapt`'s output:
+// fromAdapted is what the plan step makes of `motel adapt`'s output:
 // the plan, validated.
 func fromAdapted(raw []byte) (*Plan, error) {
 	p, _, err := extractAll(raw)
@@ -41,7 +41,7 @@ func TestFromAdapted(t *testing.T) {
 	}
 }
 
-// Nothing is trusted because `hotserve validate` would have refused
+// Nothing is trusted because `motel validate` would have refused
 // it: the file may never have been validated.
 func TestFromAdaptedRefuses(t *testing.T) {
 	for name, tc := range map[string]struct{ raw, want string }{
@@ -141,7 +141,7 @@ func TestEnvNamesReadsEveryFileBesideTheCaddyfile(t *testing.T) {
 	}
 }
 
-// fakeHotserve stands in for `hotserve adapt`, failing where and how
+// fakeMotel stands in for `motel adapt`, failing where and how
 // the real one does [measured]: a variable with no default, unset or
 // empty, is a parse error ({$ACME_EMAIL}, {$ROOT_NO_DEFAULT}, {$MAGIC});
 // a port ({$METRICS_PORT}, {$ADMIN_PORT}, {$PORT:8080}) has to be a
@@ -153,9 +153,9 @@ func TestEnvNamesReadsEveryFileBesideTheCaddyfile(t *testing.T) {
 // {$DOMAIN} changes nothing a plan holds.
 // Which of them the "Caddyfile" uses is read from the file. It fails if
 // anything of the caller's environment reaches it.
-func fakeHotserve(t *testing.T) {
+func fakeMotel(t *testing.T) {
 	t.Helper()
-	script := filepath.Join(t.TempDir(), "hotserve")
+	script := filepath.Join(t.TempDir(), "motel")
 	write(t, script, `#!/bin/sh
 [ -n "$CALLER_SECRET" ] && { echo "the caller's environment reached the adapter" >&2; exit 1; }
 for last; do :; done
@@ -199,13 +199,13 @@ else
 	printf '{"apps":{"http":{"domain":"%s"},"liveswap":{"root":"%s","apps":{"%s":{"backup":{"sqlite":["%s"]}}%s}}}}' "${DOMAIN:-example.com}" "$root" "${APP_NAME:-blog}" "${DB:-app.db}" "$more"
 fi
 `)
-	old := hotserve
-	hotserve = script
-	t.Cleanup(func() { hotserve = old })
+	old := motel
+	motel = script
+	t.Cleanup(func() { motel = old })
 }
 
 func TestMakeRefusesAPlanThatDependsOnTheEnvironment(t *testing.T) {
-	fakeHotserve(t)
+	fakeMotel(t)
 	t.Setenv("CALLER_SECRET", "must not reach the adapter")
 	t.Setenv("LIVESWAP_ROOT", "/the/callers/own") // nor may this decide anything
 	for name, tc := range map[string]struct {

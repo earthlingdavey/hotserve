@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/smallhoursorg/hotserve/backups/nofollow"
+	"github.com/smallhoursorg/motel/backups/nofollow"
 	"golang.org/x/sys/unix"
 )
 

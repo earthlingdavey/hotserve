@@ -32,7 +32,7 @@ func initDir(t testing.TB, file []byte) string {
 	return dir
 }
 
-// initCmd runs `hotserve init <sha>` as root against the box, from dir.
+// initCmd runs `motel init <sha>` as root against the box, from dir.
 func (b *testBox) initCmd(dir, sha string) (string, error) {
 	b.t.Helper()
 	var out bytes.Buffer
@@ -50,7 +50,7 @@ func keyLine(b *testBox) string {
 	if err != nil {
 		b.t.Fatalf("init made no age.pub: %v", err)
 	}
-	return "init: secrets for this box encrypt to " + strings.TrimSuffix(string(pub), "\n") + "; hotserve box key prints it again\n"
+	return "init: secrets for this box encrypt to " + strings.TrimSuffix(string(pub), "\n") + "; motel box key prints it again\n"
 }
 
 // summary is init's first two lines for a boxFile on host.
@@ -59,8 +59,8 @@ func summary(host string) string {
 		"init: this box's file is " + host + "/Caddyfile in the repository\n"
 }
 
-// What `hotserve init` prints for each way a run can end, and what it
-// leaves on disk (DESIGN-box.md, "`hotserve init`").
+// What `motel init` prints for each way a run can end, and what it
+// leaves on disk (DESIGN-box.md, "`motel init`").
 func TestInitCmd(t *testing.T) {
 	onHost := func(file []byte, host string) []byte {
 		return bytes.Replace(file, []byte("deploy.example.com {"), []byte(host+" {"), 1)
@@ -93,7 +93,7 @@ func TestInitCmd(t *testing.T) {
 				return file, b.repo.commit(file, &b.alice)
 			},
 			want: func(c check) string {
-				return summary("deploy.example.com") + "init: installed /etc/hotserve/Caddyfile\n" +
+				return summary("deploy.example.com") + "init: installed /etc/motel/Caddyfile\n" +
 					"init: this box applies commits descending from " + c.sha[:7] + "\n" + fromHere
 			},
 			path: "deploy.example.com/Caddyfile", reload: 1,
@@ -105,7 +105,7 @@ func TestInitCmd(t *testing.T) {
 				return file, b.repo.commit(file, &b.alice)
 			},
 			want: func(c check) string {
-				return summary("deploy.example.com") + "init: installed /etc/hotserve/Caddyfile\n" +
+				return summary("deploy.example.com") + "init: installed /etc/motel/Caddyfile\n" +
 					"init: this box ran " + c.b.base[:7] + "; it now applies commits descending from " + c.sha[:7] + "\n" + fromHere
 			},
 			path: "deploy.example.com/Caddyfile", reload: 1,
@@ -118,7 +118,7 @@ func TestInitCmd(t *testing.T) {
 			},
 			want: func(c check) string {
 				return summary("other.example.com") + "init: this box was deploy.example.com; this file names other.example.com\n" +
-					"init: installed /etc/hotserve/Caddyfile\n" +
+					"init: installed /etc/motel/Caddyfile\n" +
 					"init: this box ran " + c.b.base[:7] + "; it now applies commits descending from " + c.sha[:7] + "\n" + fromHere
 			},
 			path: "other.example.com/Caddyfile", reload: 1,
@@ -130,7 +130,7 @@ func TestInitCmd(t *testing.T) {
 				return file, b.repo.commit(file, &b.alice)
 			},
 			want: func(c check) string {
-				return summary("deploy.example.com") + "init: installed /etc/hotserve/Caddyfile\n" +
+				return summary("deploy.example.com") + "init: installed /etc/motel/Caddyfile\n" +
 					"init: this box ran " + c.b.base[:7] + "; it now applies commits descending from " + c.sha[:7] + "\n" + fromHere
 			},
 			path: "deploy.example.com/Caddyfile", reload: 1,
@@ -174,7 +174,7 @@ func TestInitCmd(t *testing.T) {
 				return file, b.repo.commit(file, &b.alice, b.base)
 			},
 			want: func(c check) string {
-				return summary("deploy.example.com") + "init: installed /etc/hotserve/Caddyfile\n" +
+				return summary("deploy.example.com") + "init: installed /etc/motel/Caddyfile\n" +
 					"init: this box ran " + c.b.base[:7] + "; it now applies commits descending from " + c.sha[:7] + "\n" + fromHere
 			},
 			path: "deploy.example.com/Caddyfile", reload: 1,
@@ -243,7 +243,7 @@ func TestInitCmdRecoversFirst(t *testing.T) {
 }
 
 // Every refusal is by name, and writes nothing: refusals before the lock
-// print nothing either; a hotserve that is not up refuses after the
+// print nothing either; a motel that is not up refuses after the
 // summary, with the remedy filled in (DESIGN-box.md, "Console
 // commands").
 func TestInitCmdRefusals(t *testing.T) {
@@ -258,7 +258,7 @@ func TestInitCmdRefusals(t *testing.T) {
 	whole := func(b *testBox) []byte { return b.v1 }
 	big := func(*testBox) []byte { return bytes.Repeat([]byte("#"), 1<<20+1) }
 	const signers = "\t\tsigner alice@example.com ssh-ed25519 K1\n\t\tsigner bob ssh-ed25519 K2\n"
-	const trust = "\t\tdeploy_trust github {\n\t\t\taudience hotserve\n\t\t\tclaim repository your-org/boxes\n\t\t}\n"
+	const trust = "\t\tdeploy_trust github {\n\t\t\taudience motel\n\t\t\tclaim repository your-org/boxes\n\t\t}\n"
 	const boxBlock = "\tbox {\n" + trust + "\t\t# signers\n" + signers + "\t}\n"
 	for _, c := range []struct {
 		name   string
@@ -270,7 +270,7 @@ func TestInitCmdRefusals(t *testing.T) {
 		want   string
 		remedy bool
 	}{
-		{name: "not root", euid: 1000, file: whole, want: "hotserve init runs as root: it installs /etc/hotserve/Caddyfile"},
+		{name: "not root", euid: 1000, file: whole, want: "motel init runs as root: it installs /etc/motel/Caddyfile"},
 		{name: "a short sha", file: whole, sha: "4f1c2a9", want: "4f1c2a9 is not a commit id: 40 lowercase hex, as git rev-parse HEAD prints one"},
 		{name: "an upper-case sha", file: whole, sha: strings.Repeat("A", 40), want: strings.Repeat("A", 40) + " is not a commit id"},
 		{name: "a sha that is not hex", file: whole, sha: strings.Repeat("z", 40), want: "is not a commit id"},
@@ -333,9 +333,9 @@ func TestInitCmdRefusals(t *testing.T) {
 		{name: "no host", file: edit("deploy.example.com {", ":443 {"), want: "the Caddyfile has a box_webhook site whose address is not one bare hostname (:443)"},
 		{name: "an import in the box block", file: edit("\t\t# signers\n", "\t\timport signers\n"), want: "the Caddyfile imports signers; inline the snippet"},
 		{name: "an import in the site", file: edit("\tbox_webhook\n", "\tbox_webhook\n\timport extra\n"), want: "the Caddyfile imports extra; inline the snippet"},
-		{name: "hotserve inactive", file: whole, states: []string{"inactive"}, want: msgNotRunning, remedy: true},
-		{name: "hotserve failed", file: whole, states: []string{"failed"}, want: msgNotRunning, remedy: true},
-		{name: "hotserve still activating after the wait", file: whole, states: []string{"activating"}, want: msgStillStarting, remedy: true},
+		{name: "motel inactive", file: whole, states: []string{"inactive"}, want: msgNotRunning, remedy: true},
+		{name: "motel failed", file: whole, states: []string{"failed"}, want: msgNotRunning, remedy: true},
+		{name: "motel still activating after the wait", file: whole, states: []string{"activating"}, want: msgStillStarting, remedy: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			b := newTestBox(t)
@@ -394,7 +394,7 @@ func TestBaselineUnrecordedRemedies(t *testing.T) {
 		dir := initDir(t, file)
 		var out bytes.Buffer
 		err := runInitCmd(context.Background(), 0, b.applier(hooks{fail: failAt(map[string]int{"applied.json": -1})}), dir, sha, &out)
-		want := phaseUnknown + ": applied but the baseline could not be recorded; hotserve init " + sha + " again, which ends no_change and records it"
+		want := phaseUnknown + ": applied but the baseline could not be recorded; motel init " + sha + " again, which ends no_change and records it"
 		if err == nil || err.Error() != want {
 			t.Fatalf("%v, want %q", err, want)
 		}
@@ -437,7 +437,7 @@ func TestBaselineUnrecordedRemedies(t *testing.T) {
 		if err := b.run(hooks{fail: failAt(map[string]int{"applied.json": -1})}); err != nil {
 			t.Fatal(err)
 		}
-		want := "applied but the baseline could not be recorded; hotserve box baseline " + c8 + " on the box records it (the next push then reports the file as edited out of band; it was not)"
+		want := "applied but the baseline could not be recorded; motel box baseline " + c8 + " on the box records it (the next push then reports the file as edited out of band; it was not)"
 		if r := b.result(id); r == nil || r.Phase != phaseUnknown || r.Error != want {
 			t.Fatalf("%+v", r)
 		}

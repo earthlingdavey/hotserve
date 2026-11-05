@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/unit"
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/backups/unit"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
 )
 
 // verify leans on one thing restic does: given a directory, `ls` lists
@@ -241,9 +241,9 @@ func TestIntegrationResticSnapshotsLeavesOutWhatItCannotLoadAndExitsZero(t *test
 		return resticOK(t, base, append([]string{restic}, args...)...)
 	}
 	run("init", "-q")
-	run("backup", "-q", "--host", "hotserve", "--tag", "app:blog", "f")
+	run("backup", "-q", "--host", "motel", "--tag", "app:blog", "f")
 	must(t, os.WriteFile(filepath.Join(base, "f"), []byte("2"), 0o644))
-	run("backup", "-q", "--host", "hotserve", "--tag", "app:blog", "f")
+	run("backup", "-q", "--host", "motel", "--tag", "app:blog", "f")
 	if out, said := run("snapshots", "--json", "--no-lock"); strings.Count(out, `"short_id"`) != 2 || said != "" {
 		t.Fatalf("fixture: %q, stderr %q", out, said)
 	}

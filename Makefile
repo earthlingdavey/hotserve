@@ -165,14 +165,14 @@ secretscan: GITLEAKS_FLAGS = $(shell test -d .git || echo --no-git)
 secretscan:
 	$(COMPOSE) run --rm gitleaks detect --source /src --redact -v $(GITLEAKS_FLAGS)
 
-# hotserve's release, linked in as Caddy's CustomVersion. Caddy puts it
-# in front of its full version (`hotserve version`, `--version`,
+# motel's release, linked in as Caddy's CustomVersion. Caddy puts it
+# in front of its full version (`motel version`, `--version`,
 # `environ`), which otherwise names only the Caddy built in. The short
 # version, in Caddy's ACME User-Agent, metrics, tracing and FastCGI
 # SERVER_SOFTWARE, stays Caddy's own.
 GO_LDFLAGS = -s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v$(VERSION)
 
-# The public ledger of what building hotserve costs: Claude Code
+# The public ledger of what building motel costs: Claude Code
 # sessions, Actions runner minutes and Copilot credits as month-level
 # facts in usage/*.csv, rendered to docs/footprint.md. Reads the
 # transcripts under ~/.claude/projects (the compose service mounts them
@@ -182,7 +182,7 @@ GO_LDFLAGS = -s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v$(VERSION)
 # records for 90 days — fill in usage/copilot.csv from GitHub billing
 # (its note column is public too), and commit what changed. --user: the
 # files it writes stay yours on a Linux host (the container is root).
-USAGE_REPO ?= smallhoursorg/hotserve
+USAGE_REPO ?= smallhoursorg/motel
 usage:
 	GH_TOKEN=$$(gh auth token) $(COMPOSE) run --rm --user "$$(id -u):$$(id -g)" usage \
 		python3 -I .github/scripts/usage.py collect-claude collect-actions render --repo $(USAGE_REPO)
@@ -199,7 +199,7 @@ usage-check:
 
 # Cross-compiles the product binary for the release targets. GOFLAGS is
 # cleared so -buildvcs is back on: Go records the commit, and on a tag
-# the release, in the build info `hotserve build-info` prints (the dev
+# the release, in the build info `motel build-info` prints (the dev
 # service disables it for test cache friendliness). safe.directory is
 # needed because /src is a bind mount owned by a different uid than the
 # container's root.
@@ -211,25 +211,25 @@ usage-check:
 build:
 	$(COMPOSE) run --rm -e GOFLAGS= -e CGO_ENABLED=0 dev sh -c '\
 		git config --global --add safe.directory /src; \
-		GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(GO_LDFLAGS)" -o build/hotserve-linux-amd64 ./cmd/hotserve & p1=$$!; \
-		GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(GO_LDFLAGS)" -o build/hotserve-linux-arm64 ./cmd/hotserve & p2=$$!; \
-		(cd backups && GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../build/hotserve-backup-linux-amd64 ./cmd/hotserve-backup) & p3=$$!; \
-		(cd backups && GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../build/hotserve-backup-linux-arm64 ./cmd/hotserve-backup) & p4=$$!; \
+		GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(GO_LDFLAGS)" -o build/motel-linux-amd64 ./cmd/motel & p1=$$!; \
+		GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(GO_LDFLAGS)" -o build/motel-linux-arm64 ./cmd/motel & p2=$$!; \
+		(cd backups && GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../build/motel-backup-linux-amd64 ./cmd/motel-backup) & p3=$$!; \
+		(cd backups && GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../build/motel-backup-linux-arm64 ./cmd/motel-backup) & p4=$$!; \
 		wait $$p1 || exit 1; wait $$p2 || exit 1; wait $$p3 || exit 1; wait $$p4 || exit 1; \
-		if go version -m build/hotserve-backup-linux-amd64 build/hotserve-backup-linux-arm64 | grep -q -- "-tags=.*e2e"; then \
-			echo "build/hotserve-backup-linux-*: built with -tags e2e, which shortens the setup clock for the e2e box: not a binary to ship"; exit 1; \
+		if go version -m build/motel-backup-linux-amd64 build/motel-backup-linux-arm64 | grep -q -- "-tags=.*e2e"; then \
+			echo "build/motel-backup-linux-*: built with -tags e2e, which shortens the setup clock for the e2e box: not a binary to ship"; exit 1; \
 		fi; \
 		chmod -R a+rwX build'
 
 # Builds .deb for both arches into dist/. .deb only, and no .apk
 # planned: liveswap runs apps as transient systemd units with no
-# fallback runner, so an Alpine/OpenRC package would install a hotserve
+# fallback runner, so an Alpine/OpenRC package would install a motel
 # that serves but refuses any Caddyfile defining an app — see
 # packaging/nfpm.yaml. The packages carry the systemd unit, the starter
-# config (in /usr/share/hotserve) and the data dirs, and hotserve-backup
-# with its two timers; postinstall creates the hotserve and
-# hotserve-backup system users and installs the starter at
-# /etc/hotserve/Caddyfile. Both arches are staged and packaged inside
+# config (in /usr/share/motel) and the data dirs, and motel-backup
+# with its two timers; postinstall creates the motel and
+# motel-backup system users and installs the starter at
+# /etc/motel/Caddyfile. Both arches are staged and packaged inside
 # ONE nfpm container: staged on the host between two containers, a
 # binary replaced in place kept its old size in Docker Desktop's
 # bind-mount attribute cache, and nfpm wrote a tar header of the amd64
@@ -242,17 +242,17 @@ package: clean-debs build
 	$(COMPOSE) run --rm --entrypoint sh -e NFPM_VERSION=$(VERSION) nfpm -c '\
 		set -e; \
 		for a in amd64 arm64; do \
-			rm -f build/hotserve build/hotserve-backup; \
-			cp build/hotserve-linux-$$a build/hotserve; \
-			cp build/hotserve-backup-linux-$$a build/hotserve-backup; \
+			rm -f build/motel build/motel-backup; \
+			cp build/motel-linux-$$a build/motel; \
+			cp build/motel-backup-linux-$$a build/motel-backup; \
 			for f in deb; do \
 				NFPM_ARCH=$$a nfpm package -f packaging/nfpm.yaml -p $$f -t dist/; \
 			done; \
 		done; \
-		rm -f build/hotserve build/hotserve-backup'
+		rm -f build/motel build/motel-backup'
 
 clean-debs:
-	rm -f dist/hotserve_*.deb
+	rm -f dist/motel_*.deb
 
 # Installs the freshly built .deb inside a systemd container (DISTRO
 # picks the base image) and runs the staged smoke test: install, unit
@@ -265,10 +265,10 @@ clean-debs:
 # Docker Desktop alike).
 install-test:
 	$(cgroup2_preflight)
-	docker build -t hotserve-install-test-$(subst :,-,$(DISTRO)) \
+	docker build -t motel-install-test-$(subst :,-,$(DISTRO)) \
 		--build-arg BASE_IMAGE=$(DISTRO) packaging/test
-	docker rm -f hotserve-smoke >/dev/null 2>&1 || true
-	docker run -d --name hotserve-smoke --privileged --cgroupns=host \
+	docker rm -f motel-smoke >/dev/null 2>&1 || true
+	docker run -d --name motel-smoke --privileged --cgroupns=host \
 		--tmpfs /run --tmpfs /run/lock \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 		-v $(CURDIR)/dist:/dist:ro \
@@ -276,17 +276,17 @@ install-test:
 		-v $(CURDIR)/liveswap/testdata/sandbox-view.sh:/sandbox-view.sh:ro \
 		-v $(CURDIR)/e2e/backup/tty.sh:/tty.sh:ro \
 		-v $(CURDIR)/docs/backups.md:/docs-backups.md:ro \
-		hotserve-install-test-$(subst :,-,$(DISTRO))
-	docker exec hotserve-smoke /bin/bash /smoke.sh; status=$$?; \
+		motel-install-test-$(subst :,-,$(DISTRO))
+	docker exec motel-smoke /bin/bash /smoke.sh; status=$$?; \
 	if [ $$status -ne 0 ]; then \
-		docker exec hotserve-smoke journalctl -u hotserve --no-pager || true; \
+		docker exec motel-smoke journalctl -u motel --no-pager || true; \
 	fi; \
-	docker rm -f hotserve-smoke >/dev/null; \
+	docker rm -f motel-smoke >/dev/null; \
 	exit $$status
 
 # The main suites run via the e2e-runner entrypoint. Then the systemd
-# suite runs INSIDE the hotserve container (it needs systemctl,
-# journalctl and the process tree): restart survival, hotserve's own
+# suite runs INSIDE the motel container (it needs systemctl,
+# journalctl and the process tree): restart survival, motel's own
 # crashes (SIGKILL, exit 2, OOM) undone by the unit + reattach, a
 # refused start staying down, cgroup teardown of a worker tree, crash
 # cleanup, journal output. The recovery suite is the runner's view
@@ -296,18 +296,18 @@ install-test:
 # template's own commands, and the e2e config put back.
 e2e:
 	$(cgroup2_preflight)
-	$(COMPOSE) up --build -d e2e-hotserve e2e-upstream e2e-artifacts
+	$(COMPOSE) up --build -d e2e-motel e2e-upstream e2e-artifacts
 	status=0; \
 	$(COMPOSE) run --rm e2e-runner || status=1; \
 	echo "════ systemd suite: restart survival, reattach, cgroup teardown ════"; \
-	$(COMPOSE) exec -T e2e-hotserve /bin/sh /suite-systemd.sh || status=1; \
-	echo "════ recovery suite: the runner's view after hotserve's unclean death ════"; \
+	$(COMPOSE) exec -T e2e-motel /bin/sh /suite-systemd.sh || status=1; \
+	echo "════ recovery suite: the runner's view after motel's unclean death ════"; \
 	$(COMPOSE) run --rm --entrypoint "/bin/sh /suite-recovery.sh" e2e-runner || status=1; \
 	echo "════ box apply suite: signed pushes through box_webhook to the root applier ════"; \
-	$(COMPOSE) exec -T e2e-hotserve /bin/sh /suite-box.sh || status=1; \
+	$(COMPOSE) exec -T e2e-motel /bin/sh /suite-box.sh || status=1; \
 	if [ $$status -ne 0 ]; then \
 		$(COMPOSE) logs e2e-upstream e2e-artifacts; \
-		$(COMPOSE) exec -T e2e-hotserve journalctl --no-pager -n 300 || true; \
+		$(COMPOSE) exec -T e2e-motel journalctl --no-pager -n 300 || true; \
 	fi; \
 	$(COMPOSE) down --remove-orphans; \
 	exit $$status
@@ -330,7 +330,7 @@ e2e:
 # The box's two binaries are built first, in the dev container, for
 # this host's arch: its Go caches are the volumes `make build` uses
 # (in CI, ./.cache under actions/cache), where a build inside the
-# image started cold every time. hotserve-backup is built with -tags
+# image started cold every time. motel-backup is built with -tags
 # e2e, which shortens setup's clock alone (backups/engine/
 # setupclock_e2e.go): the package's binary is never built with it,
 # and `make build` refuses one that was.
@@ -339,8 +339,8 @@ SUITE_LIMIT ?= 600
 e2e-backup:
 	$(cgroup2_preflight)
 	$(COMPOSE) run --rm -e CGO_ENABLED=0 dev sh -c '\
-		go build -trimpath -o build/e2e-backup/hotserve ./cmd/hotserve & p1=$$!; \
-		(cd backups && go build -trimpath -tags e2e -o ../build/e2e-backup/hotserve-backup ./cmd/hotserve-backup) & p2=$$!; \
+		go build -trimpath -o build/e2e-backup/motel ./cmd/motel & p1=$$!; \
+		(cd backups && go build -trimpath -tags e2e -o ../build/e2e-backup/motel-backup ./cmd/motel-backup) & p2=$$!; \
 		wait $$p1 || exit 1; wait $$p2 || exit 1; \
 		chmod -R a+rwX build'
 	$(COMPOSE) rm -sf e2e-backup-box e2e-s3 >/dev/null
@@ -375,25 +375,25 @@ e2e-backup:
 # SOAK_RELOADS, SOAK_CLIENTS, SOAK_REQS. Runs per merge to main and
 # weekly in CI (soak.yml); never in the PR path.
 #
-# On failure: hotserve runs under systemd inside e2e-hotserve, so that
+# On failure: motel runs under systemd inside e2e-motel, so that
 # container's console carries nothing from it and the journal is the
 # evidence — same as the e2e target above, tail-bounded here because a
 # soak pushes 15-20 minutes of churn through the stub servers.
 soak:
-	$(COMPOSE) up --build -d e2e-hotserve e2e-upstream e2e-artifacts
+	$(COMPOSE) up --build -d e2e-motel e2e-upstream e2e-artifacts
 	status=0; \
 	$(COMPOSE) run --rm -e SOAK_DEPLOYS -e SOAK_RELOADS -e SOAK_CLIENTS -e SOAK_REQS \
 		--entrypoint "/bin/sh /soak.sh" e2e-runner || status=1; \
 	if [ $$status -ne 0 ]; then \
-		$(COMPOSE) logs --tail 200 e2e-hotserve e2e-upstream e2e-artifacts; \
-		$(COMPOSE) exec -T e2e-hotserve journalctl --no-pager -n 300 || true; \
+		$(COMPOSE) logs --tail 200 e2e-motel e2e-upstream e2e-artifacts; \
+		$(COMPOSE) exec -T e2e-motel journalctl --no-pager -n 300 || true; \
 	fi; \
 	$(COMPOSE) down --remove-orphans; \
 	exit $$status
 
 e2e-logs:
 	$(COMPOSE) logs e2e-upstream e2e-artifacts
-	$(COMPOSE) exec -T e2e-hotserve journalctl --no-pager -n 300
+	$(COMPOSE) exec -T e2e-motel journalctl --no-pager -n 300
 
 # --rmi local: the images this checkout built (no custom tag), one set
 # per compose project; pulled images are kept.

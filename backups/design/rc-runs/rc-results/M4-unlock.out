@@ -5,10 +5,10 @@
 # e2e-backup-box (make e2e-backup's image) and the suite's S3 server,
 # under a compose project of its own so that no lane could remove them:
 #
-#   COMPOSE_PROJECT_NAME=hotserve-m4 docker compose up --build -d e2e-s3 e2e-backup-box
-#   COMPOSE_PROJECT_NAME=hotserve-m4 docker compose cp m4-unlock.sh e2e-backup-box:/root/m4-unlock.sh
-#   COMPOSE_PROJECT_NAME=hotserve-m4 docker compose exec -T e2e-backup-box chmod 0755 /root/m4-unlock.sh
-#   COMPOSE_PROJECT_NAME=hotserve-m4 docker compose exec -T e2e-backup-box /root/m4-unlock.sh
+#   COMPOSE_PROJECT_NAME=motel-m4 docker compose up --build -d e2e-s3 e2e-backup-box
+#   COMPOSE_PROJECT_NAME=motel-m4 docker compose cp m4-unlock.sh e2e-backup-box:/root/m4-unlock.sh
+#   COMPOSE_PROJECT_NAME=motel-m4 docker compose exec -T e2e-backup-box chmod 0755 /root/m4-unlock.sh
+#   COMPOSE_PROJECT_NAME=motel-m4 docker compose exec -T e2e-backup-box /root/m4-unlock.sh
 #
 # The script, verbatim, then its whole output, then what was checked on
 # the box after it.
@@ -23,12 +23,12 @@
 # Run inside an e2e-backup-box (make e2e-backup's image: debian:trixie,
 # Debian's restic, systemd as PID 1), against the suite's S3 server at
 # e2e-s3 (rclone serve s3) and, where a DELETE is to be refused or fail,
-# a proxy of the box's own in front of it (hotserve run, as setup.sh's
+# a proxy of the box's own in front of it (motel run, as setup.sh's
 # readonly_storage and M3's ro-proxy.sh do).
 #
 # Every restic measured runs in a transient unit shaped as setup's are:
 # backups/unit/unit.go Spec.properties() for engine.resticUnit
-# (User=hotserve-backup, Network, the staged environment file,
+# (User=motel-backup, Network, the staged environment file,
 # RESTIC_CACHE_DIR/HOME/TZ, CacheDirectory) plus setup's StderrFile. No
 # PrivatePIDs and no PrivateUsers: resticUnit sets neither
 # (SameUIDNamespaces is false), so the unit sees the box's PIDs. D
@@ -37,7 +37,7 @@ set -u
 . /lib.sh
 . /lib-backup.sh
 wait_for_systemd
-id hotserve-backup >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment made-by-hotserve hotserve-backup
+id motel-backup >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment made-by-motel motel-backup
 
 M=/root/m4
 rm -rf "$M" /root/m4-cache /tmp/m4-ecache
@@ -72,16 +72,16 @@ VIEW='-/usr -/bin -/sbin -/lib -/lib64 -/etc/passwd -/etc/group -/etc/ld.so.cach
 shape() {
 	label=$1 env=$2
 	shift 2
-	name=hotserve_backup_m4_$label.service
+	name=motel_backup_m4_$label.service
 	CMD=(systemd-run --wait --collect --expand-environment=no --unit="$name"
 		-p "Description=m4 $label" -p Type=oneshot -p TimeoutStartSec=infinity -p KillMode=control-group
 		-p TemporaryFileSystem=/:ro -p PrivateTmp=yes -p PrivateDevices=yes -p PrivateNetwork=no
 		-p NoNewPrivileges=yes -p CapabilityBoundingSet= -p AmbientCapabilities=
 		-p ProtectControlGroups=yes -p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectKernelLogs=yes
 		-p RestrictNamespaces=yes -p RestrictRealtime=yes -p RestrictSUIDSGID=yes -p LockPersonality=yes -p UMask=0077
-		-p "StandardError=truncate:$M/$label.err" -p User=hotserve-backup -p "EnvironmentFile=$env"
-		-p Environment=RESTIC_CACHE_DIR=/var/cache/hotserve-backup -p Environment=HOME=/nonexistent -p Environment=TZ=UTC
-		-p "StandardOutput=truncate:$M/$label.out" -p CacheDirectory=hotserve-backup
+		-p "StandardError=truncate:$M/$label.err" -p User=motel-backup -p "EnvironmentFile=$env"
+		-p Environment=RESTIC_CACHE_DIR=/var/cache/motel-backup -p Environment=HOME=/nonexistent -p Environment=TZ=UTC
+		-p "StandardOutput=truncate:$M/$label.out" -p CacheDirectory=motel-backup
 		-p "BindReadOnlyPaths=$VIEW" /usr/bin/restic "$@")
 	echo "\$ restic $*    [unit $name, setup's shape, $(basename "$env")]"
 }
@@ -125,7 +125,7 @@ proxy() { # <status> <methods>: the box's own proxy to e2e-s3, answering those m
 	sed 's/^/  /' "$M/proxy.Caddyfile"
 	systemctl stop m4-proxy.service 2>/dev/null
 	systemctl reset-failed m4-proxy.service 2>/dev/null
-	systemd-run --quiet --collect --unit=m4-proxy.service /usr/bin/hotserve run --config "$M/proxy.Caddyfile" --adapter caddyfile
+	systemd-run --quiet --collect --unit=m4-proxy.service /usr/bin/motel run --config "$M/proxy.Caddyfile" --adapter caddyfile
 	i=0
 	until curl -s -o /dev/null http://127.0.0.1:9100/ || [ "$i" -ge 100 ]; do
 		i=$((i + 1))
@@ -177,15 +177,15 @@ s=$(date +%s.%N)
 "${CMD[@]}" >"$M/D-holder.run" 2>&1 &
 holder=$!
 wait_lock
-systemctl kill -s SIGSTOP hotserve_backup_m4_D-holder.service
+systemctl kill -s SIGSTOP motel_backup_m4_D-holder.service
 echo "  held with SIGSTOP once its lock was listed ($(secs "$s")s in)"
 echo "  the unit as the manager holds it:"
-systemctl show -p ExecMainPID,User,PrivatePIDs,PrivateUsers,PrivateNetwork,PrivateTmp,PrivateDevices,CapabilityBoundingSet,AmbientCapabilities,NoNewPrivileges,TemporaryFileSystem,BindReadOnlyPaths,EnvironmentFiles,Environment,ProtectKernelTunables,RestrictNamespaces,UMask hotserve_backup_m4_D-holder.service | sed 's/^/    /'
-echo "  its restic: $(ps -o pid=,stat=,user=,args= -p "$(systemctl show -p ExecMainPID --value hotserve_backup_m4_D-holder.service)")"
+systemctl show -p ExecMainPID,User,PrivatePIDs,PrivateUsers,PrivateNetwork,PrivateTmp,PrivateDevices,CapabilityBoundingSet,AmbientCapabilities,NoNewPrivileges,TemporaryFileSystem,BindReadOnlyPaths,EnvironmentFiles,Environment,ProtectKernelTunables,RestrictNamespaces,UMask motel_backup_m4_D-holder.service | sed 's/^/    /'
+echo "  its restic: $(ps -o pid=,stat=,user=,args= -p "$(systemctl show -p ExecMainPID --value motel_backup_m4_D-holder.service)")"
 locks
 unit D-unlock "$M/direct.env" unlock
 echo "### D, then: the holder killed hard (SIGKILL), its lock left with a pid that is gone on this host: unlock"
-systemctl kill -s SIGKILL hotserve_backup_m4_D-holder.service
+systemctl kill -s SIGKILL motel_backup_m4_D-holder.service
 wait "$holder"
 said D-holder $? "$s"
 locks
@@ -201,7 +201,7 @@ while ps -p "$P" >/dev/null 2>&1; do P=$((P - 1)); done
 	. "$M/direct.env"
 	set +a
 	export RESTIC_CACHE_DIR=/tmp/m4-ecache
-	exec unshare --pid --fork --mount-proc /bin/sh -c "echo $((P - 1)) >/proc/sys/kernel/ns_last_pid && setpriv --reuid hotserve-backup --regid hotserve-backup --clear-groups /usr/bin/restic backup /usr --read-concurrency 1 >$M/E-holder.out 2>$M/E-holder.err & wait"
+	exec unshare --pid --fork --mount-proc /bin/sh -c "echo $((P - 1)) >/proc/sys/kernel/ns_last_pid && setpriv --reuid motel-backup --regid motel-backup --clear-groups /usr/bin/restic backup /usr --read-concurrency 1 >$M/E-holder.out 2>$M/E-holder.err & wait"
 ) &
 eholder=$!
 wait_lock
@@ -234,7 +234,7 @@ box: hostname 5632b6ea4081, restic 0.18.0 compiled with go1.24.4 on linux/arm64,
 locks after: 0
 
 ## F. restic's version, in setup's shape
-$ restic version    [unit hotserve_backup_m4_F-version.service, setup's shape, direct.env]
+$ restic version    [unit motel_backup_m4_F-version.service, setup's shape, direct.env]
 [exit 0, 0.1s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -254,7 +254,7 @@ locks after: 0
   	respond @refused 403
   	reverse_proxy e2e-s3:9000
   }
-$ restic cat config    [unit hotserve_backup_m4_A1-open.service, setup's shape, proxy.env]
+$ restic cat config    [unit motel_backup_m4_A1-open.service, setup's shape, proxy.env]
 [exit 0, 0.7s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -268,8 +268,8 @@ $ restic cat config    [unit hotserve_backup_m4_A1-open.service, setup's shape, 
   --- stderr
   Remove(<lock/bb19e73ef3>) failed: client.RemoveObject: Access Denied.
   error while unlocking: client.RemoveObject: Access Denied.locks after: 1
-  bb19e73ef32d77d1913bd1fada21d5b93da1bf8efaafcce7ecc4328515eadcc0: { "time": "2026-10-25T12:40:27.539415555Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 224, "uid": 995, "gid": 995}
-$ restic unlock    [unit hotserve_backup_m4_A2-unlock.service, setup's shape, proxy.env]
+  bb19e73ef32d77d1913bd1fada21d5b93da1bf8efaafcce7ecc4328515eadcc0: { "time": "2026-10-25T12:40:27.539415555Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 224, "uid": 995, "gid": 995}
+$ restic unlock    [unit motel_backup_m4_A2-unlock.service, setup's shape, proxy.env]
 [exit 1, 0.5s]
   systemd-run: Finished with result: exit-code
   systemd-run: Main processes terminated with: code=exited, status=1/FAILURE
@@ -321,7 +321,7 @@ $ restic unlock    [unit hotserve_backup_m4_A2-unlock.service, setup's shape, pr
   runtime.goexit
   	runtime/asm_arm64.s:1223
 locks after: 1
-  bb19e73ef32d77d1913bd1fada21d5b93da1bf8efaafcce7ecc4328515eadcc0: { "time": "2026-10-25T12:40:27.539415555Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 224, "uid": 995, "gid": 995}
+  bb19e73ef32d77d1913bd1fada21d5b93da1bf8efaafcce7ecc4328515eadcc0: { "time": "2026-10-25T12:40:27.539415555Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 224, "uid": 995, "gid": 995}
 
 ## B. DELETE failing (500): the locking opening, then unlock — each stopped at 3 minutes if still running
 ## the proxy: DELETE answered 500 by the proxy itself, everything else passed to e2e-s3:9000
@@ -334,7 +334,7 @@ locks after: 1
   	respond @refused 500
   	reverse_proxy e2e-s3:9000
   }
-$ restic cat config    [unit hotserve_backup_m4_B1-open.service, setup's shape, proxy.env]
+$ restic cat config    [unit motel_backup_m4_B1-open.service, setup's shape, proxy.env]
   at 30s: running; stderr lines 4, "retrying after" lines 4
   at 60s: running; stderr lines 6, "retrying after" lines 6
 [exit 0, 61.5s]
@@ -355,9 +355,9 @@ $ restic cat config    [unit hotserve_backup_m4_B1-open.service, setup's shape, 
   Remove(<lock/9e10eeec08>) returned error, retrying after 8.853734653s: client.RemoveObject: 500 Internal Server Error
   Remove(<lock/9e10eeec08>) returned error, retrying after 34.639635739s: client.RemoveObject: 500 Internal Server Error
   error while unlocking: context canceledlocks after: 2
-  bb19e73ef32d77d1913bd1fada21d5b93da1bf8efaafcce7ecc4328515eadcc0: { "time": "2026-10-25T12:40:27.539415555Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 224, "uid": 995, "gid": 995}
-  9e10eeec08d60950caeafe8d612a42f18fa635f6acbd4cb6ee3b5d7e00487d4b: { "time": "2026-10-25T12:40:30.929850042Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 350, "uid": 995, "gid": 995}
-$ restic unlock    [unit hotserve_backup_m4_B2-unlock.service, setup's shape, proxy.env]
+  bb19e73ef32d77d1913bd1fada21d5b93da1bf8efaafcce7ecc4328515eadcc0: { "time": "2026-10-25T12:40:27.539415555Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 224, "uid": 995, "gid": 995}
+  9e10eeec08d60950caeafe8d612a42f18fa635f6acbd4cb6ee3b5d7e00487d4b: { "time": "2026-10-25T12:40:30.929850042Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 350, "uid": 995, "gid": 995}
+$ restic unlock    [unit motel_backup_m4_B2-unlock.service, setup's shape, proxy.env]
   at 30s: running; stderr lines 4, "retrying after" lines 4
   at 60s: running; stderr lines 6, "retrying after" lines 6
   at 90s: running; stderr lines 7, "retrying after" lines 7
@@ -381,12 +381,12 @@ $ restic unlock    [unit hotserve_backup_m4_B2-unlock.service, setup's shape, pr
   [2Ksignal terminated received, cleaning up
   context canceled
 locks after: 2
-  bb19e73ef32d77d1913bd1fada21d5b93da1bf8efaafcce7ecc4328515eadcc0: { "time": "2026-10-25T12:40:27.539415555Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 224, "uid": 995, "gid": 995}
-  9e10eeec08d60950caeafe8d612a42f18fa635f6acbd4cb6ee3b5d7e00487d4b: { "time": "2026-10-25T12:40:30.929850042Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 350, "uid": 995, "gid": 995}
+  bb19e73ef32d77d1913bd1fada21d5b93da1bf8efaafcce7ecc4328515eadcc0: { "time": "2026-10-25T12:40:27.539415555Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 224, "uid": 995, "gid": 995}
+  9e10eeec08d60950caeafe8d612a42f18fa635f6acbd4cb6ee3b5d7e00487d4b: { "time": "2026-10-25T12:40:30.929850042Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 350, "uid": 995, "gid": 995}
 
 ## C. DELETE allowed (straight to e2e-s3)
 ### C(ii) the locks A and B left (written by restics of this box, now gone): unlock
-$ restic unlock    [unit hotserve_backup_m4_C2-unlock-left.service, setup's shape, direct.env]
+$ restic unlock    [unit motel_backup_m4_C2-unlock-left.service, setup's shape, direct.env]
 [exit 0, 0.5s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -395,7 +395,7 @@ $ restic unlock    [unit hotserve_backup_m4_C2-unlock-left.service, setup's shap
   successfully removed 2 locks
 locks after: 0
 ### C(i) a normal opening, then unlock (0 stale locks: F's exit code with none)
-$ restic cat config    [unit hotserve_backup_m4_C1-open.service, setup's shape, direct.env]
+$ restic cat config    [unit motel_backup_m4_C1-open.service, setup's shape, direct.env]
 [exit 0, 0.8s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -407,7 +407,7 @@ $ restic cat config    [unit hotserve_backup_m4_C1-open.service, setup's shape, 
     "chunker_polynomial": "2e3f24fb96f483"
   }
 locks after: 0
-$ restic unlock    [unit hotserve_backup_m4_C1-unlock.service, setup's shape, direct.env]
+$ restic unlock    [unit motel_backup_m4_C1-unlock.service, setup's shape, direct.env]
 [exit 0, 0.6s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -415,16 +415,16 @@ $ restic unlock    [unit hotserve_backup_m4_C1-unlock.service, setup's shape, di
 locks after: 0
 
 ## D. a live lock of the same account on this host: a backup in setup's shape, held with SIGSTOP, then unlock
-$ restic backup /usr --read-concurrency 1    [unit hotserve_backup_m4_D-holder.service, setup's shape, direct.env]
+$ restic backup /usr --read-concurrency 1    [unit motel_backup_m4_D-holder.service, setup's shape, direct.env]
   held with SIGSTOP once its lock was listed (1.1s in)
   the unit as the manager holds it:
     ExecMainPID=875
-    Environment=RESTIC_CACHE_DIR=/var/cache/hotserve-backup HOME=/nonexistent TZ=UTC
+    Environment=RESTIC_CACHE_DIR=/var/cache/motel-backup HOME=/nonexistent TZ=UTC
     EnvironmentFiles=/root/m4/direct.env (ignore_errors=no)
     UMask=0077
     CapabilityBoundingSet=
     AmbientCapabilities=
-    User=hotserve-backup
+    User=motel-backup
     PrivateTmp=yes
     PrivateDevices=yes
     ProtectKernelTunables=yes
@@ -437,14 +437,14 @@ $ restic backup /usr --read-concurrency 1    [unit hotserve_backup_m4_D-holder.s
     TemporaryFileSystem=/:ro
   its restic:     875 Tsl  hotserv+ /usr/bin/restic backup /usr --read-concurrency 1
 locks after: 1
-  ba7e3899561b1d1b36119d64a069db9b825bdc7e88e477e4f18f17e39e04871f: { "time": "2026-10-25T12:44:40.40734063Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 875, "uid": 995, "gid": 995}
-$ restic unlock    [unit hotserve_backup_m4_D-unlock.service, setup's shape, direct.env]
+  ba7e3899561b1d1b36119d64a069db9b825bdc7e88e477e4f18f17e39e04871f: { "time": "2026-10-25T12:44:40.40734063Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 875, "uid": 995, "gid": 995}
+$ restic unlock    [unit motel_backup_m4_D-unlock.service, setup's shape, direct.env]
 [exit 0, 0.5s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
   systemd-run: Service runtime: 534ms
 locks after: 1
-  ba7e3899561b1d1b36119d64a069db9b825bdc7e88e477e4f18f17e39e04871f: { "time": "2026-10-25T12:44:40.40734063Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 875, "uid": 995, "gid": 995}
+  ba7e3899561b1d1b36119d64a069db9b825bdc7e88e477e4f18f17e39e04871f: { "time": "2026-10-25T12:44:40.40734063Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 875, "uid": 995, "gid": 995}
 ### D, then: the holder killed hard (SIGKILL), its lock left with a pid that is gone on this host: unlock
 [exit 255, 1.6s]
   systemd-run: Finished with result: signal
@@ -453,8 +453,8 @@ locks after: 1
   --- stdout
   no parent snapshot found, will read all files
 locks after: 1
-  ba7e3899561b1d1b36119d64a069db9b825bdc7e88e477e4f18f17e39e04871f: { "time": "2026-10-25T12:44:40.40734063Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 875, "uid": 995, "gid": 995}
-$ restic unlock    [unit hotserve_backup_m4_D-unlock-after-kill.service, setup's shape, direct.env]
+  ba7e3899561b1d1b36119d64a069db9b825bdc7e88e477e4f18f17e39e04871f: { "time": "2026-10-25T12:44:40.40734063Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 875, "uid": 995, "gid": 995}
+$ restic unlock    [unit motel_backup_m4_D-unlock-after-kill.service, setup's shape, direct.env]
 [exit 0, 0.5s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -468,8 +468,8 @@ locks after: 0
   the holder on the box:    1080 Tl   hotserv+ /usr/bin/restic backup /usr --read-concurrency 1 — its pid in its own namespace: 2
   pid 4194297 on the box: not running
 locks after: 1
-  d0c33bb429990c8ba60d818bc011c484cd837135e079178a51b0e9ce369b50ef: { "time": "2026-10-25T12:44:46.064490258Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "hotserve-backup", "pid": 2, "uid": 995, "gid": 995}
-$ restic unlock    [unit hotserve_backup_m4_E-unlock.service, setup's shape, direct.env]
+  d0c33bb429990c8ba60d818bc011c484cd837135e079178a51b0e9ce369b50ef: { "time": "2026-10-25T12:44:46.064490258Z", "exclusive": false, "hostname": "5632b6ea4081", "username": "motel-backup", "pid": 2, "uid": 995, "gid": 995}
+$ restic unlock    [unit motel_backup_m4_E-unlock.service, setup's shape, direct.env]
 [exit 0, 0.6s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -513,10 +513,10 @@ removed it.
 # fresh box (same image, same compose project of its own), the capture
 # above unchanged:
 #
-#   COMPOSE_PROJECT_NAME=hotserve-m4 docker compose up --build -d e2e-s3 e2e-backup-box
-#   COMPOSE_PROJECT_NAME=hotserve-m4 docker compose cp m4g.sh e2e-backup-box:/root/m4g.sh
-#   COMPOSE_PROJECT_NAME=hotserve-m4 docker compose exec -T e2e-backup-box chmod 0755 /root/m4g.sh
-#   COMPOSE_PROJECT_NAME=hotserve-m4 docker compose exec -T e2e-backup-box /root/m4g.sh
+#   COMPOSE_PROJECT_NAME=motel-m4 docker compose up --build -d e2e-s3 e2e-backup-box
+#   COMPOSE_PROJECT_NAME=motel-m4 docker compose cp m4g.sh e2e-backup-box:/root/m4g.sh
+#   COMPOSE_PROJECT_NAME=motel-m4 docker compose exec -T e2e-backup-box chmod 0755 /root/m4g.sh
+#   COMPOSE_PROJECT_NAME=motel-m4 docker compose exec -T e2e-backup-box /root/m4g.sh
 
 ## the script: /root/m4g.sh
 
@@ -530,7 +530,7 @@ set -u
 . /lib.sh
 . /lib-backup.sh
 wait_for_systemd
-id hotserve-backup >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment made-by-hotserve hotserve-backup
+id motel-backup >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment made-by-motel motel-backup
 
 M=/root/m4
 rm -rf "$M" /root/m4-cache /tmp/m4-ecache
@@ -565,16 +565,16 @@ VIEW='-/usr -/bin -/sbin -/lib -/lib64 -/etc/passwd -/etc/group -/etc/ld.so.cach
 shape() {
 	label=$1 env=$2
 	shift 2
-	name=hotserve_backup_m4_$label.service
+	name=motel_backup_m4_$label.service
 	CMD=(systemd-run --wait --collect --expand-environment=no --unit="$name"
 		-p "Description=m4 $label" -p Type=oneshot -p TimeoutStartSec=infinity -p KillMode=control-group
 		-p TemporaryFileSystem=/:ro -p PrivateTmp=yes -p PrivateDevices=yes -p PrivateNetwork=no
 		-p NoNewPrivileges=yes -p CapabilityBoundingSet= -p AmbientCapabilities=
 		-p ProtectControlGroups=yes -p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectKernelLogs=yes
 		-p RestrictNamespaces=yes -p RestrictRealtime=yes -p RestrictSUIDSGID=yes -p LockPersonality=yes -p UMask=0077
-		-p "StandardError=truncate:$M/$label.err" -p User=hotserve-backup -p "EnvironmentFile=$env"
-		-p Environment=RESTIC_CACHE_DIR=/var/cache/hotserve-backup -p Environment=HOME=/nonexistent -p Environment=TZ=UTC
-		-p "StandardOutput=truncate:$M/$label.out" -p CacheDirectory=hotserve-backup
+		-p "StandardError=truncate:$M/$label.err" -p User=motel-backup -p "EnvironmentFile=$env"
+		-p Environment=RESTIC_CACHE_DIR=/var/cache/motel-backup -p Environment=HOME=/nonexistent -p Environment=TZ=UTC
+		-p "StandardOutput=truncate:$M/$label.out" -p CacheDirectory=motel-backup
 		-p "BindReadOnlyPaths=$VIEW" /usr/bin/restic "$@")
 	echo "\$ restic $*    [unit $name, setup's shape, $(basename "$env")]"
 }
@@ -618,7 +618,7 @@ proxy() { # <status> <methods>: the box's own proxy to e2e-s3, answering those m
 	sed 's/^/  /' "$M/proxy.Caddyfile"
 	systemctl stop m4-proxy.service 2>/dev/null
 	systemctl reset-failed m4-proxy.service 2>/dev/null
-	systemd-run --quiet --collect --unit=m4-proxy.service /usr/bin/hotserve run --config "$M/proxy.Caddyfile" --adapter caddyfile
+	systemd-run --quiet --collect --unit=m4-proxy.service /usr/bin/motel run --config "$M/proxy.Caddyfile" --adapter caddyfile
 	i=0
 	until curl -s -o /dev/null http://127.0.0.1:9100/ || [ "$i" -ge 100 ]; do
 		i=$((i + 1))
@@ -699,7 +699,7 @@ locks after: 1
   	respond @refused 403
   	reverse_proxy e2e-s3:9000
   }
-$ restic cat config    [unit hotserve_backup_m4_G-open.service, setup's shape, proxy.env]
+$ restic cat config    [unit motel_backup_m4_G-open.service, setup's shape, proxy.env]
 [exit 11, 0.5s]
   systemd-run: Finished with result: exit-code
   systemd-run: Main processes terminated with: code=exited, status=11/n/a
@@ -719,7 +719,7 @@ locks after: 1
 locks after: 0
 
 ## A, again: the locking opening through the proxy refusing DELETE (403), twice more
-$ restic cat config    [unit hotserve_backup_m4_A-again-1.service, setup's shape, proxy.env]
+$ restic cat config    [unit motel_backup_m4_A-again-1.service, setup's shape, proxy.env]
 [exit 0, 0.7s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -733,8 +733,8 @@ $ restic cat config    [unit hotserve_backup_m4_A-again-1.service, setup's shape
   --- stderr
   Remove(<lock/74a5af2646>) failed: client.RemoveObject: Access Denied.
   error while unlocking: client.RemoveObject: Access Denied.locks after: 1
-  74a5af26467919e35b4241e7b65d92e803fdf1282843a55b8bf166ffcd0a0ab1: { "time": "2026-10-25T12:51:54.169737011Z", "exclusive": false, "hostname": "674ddd9fee62", "username": "hotserve-backup", "pid": 339, "uid": 995, "gid": 995}
-$ restic cat config    [unit hotserve_backup_m4_A-again-2.service, setup's shape, proxy.env]
+  74a5af26467919e35b4241e7b65d92e803fdf1282843a55b8bf166ffcd0a0ab1: { "time": "2026-10-25T12:51:54.169737011Z", "exclusive": false, "hostname": "674ddd9fee62", "username": "motel-backup", "pid": 339, "uid": 995, "gid": 995}
+$ restic cat config    [unit motel_backup_m4_A-again-2.service, setup's shape, proxy.env]
 [exit 0, 0.7s]
   systemd-run: Finished with result: success
   systemd-run: Main processes terminated with: code=exited, status=0/SUCCESS
@@ -748,8 +748,8 @@ $ restic cat config    [unit hotserve_backup_m4_A-again-2.service, setup's shape
   --- stderr
   Remove(<lock/ad8ca0a298>) failed: client.RemoveObject: Access Denied.
   error while unlocking: client.RemoveObject: Access Denied.locks after: 2
-  74a5af26467919e35b4241e7b65d92e803fdf1282843a55b8bf166ffcd0a0ab1: { "time": "2026-10-25T12:51:54.169737011Z", "exclusive": false, "hostname": "674ddd9fee62", "username": "hotserve-backup", "pid": 339, "uid": 995, "gid": 995}
-  ad8ca0a2986b92d5354042cab7486fb8a518eb13421e45439273a4b5db889390: { "time": "2026-10-25T12:51:55.764231804Z", "exclusive": false, "hostname": "674ddd9fee62", "username": "hotserve-backup", "pid": 392, "uid": 995, "gid": 995}
+  74a5af26467919e35b4241e7b65d92e803fdf1282843a55b8bf166ffcd0a0ab1: { "time": "2026-10-25T12:51:54.169737011Z", "exclusive": false, "hostname": "674ddd9fee62", "username": "motel-backup", "pid": 339, "uid": 995, "gid": 995}
+  ad8ca0a2986b92d5354042cab7486fb8a518eb13421e45439273a4b5db889390: { "time": "2026-10-25T12:51:55.764231804Z", "exclusive": false, "hostname": "674ddd9fee62", "username": "motel-backup", "pid": 392, "uid": 995, "gid": 995}
 
 # done 2026-10-25 12:51:57 UTC
 m4g exit 0

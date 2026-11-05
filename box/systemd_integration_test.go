@@ -105,8 +105,8 @@ func TestIntegrationSystemctl(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 	})
-	// hotserve init against the real manager, a stand-in unit for
-	// hotserve.service: stopped, it refuses with nothing written; once
+	// motel init against the real manager, a stand-in unit for
+	// motel.service: stopped, it refuses with nothing written; once
 	// started, the same command applies and reloads it.
 	t.Run("init: refused while stopped, applied once started", func(t *testing.T) {
 		reloads := "/run/box-it-init-reloads-" + randomID(t)[:8]

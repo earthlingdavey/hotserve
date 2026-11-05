@@ -19,7 +19,7 @@ import (
 )
 
 // userManagerClient talks to the systemd service manager of the user
-// hotserve runs as, over that manager's private socket
+// motel runs as, over that manager's private socket
 // ($XDG_RUNTIME_DIR/systemd/private; /run/user/<uid> by default) — the
 // same path `systemctl --user` takes when no session bus is around. No
 // session bus, no polkit: the socket is owned by our uid and answers
@@ -54,8 +54,8 @@ type userManagerClient struct {
 	// chased: the verdict is a start-time input (App.Start either
 	// comes up or refuses on it), so a measurement taken at the start
 	// that resolved it is the honest one to hold. A host whose
-	// namespace policy changes underneath a running hotserve is
-	// re-measured on the next dial — a manager restart, or hotserve's
+	// namespace policy changes underneath a running motel is
+	// re-measured on the next dial — a manager restart, or motel's
 	// own.
 	//
 	// Its own mutex, not mu: a measurement takes a unit start plus its
@@ -88,7 +88,7 @@ var userManager = &userManagerClient{}
 // reports the same thing whether the namespaces are genuinely
 // unavailable or the probe unit merely timed out under boot load, and
 // caching that would refuse the server for the life of a connection
-// that nothing will drop — a hotserve that will not come up until the
+// that nothing will drop — a motel that will not come up until the
 // manager restarts. So a failed verdict is reported and re-measured
 // next time, which is what this code did before the cache existed.
 // The cost of re-measuring falls only on hosts that cannot sandbox at
@@ -136,7 +136,7 @@ func (c *userManagerClient) probe() error {
 		c.dropIfDisconnected(conn, err)
 	}
 	if err != nil {
-		return fmt.Errorf("liveswap needs the systemd user manager for uid %d (socket %s): %w — apps run as transient units under it; on a packaged install make sure `loginctl enable-linger hotserve` is in effect and user@%d.service is active",
+		return fmt.Errorf("liveswap needs the systemd user manager for uid %d (socket %s): %w — apps run as transient units under it; on a packaged install make sure `loginctl enable-linger motel` is in effect and user@%d.service is active",
 			os.Getuid(), userManagerSocket(), err, os.Getuid())
 	}
 	return nil
@@ -174,7 +174,7 @@ func (c *userManagerClient) get() (*sddbus.Conn, error) {
 	}
 	// systemd gives services soft NOFILE 1024 by default however high
 	// the hard limit is; the exec runner's children inherited
-	// hotserve.service's soft=hard. Units are created with both set to
+	// motel.service's soft=hard. Units are created with both set to
 	// the manager's hard ceiling (which the package raises via a
 	// user@<uid>.service.d drop-in), so a setrlimit can never exceed
 	// what the manager permits. Read while the handshake deadlines are
@@ -290,7 +290,7 @@ func dialPrivate(socket string) (*godbus.Conn, net.Conn, error) {
 }
 
 // unitProperties renders a unitSpec as transient-unit properties. The
-// hardening set is fixed here for every unit hotserve creates:
+// hardening set is fixed here for every unit motel creates:
 // Restart=no (the watchdog restarts), KillMode=control-group (stop
 // means the whole tree), NoNewPrivileges (no setuid escalation),
 // LimitCORE=0 on both limits (no core dump), and both output streams
@@ -356,7 +356,7 @@ func unitProperties(u unitSpec) []sddbus.Property {
 	// join the IPC namespace the first made (PrivateIPC=,
 	// sandboxProperties) and fails 226/NAMESPACE on its /dev/mqueue
 	// mount (measured, #311). The instance's socket goes with its run
-	// dir when hotserve retires the instance (socketRef.retire), or in
+	// dir when motel retires the instance (socketRef.retire), or in
 	// a confirmed sweep's prune; nothing routes to a leftover
 	// (socket.go).
 	props = append(props, capProperties(u.Caps, false, 0)...)
@@ -457,13 +457,13 @@ type execCommandEx struct {
 // caught: a sleep in /usr/bin that is not coreutils' is not Debian.)
 // no-env-expand still holds: the argv reaches the shell byte for
 // byte and "$@" hands it on. The script is a wire format: appArgv
-// recognises units of this hotserve by it, so a change here makes
+// recognises units of this motel by it, so a change here makes
 // every running unit read back as the shell's argv until relaunched.
 const (
 	siblingShell  = "/bin/sh"
 	siblingSleep  = "/usr/bin/sleep"
 	siblingScript = `unset PWD; ` + siblingSleep + ` 0 || exit 127; ` + siblingSleep + ` infinity & exec "$@"`
-	siblingArgv0  = "hotserve-app"
+	siblingArgv0  = "motel-app"
 )
 
 // withSibling is the argv the manager execs for an app's argv.
@@ -473,7 +473,7 @@ func withSibling(argv []string) []string {
 
 // appArgv is the app's argv from the one the manager reports, the
 // sibling shell stripped: what status, state.json and a reattach see.
-// An argv not in that shape (a unit of an older hotserve) is returned
+// An argv not in that shape (a unit of an older motel) is returned
 // as it is.
 func appArgv(argv []string) []string {
 	if len(argv) >= 4 && argv[0] == siblingShell && argv[1] == "-c" && argv[2] == siblingScript && argv[3] == siblingArgv0 {

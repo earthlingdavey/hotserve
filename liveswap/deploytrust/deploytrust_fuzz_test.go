@@ -27,7 +27,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	jose "github.com/go-jose/go-jose/v4"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 func FuzzMatchClaims(f *testing.F) {

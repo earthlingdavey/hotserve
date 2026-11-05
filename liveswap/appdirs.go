@@ -19,7 +19,7 @@ import (
 //	<root>/<app>/shared/               persistent data, survives deploys
 //	<root>/<app>/tmp/                  download staging
 //	<root>/<app>/run/<nonce>/app.sock  one socket per instance, bound by the app; only run/<nonce>/ is in that instance's view
-//	<root>/<app>/proxy/<nonce>.sock    the same inode, hard-linked by hotserve; what it dials (not in any view)
+//	<root>/<app>/proxy/<nonce>.sock    the same inode, hard-linked by motel; what it dials (not in any view)
 //	<root>/<app>/deploys/<version>.json  the latest deploy's outcome for that version, filtered (not in any view)
 //	<root>/<app>/state.json            current version + process handle
 //	<root>/<app>/deploying.json        a URL or push deploy in flight (deploying.go; not in any view)
@@ -57,7 +57,7 @@ func newAppDirs(root, name string) appDirs {
 
 // runDir is the one directory an instance may bind its socket in: its
 // own, so that no other instance of the app — the one it replaces, or
-// the one replacing it — can touch the name before hotserve pins it.
+// the one replacing it — can touch the name before motel pins it.
 func (d appDirs) runDir(nonce string) string {
 	return filepath.Join(d.run, nonce)
 }
@@ -67,7 +67,7 @@ func (d appDirs) socket(nonce string) string {
 	return filepath.Join(d.runDir(nonce), "app.sock")
 }
 
-// socketRef is how hotserve dials that instance: the socket, pinned
+// socketRef is how motel dials that instance: the socket, pinned
 // under proxy/.
 func (d appDirs) socketRef(nonce string) *socketRef {
 	return newSocketRef(d.socket(nonce), filepath.Join(d.proxy, nonce+".sock"), d.runDir(nonce))

@@ -10,7 +10,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 )
 
 // FuzzHandlerRoute drives box_webhook with any method, path, query and
@@ -91,14 +91,14 @@ func FuzzHandlerRoute(f *testing.F) {
 	})
 }
 
-// FuzzBoxOption: the `box` option's parser (what `hotserve validate`
+// FuzzBoxOption: the `box` option's parser (what `motel validate`
 // and the running box read) and the walk (what root reads) agree on
 // the signers of any box block both accept — so the list the box
 // trusts is never other than the one the running config was checked
 // against. The walk goes first: a file it refuses never reaches the
 // adapter, so no fuzzed `import` is ever followed.
 func FuzzBoxOption(f *testing.F) {
-	trust := "\t\tdeploy_trust github {\n\t\t\taudience hotserve\n\t\t\tclaim repository o/r\n\t\t}\n"
+	trust := "\t\tdeploy_trust github {\n\t\t\taudience motel\n\t\t\tclaim repository o/r\n\t\t}\n"
 	for _, body := range []string{
 		trust + "\t\tsigner alice@example.com ssh-ed25519 K1\n\t\tsigner bob ssh-ed25519 K2\n",
 		trust + "\t\tsigner \"alice\" ssh-ed25519 \"K1\"\n",

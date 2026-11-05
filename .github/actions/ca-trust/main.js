@@ -57,7 +57,7 @@ function throwawayCA(dir) {
   const f = (n) => path.join(dir, n);
   const ossl = (...args) => execFileSync('openssl', args, { stdio: ['ignore', 'ignore', 'pipe'] });
   const ec = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes'];
-  ossl('req', '-x509', ...ec, '-keyout', f('ca.key'), '-out', f('ca.pem'), '-days', '1', '-subj', '/CN=hotserve ca-trust check');
+  ossl('req', '-x509', ...ec, '-keyout', f('ca.key'), '-out', f('ca.pem'), '-days', '1', '-subj', '/CN=motel ca-trust check');
   ossl('req', ...ec, '-keyout', f('leaf.key'), '-out', f('leaf.csr'), '-subj', '/CN=localhost');
   fs.writeFileSync(f('leaf.ext'), 'subjectAltName=DNS:localhost\n');
   ossl('x509', '-req', '-in', f('leaf.csr'), '-CA', f('ca.pem'), '-CAkey', f('ca.key'), '-set_serial', '1',

@@ -9,11 +9,11 @@ repo=$1; which=$2; n=$3
 secret=$B2_APPLICATION_KEY; [ "$which" = wrong ] && secret=not-the-secret-key-0000000000
 args=("$K" "$B2_APPLICATION_KEY_ID" "$X" "$secret" "Type stored to go on: " stored)
 for i in $(seq 2 "$n"); do args+=("$K" "$B2_APPLICATION_KEY_ID" "$X" "$secret"); done
-echo "bob@rcbox:~\$ time sudo hotserve-backup setup $repo"
+echo "bob@rcbox:~\$ time sudo motel-backup setup $repo"
 t0=$(date +%s.%N)
-converse "runuser -u bob -- sh -c 'sudo hotserve-backup setup $repo'" "${args[@]}"
+converse "runuser -u bob -- sh -c 'sudo motel-backup setup $repo'" "${args[@]}"
 rc=$?
 t1=$(date +%s.%N)
 tr -d '\r' <"$OUT" | sed -e "s/$B2_APPLICATION_KEY_ID/<keyID>/g" -e 's/^\(Repository password (new): \).*/\1<52 characters>/'
 echo "[exit $rc, $(awk "BEGIN{printf \"%.1f\", $t1-$t0}")s]"
-ls -la /etc/hotserve-backup/ 2>&1 | tail -n +2
+ls -la /etc/motel-backup/ 2>&1 | tail -n +2

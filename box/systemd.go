@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // Systemd is what the applier asks of the service manager about
-// hotserve.service: is it active, and reload it. An interface so the
+// motel.service: is it active, and reload it. An interface so the
 // Failure-mode table is testable without a manager; production is
 // systemctl.
 type Systemd interface {
@@ -48,7 +48,7 @@ func (realClock) Sleep(ctx context.Context, d time.Duration) error {
 
 const (
 	// activatingWait is step 16's bound on `activating` (DESIGN-box.md,
-	// "Caps"): hotserve's TimeoutStartSec=240s plus RestartSec, elapsed,
+	// "Caps"): motel's TimeoutStartSec=240s plus RestartSec, elapsed,
 	// since Restart=on-failure can keep a unit activating across
 	// attempts.
 	activatingWait = 300 * time.Second
@@ -58,7 +58,7 @@ const (
 	// PID 1 answers from memory.
 	isActiveTimeout = 30 * time.Second
 	// reloadTimeout bounds one `systemctl reload`. The reload is bounded
-	// by hotserve.service's own 240 s, and the applier sets no shorter
+	// by motel.service's own 240 s, and the applier sets no shorter
 	// one (DESIGN-box.md, "Caps"): this deadline only ends a systemctl
 	// that outlives the job it waits for.
 	reloadTimeout = 300 * time.Second
@@ -74,7 +74,7 @@ const (
 // one unit. Each call is a direct child with a deadline and a WaitDelay;
 // systemctl starts no unit of its own, so there is no grandchild holding
 // its pipes to stop (the reload job runs in PID 1, which a killed
-// systemctl does not cancel; hotserve.service's own timeout bounds it).
+// systemctl does not cancel; motel.service's own timeout bounds it).
 type systemctl struct {
 	unit string
 }
@@ -133,7 +133,7 @@ func runSystemctl(ctx context.Context, timeout time.Duration, args ...string) (s
 // `active` or a failure. The run has one budget for waiting, ending
 // activatingWait after it first saw either word, so the waiting in a
 // run is that long, plus one bounded is-active question per call,
-// whatever hotserve does — a later episode in the same run, once the
+// whatever motel does — a later episode in the same run, once the
 // budget is spent, gets no wait (its push is refused as still starting,
 // and the workflow's run fails; a re-run pushes again). The answer is
 // the last word is-active gave: a push needs `active` (step 16), and
@@ -161,10 +161,10 @@ func (a *Applier) running(ctx context.Context) (string, error) {
 	}
 }
 
-// transient is a state the wait sits out: hotserve on its way to active.
+// transient is a state the wait sits out: motel on its way to active.
 func transient(state string) bool { return state == "activating" || state == "reloading" }
 
-// up is running's answer classified, for every caller alike: hotserve
+// up is running's answer classified, for every caller alike: motel
 // serves and a reload reaches it — `active`, or a reload still in
 // flight after the wait (a reload then queues behind it). Anything else
 // — `activating` after the wait (a start, or a restart loop, which

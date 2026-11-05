@@ -15,8 +15,8 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 // newSecretsBox is a test box whose applier installs secrets: the

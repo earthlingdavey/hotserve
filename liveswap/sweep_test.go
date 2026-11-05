@@ -15,7 +15,7 @@ import (
 func TestSweepUnknownApps(t *testing.T) {
 	conn := newFakeSystemdConn()
 	root := t.TempDir()
-	// What the removed app left on disk while hotserve was down: no
+	// What the removed app left on disk while motel was down: no
 	// managedApp will ever sweep it, so this sweep must. The configured
 	// app's are left alone (its own sweeps own them).
 	for _, app := range []string{"old", "demo"} {
@@ -25,18 +25,18 @@ func TestSweepUnknownApps(t *testing.T) {
 		must(t, os.WriteFile(filepath.Join(d.proxy, "0a1b2c3d0a1b2c3d.sock"), nil, 0o600))
 	}
 	running := unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true}
-	conn.setStatus("hotserve-demo.v1.0a1b2c3d0a1b2c3d.service", running)     // configured: keep
-	conn.setStatus("hotserve-old.v3.0a1b2c3d0a1b2c3d.service", running)      // removed app: stop
-	conn.setStatus("hotserve-old.v2.0a1b2c3e0a1b2c3e.service", failedStatus) // removed app: reset
-	conn.setStatus("hotserve-demo-api.v1.0a1b2c3d0a1b2c3d.service", running) // another configured app: keep
-	conn.setStatus("hotserve-weird.service", running)                        // not ours: ignore
+	conn.setStatus("motel-demo.v1.0a1b2c3d0a1b2c3d.service", running)     // configured: keep
+	conn.setStatus("motel-old.v3.0a1b2c3d0a1b2c3d.service", running)      // removed app: stop
+	conn.setStatus("motel-old.v2.0a1b2c3e0a1b2c3e.service", failedStatus) // removed app: reset
+	conn.setStatus("motel-demo-api.v1.0a1b2c3d0a1b2c3d.service", running) // another configured app: keep
+	conn.setStatus("motel-weird.service", running)                        // not ours: ignore
 	configured := map[string]bool{"demo": true, "demo-api": true}
 	swapSeam(t, &appConfiguredSeam, func(app string) bool { return configured[app] })
 	err := sweepUnknownApps(context.Background(), conn, root, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stops := conn.stops(); len(stops) != 1 || stops[0] != "hotserve-old.v3.0a1b2c3d0a1b2c3d.service" {
+	if stops := conn.stops(); len(stops) != 1 || stops[0] != "motel-old.v3.0a1b2c3d0a1b2c3d.service" {
 		t.Fatalf("only the removed app's running unit must be stopped, got %v", stops)
 	}
 	conn.mu.Lock()
@@ -45,7 +45,7 @@ func TestSweepUnknownApps(t *testing.T) {
 	if lists != 2 { // one global listing + one per unknown app, not per unit
 		t.Fatalf("each unknown app must be swept once, got %d listings", lists)
 	}
-	if rs := conn.resets(); len(rs) != 1 || rs[0] != "hotserve-old.v2.0a1b2c3e0a1b2c3e.service" {
+	if rs := conn.resets(); len(rs) != 1 || rs[0] != "motel-old.v2.0a1b2c3e0a1b2c3e.service" {
 		t.Fatalf("the removed app's failed unit must be reset, got %v", rs)
 	}
 	for app, want := range map[string]bool{"old": false, "demo": true} {
@@ -67,7 +67,7 @@ func TestSweepUnknownApps(t *testing.T) {
 func TestSweepUnknownAppsDoesNothingWhileExiting(t *testing.T) {
 	conn := newFakeSystemdConn()
 	root := t.TempDir()
-	conn.setStatus("hotserve-old.v3.0a1b2c3d0a1b2c3d.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	conn.setStatus("motel-old.v3.0a1b2c3d0a1b2c3d.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
 	swapSeam(t, &caddyExitingSeam, func() bool { return true })
 	if err := sweepUnknownApps(context.Background(), conn, root, zap.NewNop()); err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestSweepUnknownAppsJudgesAgainstLiveConfig(t *testing.T) {
 	conn := newFakeSystemdConn()
 	root := t.TempDir()
 	running := unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true}
-	conn.setStatus("hotserve-late.v1.0a1b2c3d0a1b2c3d.service", running)
+	conn.setStatus("motel-late.v1.0a1b2c3d0a1b2c3d.service", running)
 	late := newAppDirs(root, "late")
 	must(t, os.MkdirAll(late.runDir("0a1b2c3d0a1b2c3d"), 0o750))
 	must(t, os.MkdirAll(late.proxy, 0o750))
@@ -210,7 +210,7 @@ func TestSweepUnknownAppsDoesNotPruneThroughALinkedAppDir(t *testing.T) {
 	pin := filepath.Join(shop.proxy, "0a1b2c3d0a1b2c3d.sock")
 	must(t, os.WriteFile(pin, nil, 0o600))
 	must(t, os.Symlink("shop", filepath.Join(root, "demo")))
-	conn.setStatus("hotserve-demo.v1.0b1b2c3d0a1b2c3d.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	conn.setStatus("motel-demo.v1.0b1b2c3d0a1b2c3d.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
 	swapSeam(t, &appConfiguredSeam, func(app string) bool { return app == "shop" })
 	if err := sweepUnknownApps(context.Background(), conn, root, zap.NewNop()); err != nil {
 		t.Fatal(err)

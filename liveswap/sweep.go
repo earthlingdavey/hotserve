@@ -46,9 +46,9 @@ func appConfigured(app string) bool {
 // configs starting back to back), never with config publication.
 var unknownSweepMu sync.Mutex
 
-// sweepUnknownApps stops every hotserve unit whose app the current
+// sweepUnknownApps stops every motel unit whose app the current
 // config does not name (invariant 7): an app removed or renamed while
-// hotserve was down has no managedApp left to sweep it, so App.Start
+// motel was down has no managedApp left to sweep it, so App.Start
 // does it here against the manager's own listing.
 func sweepUnknownApps(ctx context.Context, conn systemdConn, root string, logger *zap.Logger) error {
 	unknownSweepMu.Lock()
@@ -58,7 +58,7 @@ func sweepUnknownApps(ctx context.Context, conn systemdConn, root string, logger
 	}
 	units, err := conn.ListUnits(ctx, unitPrefix+"*.service")
 	if err != nil {
-		return fmt.Errorf("listing hotserve units: %w", err)
+		return fmt.Errorf("listing motel units: %w", err)
 	}
 	r := newSystemdRunner(conn, logger)
 	defer r.close()
@@ -80,7 +80,7 @@ func sweepUnknownApps(ctx context.Context, conn systemdConn, root string, logger
 			errs = append(errs, serr)
 		}
 	}
-	// An app whose units are all gone — exited cleanly while hotserve
+	// An app whose units are all gone — exited cleanly while motel
 	// was down — never appears in the listing, yet its socket dirs may
 	// remain; if it is also no longer configured, nothing else will
 	// ever prune them.
