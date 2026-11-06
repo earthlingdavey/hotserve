@@ -21,8 +21,8 @@ energy figures), network transfer, and the models' training.
 | 2026-08 | — | — | — | — | — | — | 6,377 | 38 | 1.3 | 0.5 | 60 | — |
 | 2026-09 | 13,412 | 13.7 | 3.9 | 2,692 | 287 | 82.3 | 18,295 | 110 | 4.3 | 1.6 | 265 | — |
 | 2026-10 | 16,899 | 11.2 | 4.2 | 1,938 | 220 | 63.0 | 16,854 | 101 | 4.0 | 1.5 | 244 | — |
-| 2026-11 | 1,155 | 2.0 | 0.2 | 251 | 34 | 9.9 | — | — | — | — | — | — |
-| **Total** | 31,466 | 26.9 | 8.2 | 4,882 | 541 | 155.2 | 41,526 | 249 | 9.6 | 3.6 | 569 | — |
+| 2026-11 | 1,203 | 2.1 | 0.2 | 261 | 36 | 10.3 | — | — | — | — | — | — |
+| **Total** | 31,514 | 27.1 | 8.2 | 4,892 | 542 | 155.7 | 41,526 | 249 | 9.6 | 3.6 | 569 | — |
 
 A dash is a month the source has no rows for. Claude USD is what the
 tokens would cost at list price, not what was paid (Claude Code runs on
@@ -34,7 +34,7 @@ Every kWh and kgCO2e is an estimate, see below.
 
 | Model | Calls | Input Mtok | Output Mtok | Cache-write Mtok | Cache-read Gtok | List USD | kgCO2e |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| claude-fable-5-1 | 11,108 | 0.23 | 13.6 | 73.1 | 3.05 | 2,635 | 94.3 |
+| claude-fable-5-1 | 11,156 | 0.23 | 13.7 | 73.3 | 3.05 | 2,645 | 94.7 |
 | claude-opus-5-5 | 15,708 | 0.03 | 9.3 | 68.7 | 4.00 | 1,435 | 45.7 |
 | claude-opus-5 | 4,612 | 0.01 | 4.0 | 14.8 | 1.16 | 804 | 15.1 |
 | claude-opus-4-8 | 28 | 0.00 | 0.1 | 0.1 | 0.01 | 8 | 0.2 |

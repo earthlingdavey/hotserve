@@ -193,10 +193,10 @@ GO_LDFLAGS = -s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v$(VERSION)
 # own transcripts, so every machine writes its own file,
 # usage/claude/$(USAGE_MACHINE).csv, and the page sums them: name the
 # machine (a public label) on a checkout's first run and run this on
-# each. USAGE_MATCH: the project-directory names to count, comma-
-# separated for a checkout that kept an older name (default motel).
-# Both are remembered in usage/local.json (gitignored) for later runs;
-# the label is given once, a later USAGE_MATCH replaces the kept one.
+# each. USAGE_MATCH: project-directory names to count besides motel,
+# comma-separated, for a checkout that kept an older name. Both are
+# remembered in usage/local.json (gitignored) for later runs; names only
+# ever add (delete the file to drop one).
 # usage-claude is the transcript half alone, for the other machines: no
 # token, so no Actions API budget spent. Commit the machine's file with
 # the page; when two machines' commits conflict in the page, take either

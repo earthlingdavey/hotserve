@@ -124,46 +124,63 @@ class ClaudeTests(unittest.TestCase):
 
     def test_machine_names_a_public_file(self):
         self.assertEqual(usage.claude_path("laptop-1"), "usage/claude/laptop-1.csv")
-        usage.check_machine("laptop-1")
+        self.assertEqual(usage.label("laptop-1"), "laptop-1")
         for bad in ("", "Laptop", "a b", "a.b", "-a", "../x"):
             with self.assertRaises(SystemExit):
-                usage.check_machine(bad)
+                usage.label(bad)
 
     def test_a_new_label_beside_old_files_warns(self):
         """A fresh checkout on a machine that has a file: no local.json, so the warning is the guard."""
         os.makedirs(usage.CLAUDE_DIR)
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            usage.check_machine("a")  # the first file: nothing to compare with
+            usage.local_settings("a", "")  # the first file: nothing to compare with
         self.assertEqual(err.getvalue(), "")
         usage.write_csv(usage.claude_path("a"), KEYS + COLS, [])
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            usage.check_machine("a")
+            usage.local_settings("a", "")
         self.assertEqual(err.getvalue(), "")
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            usage.check_machine("a-1")
+            usage.local_settings("a-1", "")
         self.assertIn("a-1 is a new machine (files so far: a)", err.getvalue())
-        usage.write_csv(os.path.join(usage.CLAUDE_DIR, "Not-A-Label.csv"), KEYS + COLS, [])
-        with self.assertRaises(SystemExit) as cm:  # it would be summed, and no --machine could ever name it
-            usage.machines()
-        self.assertIn("Not-A-Label.csv: not a machine file", str(cm.exception))
+        for stray in ("Not-A-Label.csv", "dir.csv"):  # summed, and no --machine could ever name it
+            if stray.startswith("dir"):
+                os.makedirs(os.path.join(usage.CLAUDE_DIR, stray))
+            else:
+                usage.write_csv(os.path.join(usage.CLAUDE_DIR, stray), KEYS + COLS, [])
+            with self.assertRaises(SystemExit) as cm:
+                usage.machines()
+            self.assertIn(f"{stray}: not a machine file", str(cm.exception))
+            shutil.rmtree(os.path.join(usage.CLAUDE_DIR, stray), ignore_errors=True)
+            if os.path.exists(os.path.join(usage.CLAUDE_DIR, stray)):
+                os.remove(os.path.join(usage.CLAUDE_DIR, stray))
 
-    def test_the_label_is_given_once_and_the_match_is_the_last_given(self):
-        os.makedirs("usage")
-        self.assertEqual(usage.local_settings("", ""), ("", ""))  # "" is the default, applied by main, never saved
-        self.assertEqual(usage.local_settings("a", "x,y"), ("a", "x,y"))
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            usage.save_local("a", "x,y")  # the first save has nothing to compare with
-        self.assertEqual(out.getvalue(), "")
-        self.assertEqual(usage.local_settings("", ""), ("a", "x,y"))
-        self.assertEqual(usage.local_settings("a", " x, y "), ("a", "x,y"))  # the same names, spelt otherwise
-        self.assertEqual(usage.local_settings("a", "z"), ("a", "z"))  # a new match replaces the kept one...
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            usage.save_local("a", "z")  # ...said so where it becomes true
-        self.assertIn("usage/local.json now keeps --match 'z' (was 'x,y')", out.getvalue())
-        self.assertEqual(usage.local_settings("", ""), ("a", "z"))
-        usage.save_local("", "z")  # a hand-emptied label is repaired by the next run that gives one
-        self.assertEqual(usage.local_settings("b", ""), ("b", "z"))
-        usage.save_local("a", "z")
+    def test_the_label_is_given_once_and_the_match_only_grows(self):
+        os.makedirs(usage.CLAUDE_DIR)
+
+        def settings(machine, match):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                got = usage.local_settings(machine, match)
+            return got, out.getvalue()
+
+        with self.assertRaises(SystemExit):  # nothing remembered and no flag: the label is needed
+            usage.local_settings("", "")
+        self.assertEqual(settings("a", ""), (("a", []), ""))  # the default alone: nothing extra to remember
+        self.assertEqual(settings("a", "motel"), (("a", []), ""))  # typed, but it is the default
+        got, out = settings("a", "y, x")
+        self.assertEqual(got, ("a", ["x", "y"]))
+        self.assertIn("also counting x, y, remembered in usage/local.json once this run writes", out)
+        usage.save_local("a", ["x", "y"])
+        self.assertEqual(settings("", ""), (("a", ["x", "y"]), ""))
+        with open(usage.LOCAL, "w") as f:  # a list that still names the default: nothing new to say
+            json.dump({"machine": "a", "match": "motel,x,y"}, f)
+        self.assertEqual(settings("", ""), (("a", ["x", "y"]), ""))
+        self.assertEqual(settings("a", " x, y "), (("a", ["x", "y"]), ""))  # the same names, spelt otherwise
+        got, out = settings("a", "z")  # a later name adds, never replaces: no run narrows what is counted
+        self.assertEqual(got, ("a", ["x", "y", "z"]))
+        self.assertIn("also counting z", out)
+        usage.save_local("", ["z"])  # a hand-emptied label is repaired by the next run that gives one
+        self.assertEqual(settings("b", ""), (("b", ["z"]), ""))
+        usage.save_local("a", ["z"])
         with self.assertRaises(SystemExit) as cm:  # a bad flag is refused as such, not compared with the kept label
             usage.local_settings("Laptop", "")
         self.assertIn("must be lowercase", str(cm.exception))
@@ -171,11 +188,14 @@ class ClaudeTests(unittest.TestCase):
             usage.local_settings("b", "")
         self.assertIn("machine is 'a' and --machine says 'b'", str(cm.exception))
         self.assertIn("delete usage/local.json, since usage/claude/a.csv does not exist here", str(cm.exception))
-        os.makedirs(usage.CLAUDE_DIR)
         usage.write_csv(usage.claude_path("a"), KEYS + COLS, [])
         with self.assertRaises(SystemExit) as cm:
             usage.local_settings("b", "")
         self.assertIn("`git mv usage/claude/a.csv usage/claude/b.csv` and delete usage/local.json", str(cm.exception))
+        usage.write_csv(usage.claude_path("b"), KEYS + COLS, [])
+        with self.assertRaises(SystemExit) as cm:  # b is a real machine: no advice to move a's file over it
+            usage.local_settings("b", "")
+        self.assertIn("that label has a file of its own, so it is another machine's", str(cm.exception))
         for empty in (",", "   ", " , "):  # a flag that names nothing must not fall back silently
             with self.assertRaises(SystemExit) as cm:
                 usage.local_settings("", empty)
@@ -238,6 +258,7 @@ class MainTests(unittest.TestCase):
                 "id": "m", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 2}}}) + "\n")
 
     def run_main(self, *argv):
+        self.addCleanup(setattr, sys, "argv", sys.argv)
         sys.argv = ["usage.py", "collect-claude", "--projects", self.root, *argv]
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
             try:
@@ -247,14 +268,16 @@ class MainTests(unittest.TestCase):
         return None, err.getvalue()
 
     def test_a_failed_run_writes_nothing_and_a_good_one_everything(self):
-        exit_, _ = self.run_main("--machine", "a", "--match", "nothing")
+        empty = os.path.join(self.dir.name, "empty")
+        os.makedirs(empty)
+        exit_, _ = self.run_main("--machine", "a", "--projects", empty)  # the last --projects wins
         self.assertIn("no project directory", exit_)
         self.assertFalse(os.path.exists(usage.LOCAL))  # the label is not pinned by a run that wrote no file
         self.assertFalse(os.path.exists(usage.claude_path("a")))
         exit_, err = self.run_main("--machine", "a", "--match", "motel")
         self.assertIsNone(exit_, exit_)
         self.assertEqual(err, "")
-        self.assertEqual(usage.read_local(), {"machine": "a", "match": "motel"})
+        self.assertEqual(usage.read_local(), {"machine": "a", "match": ""})  # the default is counted, not remembered
         self.assertEqual([(r["month"], r["calls"]) for r in usage.read_csv(usage.claude_path("a"))], [("2026-09", "1")])
         with open(usage.FOOTPRINT) as f:
             self.assertIn("| 2026-09 | 1 |", f.read())
@@ -266,7 +289,7 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(exit_, exit_)
         self.assertIn("b is a new machine (files so far: a, c)", err)
         self.assertIn("usage/claude/a.csv holds a row identical", err)
-        self.assertEqual(usage.read_local(), {"machine": "b", "match": ""})  # the default is applied, not saved
+        self.assertEqual(usage.read_local(), {"machine": "b", "match": ""})
 
 
 class HandEditedFileTests(unittest.TestCase):
