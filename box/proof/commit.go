@@ -3,6 +3,9 @@ package proof
 import (
 	"bytes"
 	"encoding/base64"
+	"math/big"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // MaxCommit bounds a commit object (DESIGN-box.md, "Store rules").
@@ -136,8 +139,12 @@ func ParseCommit(raw []byte) (*Commit, error) {
 		c.Signature = sig
 		switch {
 		case bytes.HasPrefix(sig, []byte("-----BEGIN SSH SIGNATURE-----")):
-			if !canonicalSSHArmor(sig) {
+			blob, ok := canonicalSSHArmor(sig)
+			if !ok {
 				return nil, refuse("bundle: commit: the SSH signature is not armored as ssh-keygen writes it (its base64 in lines of 70 characters between the BEGIN and END lines, and nothing else): the box reads one spelling of a signature, since the commit's id covers the armor and the signature does not — sign with ssh-keygen, git's own gpg.ssh.program")
+			}
+			if !canonicalScalar(blob) {
+				return nil, refuse("bundle: commit: the Ed25519 signature's S is not below the group order, where every signer writes it: the box reads one spelling of a signature, since the commit's id covers its bytes and ssh-keygen verifies S and S + L alike")
 			}
 			c.Kind = SSHSig
 		case bytes.HasPrefix(sig, []byte("-----BEGIN PGP SIGNATURE-----")):
@@ -168,18 +175,66 @@ func printableASCII(b []byte) bool {
 // spelling of one signature — the base64 re-wrapped, a blank or a
 // space-padded line, which ssh-keygen reads all the same — would be a
 // second commit id for the one signed payload, and a baseline the
-// repository never had (DESIGN-box.md, step 12).
-func canonicalSSHArmor(sig []byte) bool {
+// repository never had (DESIGN-box.md, step 12). The blob under the
+// armor comes back with the verdict, for canonicalScalar.
+func canonicalSSHArmor(sig []byte) ([]byte, bool) {
 	const begin, end = "-----BEGIN SSH SIGNATURE-----\n", "-----END SSH SIGNATURE-----\n"
 	if len(sig) < len(begin)+len(end) || !bytes.HasPrefix(sig, []byte(begin)) || !bytes.HasSuffix(sig, []byte(end)) {
-		return false
+		return nil, false
 	}
 	body := sig[len(begin) : len(sig)-len(end)]
 	blob, err := base64.StdEncoding.DecodeString(string(bytes.ReplaceAll(body, []byte("\n"), nil)))
 	if err != nil || len(blob) == 0 {
-		return false
+		return nil, false
 	}
-	return bytes.Equal(sig, ArmorSSH(blob))
+	return blob, bytes.Equal(sig, ArmorSSH(blob))
+}
+
+// ed25519Order is L, the order of Ed25519's base point (RFC 8032):
+// 2^252 + 27742317777372353535851937790883648493.
+var ed25519Order, _ = new(big.Int).SetString("7237005577332262213973186563042994240857116359379907606001950938285454250989", 10)
+
+// canonicalScalar says whether an Ed25519 signature in the SSHSIG blob
+// has its S below the group order — the one value a signer writes, and
+// what RFC 8032 has a verifier reject otherwise. ssh-keygen does not:
+// it verifies S + L as the same signature (OpenSSH 10.0, measured), and
+// the commit's id covers the bytes, so S + L would be a second commit
+// id for one signed payload, as a re-wrapped armor would. The armor's
+// rule, for the scalar. A signature of another key type, or a blob this
+// cannot read, is ssh-keygen's to judge: an ECDSA signature's (r, n−s)
+// is a signer's own form as much as (r, s), with no spelling to hold it
+// to, and stays owed (DESIGN-box.md, Triage).
+func canonicalScalar(blob []byte) bool {
+	var sig struct {
+		Version   uint32
+		PublicKey []byte
+		Namespace string
+		Reserved  string
+		HashAlg   string
+		Signature []byte
+	}
+	if err := ssh.Unmarshal(bytes.TrimPrefix(blob, []byte("SSHSIG")), &sig); err != nil {
+		return true
+	}
+	var inner struct {
+		Format string
+		Blob   []byte
+		Rest   []byte `ssh:"rest"` // an sk- signature's flags and counter
+	}
+	if err := ssh.Unmarshal(sig.Signature, &inner); err != nil || len(inner.Blob) != 64 {
+		return true
+	}
+	switch inner.Format {
+	case "ssh-ed25519", "sk-ssh-ed25519@openssh.com":
+	default:
+		return true
+	}
+	// S is the second half, little-endian.
+	s := make([]byte, 32)
+	for i, b := range inner.Blob[32:] {
+		s[31-i] = b
+	}
+	return new(big.Int).SetBytes(s).Cmp(ed25519Order) < 0
 }
 
 // ArmorSSH is the one armor of blob the box reads (canonicalSSHArmor):

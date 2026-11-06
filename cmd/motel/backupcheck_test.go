@@ -274,10 +274,18 @@ func TestAnAdminAPIOnTCPIsRefusedWhereAppsRun(t *testing.T) {
 		return "{\n" + adminLine + "\tliveswap {\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n"
 	}
 	for name, tc := range map[string]struct{ body, want string }{
-		"the default":      {caddyfile(""), "localhost:2019 (Caddy's default"},
-		"tcp":              {caddyfile("\tadmin 0.0.0.0:2019\n"), "0.0.0.0:2019"},
-		"unix socket":      {caddyfile("\tadmin unix/" + config + "/admin.sock\n"), ""},
-		"abstract socket":  {caddyfile("\tadmin unix/@motel-admin\n"), "unix/@motel-admin (an abstract socket"},
+		"the default":     {caddyfile(""), "localhost:2019 (Caddy's default"},
+		"tcp":             {caddyfile("\tadmin 0.0.0.0:2019\n"), "0.0.0.0:2019"},
+		"unix socket":     {caddyfile("\tadmin unix/" + config + "/admin.sock\n"), ""},
+		"abstract socket": {caddyfile("\tadmin unix/@motel-admin\n"), "unix/@motel-admin (an abstract socket"},
+		// A socket an app's sandbox holds: under the default root, where
+		// the app's shared dir is bound writable; under the base view,
+		// bound read-only into every sandbox; under a configured root,
+		// the socket's mode suffix cut as Caddy's listener cuts it.
+		"socket in an app's shared dir": {caddyfile("\tadmin unix//var/lib/liveswap/blog/shared/admin.sock\n"), "unix//var/lib/liveswap/blog/shared/admin.sock, which an app this config runs can reach: /var/lib/liveswap/blog/shared/admin.sock is under the liveswap root /var/lib/liveswap"},
+		"socket in the base view":       {caddyfile("\tadmin unix//usr/local/run/admin.sock\n"), "unix//usr/local/run/admin.sock, which an app this config runs can reach: /usr/local/run/admin.sock is under /usr, which is bound read-only"},
+		"socket under a configured root": {"{\n\tadmin unix/" + config + "/apps/blog/shared/admin.sock|0660\n\tliveswap {\n\t\troot " + config + "/apps\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n",
+			"unix/" + config + "/apps/blog/shared/admin.sock|0660, which an app this config runs can reach: " + config + "/apps/blog/shared/admin.sock is under the liveswap root " + config + "/apps"},
 		"off":              {caddyfile("\tadmin off\n"), ""},
 		"no app":           {":8080 {\n\trespond ok\n}\n", ""},
 		"said to be meant": {"{\n\tadmin 0.0.0.0:2019\n\tliveswap {\n\t\tallow_tcp_admin\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n", ""},
@@ -292,9 +300,10 @@ func TestAnAdminAPIOnTCPIsRefusedWhereAppsRun(t *testing.T) {
 		}
 	}
 	// An `--envfile` is loaded first, as Caddy loads it: a listener set
-	// only there is the one judged, and a variable the environment holds
-	// already is kept.
-	write(t, config+"/listen.env", "# the rig's\nexport ADMIN_LISTEN=0.0.0.0:2019\nKEPT='from the file'\n", 0o644)
+	// only there is the one judged, a key assigned twice takes its last
+	// value (Caddy reads the file into a map), and a variable the
+	// environment holds already is kept.
+	write(t, config+"/listen.env", "# the rig's\nADMIN_LISTEN=unix//run/motel/admin.sock\nexport ADMIN_LISTEN=0.0.0.0:2019\nKEPT='from the file'\n", 0o644)
 	t.Setenv("KEPT", "from the environment")
 	write(t, config+"/Caddyfile", caddyfile("\tadmin {$ADMIN_LISTEN:unix//run/motel/admin.sock}\n"), 0o644)
 	if _, err := checkConfig("validate", []string{"--config", config + "/Caddyfile", "--envfile", config + "/listen.env"}); err == nil || !strings.Contains(err.Error(), "the admin API listens on 0.0.0.0:2019") {

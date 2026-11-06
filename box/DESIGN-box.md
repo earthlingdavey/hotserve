@@ -372,7 +372,14 @@ cross-references throughout.
     fail to descend from until the console. The header's place is held
     the same way: git appends `gpgsig` as the last header
     (`sign_with_header`), and the payload is the same wherever the
-    header sits, so one after it refuses too.
+    header sits, so one after it refuses too. And so is an Ed25519
+    signature's scalar (`canonicalScalar`): RFC 8032 has a verifier
+    reject an S at or above the group order L, but ssh-keygen verifies
+    S + L as the same signature (OpenSSH 10.0, measured 2026-11-06), and
+    no signer writes one, so one refuses as a bundle error. An ECDSA
+    signature has no such spelling — (r, n−s) is a signer's own form as
+    much as (r, s), and ssh-keygen takes both — so its twin is owed
+    (Triage, Owed).
 13. **The file is the committed file.** The root tree's id equals the
     commit's `tree`; the `path`'s components are walked through the
     bundled trees (depth per the Caps table); the last entry is a blob
@@ -1018,7 +1025,7 @@ can do both by other means.
 
 | Finding | S | O | D | Where the fix lands |
 |---|---|---|---|---|
-| (none at present; the last, the one spelling of an SSH armor, is built — History, 2026-11-06) | | | | |
+| An ECDSA signature (`ecdsa-sha2-nistp256/384/521`, `sk-ecdsa-sha2-nistp256@openssh.com`) has a twin: (r, n−s) verifies over the same payload, ssh-keygen takes both (OpenSSH 10.0, measured 2026-11-06), and the twin's canonical armor is a second commit id for one signed commit — the hole the one-spelling rule closes for the armor, the header's place and Ed25519's scalar. A holder of the signed commit (a T5 dropping a bundle into `in/`; a `contents:write` credential force-pushing the twin over `main` and the original back) has root record a baseline `main` never had, and every later push is refused until `motel box baseline`. | 4 | 5 | 3 | 60 (Copilot on #407). Unlike S + L, (r, n−s) is a form a signer writes half the time, so no spelling rule holds it without refusing honest signatures. Two fixes, the owner's to choose: refuse the ECDSA key types in `ParseSigner` and step 12 (size 1, risk 2; one-way and wide: a box whose installed list holds an ECDSA signer fails the walk after the upgrade until a console edit, so `docs/upgrading.md` would carry it, and `recipients` already steers ECDSA holders to an age key), or record the twin's id beside the baseline in `applied.json` at apply and let the descent walk (step 14) end at either (size 3, risk 2: a field, the walk, and `bin/apply`'s `merge-base` pre-check meeting an id the repository lacks). |
 
 ## Admission
 
@@ -2588,4 +2595,8 @@ Dated one-liners; the full text of each is in git.
   one place, last, as git writes it, so one signature has one commit
   id and the baseline moves only to a commit the repository has; any
   other spelling or place refuses as a bundle error (scored 4×5×3; the
-  place, Copilot on #407).
+  place, Copilot on #407). Copilot's second round found the signature
+  itself has twins ssh-keygen verifies alike: an Ed25519 S + L, which no
+  signer writes, refuses the same way (`canonicalScalar`); an ECDSA
+  (r, n−s), which a signer writes half the time, is owed with two fixes
+  for the owner to choose between (Triage, Owed).

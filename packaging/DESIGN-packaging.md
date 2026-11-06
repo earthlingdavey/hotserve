@@ -84,4 +84,14 @@ Dated one-liners; the full text of each is in git.
   `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`, `NoNewPrivileges=yes`
   and `RestrictSUIDSGID=yes`, as every other shipped unit had, so a
   setuid binary on the host is no route from the motel uid to root
-  (scored 5×2×5); the smoke test holds the unit to them.
+  (scored 5×2×5); the smoke test holds the unit to them. Copilot's
+  review of #407: the motel user's manager (`user@<uid>.service`) is
+  the same route around them — motel asks it for units, and one asked
+  without the sandbox's settings ran a setuid binary unbound — so
+  postinstall's drop-in sets `NoNewPrivileges=yes` on the manager,
+  which every unit it starts inherits and none can drop (5×2×5); the
+  smoke test holds the manager's own process to the flag, not only the
+  unit. A manager running through the upgrade keeps running without it
+  until it next starts, as it keeps its limits: postinstall does not
+  restart it, since that stops every app, and `docs/upgrading.md`
+  names the restart for a quiet moment (a doc step: size 1, risk 2).

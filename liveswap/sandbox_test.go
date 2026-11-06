@@ -2010,3 +2010,40 @@ func TestSandboxFailedMeasurementIsNotCached(t *testing.T) {
 		t.Fatalf("a cached success must still be served: %v (measured %d)", err, measured)
 	}
 }
+
+// The gate's question of a unix admin listener: no app's view may hold
+// it. Under the root (an app's shared dir is bound writable), under the
+// base view (read-only, and connecting is no write), through a link at
+// the socket's directory or at the root, or spelled uncleanly; beside
+// the root, or in a directory no sandbox names, it is nobody's.
+func TestAdminSocketInView(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "apps")
+	shared := filepath.Join(root, "blog", "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for link, target := range map[string]string{"sockdir": shared, "apps-link": root} {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, tc := range map[string]struct{ root, path, want string }{
+		"the default root":               {"", "/var/lib/liveswap/blog/shared/admin.sock", "is under the liveswap root /var/lib/liveswap,"},
+		"a configured root":              {root, filepath.Join(shared, "admin.sock"), "is under the liveswap root " + root + ","},
+		"the root itself":                {root, filepath.Join(root, "admin.sock"), "is under the liveswap root " + root + ","},
+		"the base view":                  {root, "/usr/local/run/admin.sock", "is under /usr, which is bound read-only"},
+		"a base-view directory":          {root, "/etc/ssl/certs/admin.sock", "is under /etc/ssl/certs,"},
+		"a link at the directory":        {root, filepath.Join(dir, "sockdir", "admin.sock"), "is under the liveswap root " + root + ","},
+		"a link at the root":             {filepath.Join(dir, "apps-link"), filepath.Join(shared, "admin.sock"), "is under the liveswap root " + filepath.Join(dir, "apps-link") + ","},
+		"an unclean spelling":            {root, root + "/blog/../blog/shared/admin.sock", "is under the liveswap root " + root + ","},
+		"beside the root":                {root, filepath.Join(dir, "admin.sock"), ""},
+		"the starter's":                  {"", "/run/motel/admin.sock", ""},
+		"a sibling of a base-view entry": {"", "/usr-local/admin.sock", ""},
+	} {
+		got := AdminSocketInView(tc.root, tc.path)
+		if (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
+			t.Errorf("%s: AdminSocketInView(%q, %q) = %q, want %q", name, tc.root, tc.path, got, tc.want)
+		}
+	}
+}

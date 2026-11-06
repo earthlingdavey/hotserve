@@ -722,6 +722,53 @@ func pathWithin(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
 }
 
+// defaultRoot is the liveswap root a config that names none gets.
+const defaultRoot = "/var/lib/liveswap"
+
+// AdminSocketInView says what makes a unix socket at path — the admin
+// API's listener — reachable from an app's sandbox, or "" where no
+// app's view holds it. Read by motel's command gate (cmd/motel), which
+// lets a unix listener through only when this says nothing. Two places
+// are an app's: under the liveswap root (empty: the default), where an
+// app's shared and release directories are bound into its sandbox,
+// writable, and every name is some app's by its name; and under a
+// base-view entry, bound read-only into every sandbox — connecting to
+// a socket is no write, so read-only is no defence. The check is
+// lexical, as validateSandboxRoot's is, so both spellings of the root
+// and of the socket's directory are measured: a link at either would
+// walk past one.
+func AdminSocketInView(root, path string) string {
+	if root == "" {
+		root = defaultRoot
+	}
+	path = filepath.Clean(path)
+	paths := []string{path}
+	// The socket need not exist yet; its directory may, and may lead
+	// elsewhere.
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		if p := filepath.Join(dir, filepath.Base(path)); p != path {
+			paths = append(paths, p)
+		}
+	}
+	roots := []string{filepath.Clean(root)}
+	if c, err := filepath.EvalSymlinks(root); err == nil && c != roots[0] {
+		roots = append(roots, c)
+	}
+	for _, p := range paths {
+		for _, r := range roots {
+			if pathWithin(p, r) {
+				return fmt.Sprintf("%s is under the liveswap root %s, where an app's shared and release directories are bound into its sandbox, writable", path, root)
+			}
+		}
+		for _, b := range sandboxBaseView {
+			if pathWithin(p, b) {
+				return fmt.Sprintf("%s is under %s, which is bound read-only into every app's sandbox, and connecting to a socket is no write", path, b)
+			}
+		}
+	}
+	return ""
+}
+
 // inView reports whether p exists inside a unit built from this spec:
 // under one of the app's own directories, or in the base view.
 // Everything else on the host is absent, so this is

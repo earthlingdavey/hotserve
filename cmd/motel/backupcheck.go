@@ -150,15 +150,18 @@ func loadConfig(cmd string, args []string) (cfg []byte, file, adapter string, ok
 // and parseEnvFile, Apache-2.0, followed line for line so the two
 // read one file alike): `KEY=VALUE` lines, blank lines and `#`
 // comments skipped, an `export ` prefix dropped, a trailing `#`
-// comment cut, a quoted value running over lines; and a variable the
-// environment already holds is kept. Caddy's load after this one then
-// finds every key set and changes nothing.
+// comment cut, a quoted value running over lines; the file read whole
+// before any of it is set, so a key assigned twice takes its last
+// value, as Caddy's map does; and a variable the environment already
+// holds is kept. Caddy's load after this one then finds every key set
+// and changes nothing.
 func loadEnvFile(path string) error {
 	f, err := os.Open(path) //nolint:gosec // the envfile the command was given, read as Caddy is about to
 	if err != nil {
 		return err
 	}
 	defer f.Close() //nolint:errcheck // read only
+	values := map[string]string{}
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -189,13 +192,19 @@ func loadEnvFile(path string) error {
 			val = strings.TrimPrefix(val, quote)
 			val = strings.TrimSuffix(val, quote)
 		}
+		values[key] = val
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	for key, val := range values {
 		if _, exists := os.LookupEnv(key); !exists {
 			if err := os.Setenv(key, val); err != nil {
 				return err
 			}
 		}
 	}
-	return scanner.Err()
+	return nil
 }
 
 // checkBackups holds every file a backup declaration came from, in the
@@ -318,11 +327,14 @@ func checkBackups(cmd, file, adapter string) (warning string, err error) {
 // puts the API on a unix socket (`admin unix//run/motel/admin.sock`,
 // packaging/Caddyfile), which no HTTP client can be steered at and no
 // app's view holds; this asks that the line stayed, whoever edited or
-// pushed the file. A config that runs no app is not asked, one that
-// says the TCP listener is meant (`allow_tcp_admin` in the liveswap
-// block: a test rig whose runner drives the admin API over the
-// network) is let through, and one Caddy cannot read is Caddy's to
-// refuse.
+// pushed the file, and that the socket is where no app's view holds
+// it (liveswap.AdminSocketInView: not under the liveswap root, whose
+// directories are bound into the apps' sandboxes, nor under the base
+// view every sandbox holds read-only). A config that runs no app is
+// not asked, one that says the TCP listener is meant (`allow_tcp_admin`
+// in the liveswap block: a test rig whose runner drives the admin API
+// over the network) is let through, and one Caddy cannot read is
+// Caddy's to refuse.
 func checkAdmin(cfg []byte) error {
 	var c struct {
 		Admin *struct {
@@ -331,6 +343,7 @@ func checkAdmin(cfg []byte) error {
 		} `json:"admin"`
 		Apps struct {
 			Liveswap *struct {
+				Root          string                     `json:"root"`
 				Apps          map[string]json.RawMessage `json:"apps"`
 				AllowTCPAdmin bool                       `json:"allow_tcp_admin"`
 			} `json:"liveswap"`
@@ -351,11 +364,19 @@ func checkAdmin(cfg []byte) error {
 			listen, implied = c.Admin.Listen, false
 		}
 	}
-	// A unix socket on the filesystem, which no app's view holds; not an
-	// abstract one (`unix/@name`), which lives in the network namespace
-	// the apps share, as a TCP port does.
+	// A unix socket on the filesystem, where no app's view holds it; not
+	// an abstract one (`unix/@name`), which lives in the network
+	// namespace the apps share, as a TCP port does. Placeholders in the
+	// root and the path are read as Caddy reads them at load, from this
+	// environment, which the envfiles have joined.
 	if addr, err := caddy.ParseNetworkAddress(listen); err == nil && addr.IsUnixNetwork() && !strings.HasPrefix(addr.Host, "@") {
-		return nil
+		sock, _, _ := strings.Cut(addr.Host, "|") // `|0660`: the socket's mode, Caddy's listener's to read
+		repl := caddy.NewReplacer()
+		why := liveswap.AdminSocketInView(repl.ReplaceKnown(c.Apps.Liveswap.Root, ""), repl.ReplaceKnown(sock, ""))
+		if why == "" {
+			return nil
+		}
+		return fmt.Errorf("the admin API listens on %s, which an app this config runs can reach: %s; one that reaches the admin API reconfigures the whole server — put the socket where no app's view holds it (`admin unix//run/motel/admin.sock`, as packaging/Caddyfile has it), then `systemctl restart motel` once: a reload asks the admin API where the new file puts it, and the running motel answers where the old one did", listen, why)
 	}
 	where := listen
 	if strings.HasPrefix(listen, "unix") && strings.Contains(listen, "/@") {

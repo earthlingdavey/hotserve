@@ -748,6 +748,14 @@ sd_version=$(systemctl --version | awk 'NR==1 {print $2}')
 [ "$mgr_nofile" = "1048576" ] \
 	|| die "systemd $sd_version: user@$uid DefaultLimitNOFILE is $mgr_nofile, not the drop-in's 1048576"
 echo "app NOFILE $app_nofile = user@$uid DefaultLimitNOFILE = the drop-in's 1048576 (systemd $sd_version)"
+# The manager runs under no-new-privileges (the drop-in's flag), and so
+# does every unit it starts: the running process's own flag, not only
+# the unit's property, since a manager born before the drop-in would
+# show the property and lack the flag.
+expect_show "user@$uid.service" NoNewPrivileges yes
+grep -q '^NoNewPrivs:[[:space:]]*1$' "/proc/$mgr_pid/status" \
+	|| die "user@$uid (pid $mgr_pid) runs without NoNewPrivs: $(grep '^NoNewPrivs:' "/proc/$mgr_pid/status")"
+echo "user@$uid runs under NoNewPrivileges (the drop-in's)"
 # No core dump of a crashed app: LimitCORE=0 on both limits
 # (liveswap/systemd_dbus.go; the why is in DESIGN-threat-model.md,
 # "Where env_file values sit"). The unit's property, then the limit

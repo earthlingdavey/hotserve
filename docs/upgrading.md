@@ -152,6 +152,22 @@ Before you upgrade:
   so a kernel update or reboot bundled with an upgrade leaves you
   guessing which change did it.
 
+After an upgrade from v0.6.0 or earlier, one more step at a quiet
+moment: the package now runs the motel user's systemd manager, which
+starts every app, under `NoNewPrivileges` (a setuid binary on the host
+cannot raise what runs under it to root), and a manager already running
+keeps its old flags until it next starts. The install does not restart
+it, since that stops every app at once. Either a reboot or
+
+```sh
+systemctl restart "user@$(id -u motel).service"
+```
+
+does it; each app comes back as motel's watchdog relaunches it, a few
+seconds apart from the others. `grep NoNewPrivs /proc/$(systemctl show
+-p MainPID --value "user@$(id -u motel).service")/status` shows `1`
+once it has.
+
 The box repository's workflow checks config with the latest stable
 release, so it needs nothing after an upgrade — unless its
 `MOTEL_VERSION` repository variable pins a release, which then

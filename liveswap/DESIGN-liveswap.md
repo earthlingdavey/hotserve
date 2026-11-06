@@ -1090,4 +1090,13 @@ Dated one-liners; the full text of each is in git.
   (an unescaped `#`, a bare `%`, a space) is a known value all the same
   (3×5×5), and one holding `/` or `?` is no longer read short; recovery
   sweeps the staged artifacts a stop left in `tmp/` (3×4×5). The
-  entropy bar's gap under 23 characters stays owed.
+  entropy bar's gap under 23 characters stays owed. Copilot's two
+  rounds on #407: the gate loads each `--envfile` first, as Caddy does,
+  the file read whole so a key's last assignment wins (5×5×5); an
+  abstract socket (`unix/@name`) is refused as TCP is; a unix socket
+  no app's view may hold — not under the liveswap root, whose
+  directories are bound into the apps' sandboxes, nor under the base
+  view every sandbox holds read-only (`AdminSocketInView`, 5×5×5);
+  recovery's sweep of `tmp/` asks `linkAt` first, as GC does; a
+  percent-encoded URL password on a later authority is registered
+  decoded too.
