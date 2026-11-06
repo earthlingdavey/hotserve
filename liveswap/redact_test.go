@@ -233,9 +233,12 @@ func TestRedactorURLPasswordNetURLDoesNotRead(t *testing.T) {
 	if got := urlPasswords("http://a:9200,http://user:s3cretpassw0rd@b:9200/"); strings.Join(got, ",") != "s3cretpassw0rd" {
 		t.Errorf("a list of hosts: %q", got)
 	}
-	// An escape is read both ways.
+	// An escape is read both ways, on any authority of a list.
 	if got := urlPasswords("postgres://app:p%40ss-word99@db/app"); strings.Join(got, ",") != "p%40ss-word99,p@ss-word99" {
 		t.Errorf("an escaped password: %q", got)
+	}
+	if got := urlPasswords("http://a:9200,http://user:p%40ss-word99@b:9200/"); strings.Join(got, ",") != "p%40ss-word99,p@ss-word99" {
+		t.Errorf("an escaped password on the second authority: %q", got)
 	}
 	// A password holding `/` or `?` is read short by net/url and by
 	// hand alike, and what stands before the cut is not the secret:

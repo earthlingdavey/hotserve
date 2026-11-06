@@ -277,6 +277,7 @@ func TestAnAdminAPIOnTCPIsRefusedWhereAppsRun(t *testing.T) {
 		"the default":      {caddyfile(""), "localhost:2019 (Caddy's default"},
 		"tcp":              {caddyfile("\tadmin 0.0.0.0:2019\n"), "0.0.0.0:2019"},
 		"unix socket":      {caddyfile("\tadmin unix/" + config + "/admin.sock\n"), ""},
+		"abstract socket":  {caddyfile("\tadmin unix/@motel-admin\n"), "unix/@motel-admin (an abstract socket"},
 		"off":              {caddyfile("\tadmin off\n"), ""},
 		"no app":           {":8080 {\n\trespond ok\n}\n", ""},
 		"said to be meant": {"{\n\tadmin 0.0.0.0:2019\n\tliveswap {\n\t\tallow_tcp_admin\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n", ""},
@@ -289,6 +290,18 @@ func TestAnAdminAPIOnTCPIsRefusedWhereAppsRun(t *testing.T) {
 		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), "the admin API listens on "+tc.want)):
 			t.Errorf("%s: %v, want the admin API refused", name, err)
 		}
+	}
+	// An `--envfile` is loaded first, as Caddy loads it: a listener set
+	// only there is the one judged, and a variable the environment holds
+	// already is kept.
+	write(t, config+"/listen.env", "# the rig's\nexport ADMIN_LISTEN=0.0.0.0:2019\nKEPT='from the file'\n", 0o644)
+	t.Setenv("KEPT", "from the environment")
+	write(t, config+"/Caddyfile", caddyfile("\tadmin {$ADMIN_LISTEN:unix//run/motel/admin.sock}\n"), 0o644)
+	if _, err := checkConfig("validate", []string{"--config", config + "/Caddyfile", "--envfile", config + "/listen.env"}); err == nil || !strings.Contains(err.Error(), "the admin API listens on 0.0.0.0:2019") {
+		t.Errorf("a listener from the envfile: %v, want the admin API refused", err)
+	}
+	if os.Getenv("KEPT") != "from the environment" {
+		t.Errorf("the envfile overwrote the environment: KEPT=%q", os.Getenv("KEPT"))
 	}
 	// A config that is not a Caddyfile is asked the same: the rule is the
 	// adapted config's, whatever wrote it.

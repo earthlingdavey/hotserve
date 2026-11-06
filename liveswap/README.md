@@ -394,11 +394,11 @@ step 6 validates a staged copy before the applier puts it in place — is
 not asked; `motel run` logs it and serves.
 
 The check adapts the Caddyfile in the environment the command was
-started in. It does not load `--envfile` first, as Caddy's own
-`validate` and `run` do: a `{$NAME}` set only there, in an import's
-path, is judged here as unset. The packaged service passes no
-`--envfile`, and `motel-backup` refuses an import whose path depends
-on a variable.
+started in, with each `--envfile` loaded first as Caddy's own
+`validate` and `run` load it (a variable the environment already
+holds is kept), so a `{$NAME}` set only there is judged as Caddy
+will run it. The packaged service passes no `--envfile`, and
+`motel-backup` refuses an import whose path depends on a variable.
 ### Resource caps
 
 `memory_max`, `tasks_max` and `cpu_quota` bound every unit of the app —

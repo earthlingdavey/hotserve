@@ -274,6 +274,16 @@ func TestRecoverySettleRemovesAStagedArtifactAStopLeft(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != "other.tar.gz" {
 		t.Fatalf("tmp/ holds %v, want other.tar.gz alone", entries)
 	}
+	// Not through a link: tmp/ pointing at another app's leaves that
+	// app's staged upload where it is.
+	theirs := t.TempDir()
+	must(t, os.WriteFile(theirs+"/push-theirs.tar.gz", []byte("x"), 0o600))
+	must(t, os.RemoveAll(rig.spec.dirs.tmp))
+	must(t, os.Symlink(theirs, rig.spec.dirs.tmp))
+	rig.ma.settleAfterRecovery(rig.ma.snapshot(), "")
+	if _, err := os.Stat(theirs + "/push-theirs.tar.gz"); err != nil {
+		t.Fatalf("swept through a link: %v", err)
+	}
 }
 
 func TestARecordThatCannotBeReadIsNeitherReplacedNorActedOn(t *testing.T) {

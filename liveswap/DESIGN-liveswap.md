@@ -231,7 +231,9 @@ Concept map from the Nomad-era stack:
   artifact (`tmp/artifact-*.tar.gz`, `tmp/push-*.tar.gz`) a motel
   stopped mid-transfer left is removed at each start, once recovery
   has settled the app and before any deploy of the start could stage
-  one: its deploy would have removed it as it ended, `tmp/` is in no
+  one — never through a link at the app dir or at `tmp/` (`linkAt`,
+  as GC asks of `releases/`), which would reach a sibling's upload:
+  its deploy would have removed it as it ended, `tmp/` is in no
   app's view, so nothing else does, and left there it could fail the
   next upload on the disk it holds. A dir
   under `releases/` whose name is not a version sorts after every

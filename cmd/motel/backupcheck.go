@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,15 +111,22 @@ func checkConfig(cmd string, args []string) (warning string, err error) {
 // does one that is not a file: stdin or a pipe is Caddy's to read,
 // once, and a pipe nobody writes to would never answer.
 //
-// What this does not do: load `--envfile`. Caddy loads it before it
-// adapts, and a {$NAME} it sets can change what the Caddyfile imports;
-// here the Caddyfile is adapted in the environment the command was
-// started in. The packaged service passes none, and motel-backup
-// refuses an import that depends on a variable.
+// Each `--envfile` is loaded first, as Caddy's own command loads it
+// before it adapts (loadEnvFile): a {$NAME} set only there can be the
+// admin listener, or change what the Caddyfile imports, and the config
+// judged has to be the one Caddy runs. An envfile Caddy would refuse
+// is left to Caddy to refuse.
 func loadConfig(cmd string, args []string) (cfg []byte, file, adapter string, ok bool) {
 	fs, found := commandFlags(cmd, args)
 	if !found {
 		return nil, "", "", false
+	}
+	if envfiles, err := fs.GetStringSlice("envfile"); err == nil {
+		for _, envfile := range envfiles {
+			if err := loadEnvFile(envfile); err != nil {
+				return nil, "", "", false
+			}
+		}
 	}
 	file, _ = fs.GetString("config")
 	adapter, _ = fs.GetString("adapter")
@@ -135,6 +143,59 @@ func loadConfig(cmd string, args []string) (cfg []byte, file, adapter string, ok
 		return nil, "", "", false
 	}
 	return cfg, file, adapter, true
+}
+
+// loadEnvFile puts an `--envfile`'s variables in the environment as
+// Caddy's own command does right after (cmd/main.go, loadEnvFromFile
+// and parseEnvFile, Apache-2.0, followed line for line so the two
+// read one file alike): `KEY=VALUE` lines, blank lines and `#`
+// comments skipped, an `export ` prefix dropped, a trailing `#`
+// comment cut, a quoted value running over lines; and a variable the
+// environment already holds is kept. Caddy's load after this one then
+// finds every key set and changes nothing.
+func loadEnvFile(path string) error {
+	f, err := os.Open(path) //nolint:gosec // the envfile the command was given, read as Caddy is about to
+	if err != nil {
+		return err
+	}
+	defer f.Close() //nolint:errcheck // read only
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, cut := strings.Cut(line, "=")
+		if !cut {
+			return fmt.Errorf("%s: a line is not KEY=VALUE", path)
+		}
+		key = strings.TrimPrefix(key, "export ")
+		if key == "" || strings.Contains(key, " ") || strings.HasPrefix(val, " ") || strings.HasPrefix(val, "\t") {
+			return fmt.Errorf("%s: a line is not KEY=VALUE", path)
+		}
+		if before, _, found := strings.Cut(val, "#"); found {
+			val = strings.TrimRight(before, " \t")
+		}
+		if strings.HasPrefix(val, `"`) || strings.HasPrefix(val, "'") {
+			quote := string(val[0])
+			for !strings.HasSuffix(line, quote) || strings.HasSuffix(line, `\`+quote) {
+				val = strings.ReplaceAll(val, `\`+quote, quote)
+				if !scanner.Scan() {
+					break
+				}
+				line = strings.ReplaceAll(scanner.Text(), `\`+quote, quote)
+				val += "\n" + line
+			}
+			val = strings.TrimPrefix(val, quote)
+			val = strings.TrimSuffix(val, quote)
+		}
+		if _, exists := os.LookupEnv(key); !exists {
+			if err := os.Setenv(key, val); err != nil {
+				return err
+			}
+		}
+	}
+	return scanner.Err()
 }
 
 // checkBackups holds every file a backup declaration came from, in the
@@ -290,10 +351,16 @@ func checkAdmin(cfg []byte) error {
 			listen, implied = c.Admin.Listen, false
 		}
 	}
-	if addr, err := caddy.ParseNetworkAddress(listen); err == nil && addr.IsUnixNetwork() {
+	// A unix socket on the filesystem, which no app's view holds; not an
+	// abstract one (`unix/@name`), which lives in the network namespace
+	// the apps share, as a TCP port does.
+	if addr, err := caddy.ParseNetworkAddress(listen); err == nil && addr.IsUnixNetwork() && !strings.HasPrefix(addr.Host, "@") {
 		return nil
 	}
 	where := listen
+	if strings.HasPrefix(listen, "unix") && strings.Contains(listen, "/@") {
+		where += " (an abstract socket, which is the network namespace's, not the filesystem's)"
+	}
 	if implied {
 		where += " (Caddy's default: the config names no admin listener; a CADDY_ADMIN in this environment is not read here)"
 	}

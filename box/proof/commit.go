@@ -58,7 +58,7 @@ func ParseCommit(raw []byte) (*Commit, error) {
 	header := raw[:sep+1] // every header line, each ending in "\n"
 	payload := make([]byte, 0, len(raw))
 	var sig []byte
-	inSig, sigs := false, 0
+	inSig, sigs, afterSig := false, 0, false
 	for i, line := range bytes.SplitAfter(header, []byte("\n")) {
 		if len(line) == 0 { // SplitAfter's trailing empty piece
 			continue
@@ -73,6 +73,9 @@ func ParseCommit(raw []byte) (*Commit, error) {
 				payload = append(payload, line...)
 			}
 			continue
+		}
+		if inSig {
+			afterSig = true // a header after the signature's
 		}
 		inSig = false
 		key, value, ok := bytes.Cut(bytes.TrimSuffix(line, []byte("\n")), []byte(" "))
@@ -123,6 +126,13 @@ func ParseCommit(raw []byte) (*Commit, error) {
 	payload = append(payload, raw[sep+1:]...) // the blank line and the message, verbatim
 	c.Payload = payload
 	if sigs == 1 {
+		// git signs the headers it has and appends gpgsig as the last
+		// (commit.c, sign_with_header); the payload is the same wherever
+		// the header sits, the id is not, so one position is read — the
+		// armor's rule (canonicalSSHArmor), for the header's place.
+		if afterSig {
+			return nil, refuse("bundle: commit: the gpgsig header is not the last header, where git writes it: the box reads one place for a signature, since the commit's id covers the header's place and the signature does not")
+		}
 		c.Signature = sig
 		switch {
 		case bytes.HasPrefix(sig, []byte("-----BEGIN SSH SIGNATURE-----")):

@@ -369,7 +369,10 @@ cross-references throughout.
     base64 re-wrapped or a padded line all the same, so a second
     spelling would be a second commit id for one signed payload — a
     baseline the repository never had, which every later push would
-    fail to descend from until the console.
+    fail to descend from until the console. The header's place is held
+    the same way: git appends `gpgsig` as the last header
+    (`sign_with_header`), and the payload is the same wherever the
+    header sits, so one after it refuses too.
 13. **The file is the committed file.** The root tree's id equals the
     commit's `tree`; the `path`'s components are walked through the
     bundled trees (depth per the Caps table); the last entry is a blob
@@ -2581,6 +2584,8 @@ Dated one-liners; the full text of each is in git.
   applier's mistakes, not a boundary against a compromised applier,
   which can still start any unit through the manager.
 - 2026-11-06 — A security sweep: an SSH armor is read in one spelling,
-  ssh-keygen's own (`canonicalSSHArmor`), so one signature has one
-  commit id and the baseline moves only to a commit the repository has;
-  any other spelling refuses as a bundle error (scored 4×5×3).
+  ssh-keygen's own (`canonicalSSHArmor`), and the `gpgsig` header in
+  one place, last, as git writes it, so one signature has one commit
+  id and the baseline moves only to a commit the repository has; any
+  other spelling or place refuses as a bundle error (scored 4×5×3; the
+  place, Copilot on #407).

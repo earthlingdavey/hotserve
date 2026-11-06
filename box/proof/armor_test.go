@@ -54,4 +54,13 @@ func TestParseCommitReadsOneSpellingOfAnSSHArmor(t *testing.T) {
 			t.Errorf("%s: %v, want the armor refused", name, err)
 		}
 	}
+	// And one place for the header: the same armor moved up among the
+	// headers is the same payload and signature under another id.
+	moved := []byte("tree " + emptyTree + "\n" + gpgsigHeader(long) + "\nauthor Alice <alice@example.com> 1791000000 +0000\ncommitter Alice <alice@example.com> 1791000000 +0000\n\nmsg\n")
+	if ObjectID("commit", moved) == canonical.ID {
+		t.Fatal("the moved header hashes the same, so nothing to refuse")
+	}
+	if _, err := ParseCommit(moved); err == nil || !strings.Contains(err.Error(), "not the last header") {
+		t.Errorf("a gpgsig header before the author: %v, want the place refused", err)
+	}
 }

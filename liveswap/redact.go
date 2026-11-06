@@ -280,8 +280,15 @@ func urlPasswords(v string) []string {
 			authority = authority[:j]
 		}
 		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
-			if _, pw, ok := strings.Cut(authority[:at], ":"); ok && !contains(pws, pw) {
-				pws = append(pws, pw)
+			if _, pw, ok := strings.Cut(authority[:at], ":"); ok {
+				if !contains(pws, pw) {
+					pws = append(pws, pw)
+				}
+				// And as a driver decodes it (`p%40ss` as `p@ss`), which
+				// net/url below gives for the first authority alone.
+				if decoded, err := url.PathUnescape(pw); err == nil && decoded != pw && !contains(pws, decoded) {
+					pws = append(pws, decoded)
+				}
 			}
 		}
 	}

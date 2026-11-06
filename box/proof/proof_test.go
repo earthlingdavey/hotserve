@@ -97,8 +97,14 @@ func TestParseCommit(t *testing.T) {
 	if !bytes.Equal(reassemble(c), sshSigned) {
 		t.Fatal("reassemble")
 	}
-	// A header after the signature stays in the payload, in place.
-	c, err = ParseCommit(commitObject(emptyTree, nil, []string{gpgsigHeader(sshArmor), "encoding UTF-8"}, "msg\n"))
+	// A header after the signature is refused: git appends gpgsig last,
+	// and the same payload under another header order would be another
+	// commit id for one signature (armor_test.go).
+	if _, err := ParseCommit(commitObject(emptyTree, nil, []string{gpgsigHeader(sshArmor), "encoding UTF-8"}, "msg\n")); err == nil || !strings.Contains(err.Error(), "not the last header") {
+		t.Fatalf("a header after gpgsig: %v", err)
+	}
+	// One before it stays in the payload, in place.
+	c, err = ParseCommit(commitObject(emptyTree, nil, []string{"encoding UTF-8", gpgsigHeader(sshArmor)}, "msg\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
