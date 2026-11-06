@@ -167,7 +167,11 @@ class ClaudeTests(unittest.TestCase):
         usage.write_csv(usage.claude_path("a"), KEYS + COLS, [])
         with self.assertRaises(SystemExit) as cm:
             usage.local_settings("b", "")
-        self.assertIn("git mv usage/claude/a.csv to usage/claude/b.csv and delete usage/local.json", str(cm.exception))
+        self.assertIn("`git mv usage/claude/a.csv usage/claude/b.csv` and delete usage/local.json", str(cm.exception))
+        for empty in (",", "   ", " , "):  # a flag that names nothing must not fall back silently
+            with self.assertRaises(SystemExit) as cm:
+                usage.local_settings("", empty)
+            self.assertIn("names nothing", str(cm.exception))
         for body in ("{nope", "[]", '{"machine": 5}', '{"machine": "a", "match": ["x"]}', '{"machine": "Dev Box"}'):
             with open(usage.LOCAL, "w") as f:
                 f.write(body)
@@ -178,10 +182,20 @@ class ClaudeTests(unittest.TestCase):
         """The same machine run under a second label: its rows already sit in the first file."""
         os.makedirs(usage.CLAUDE_DIR)
         usage.write_csv(usage.claude_path("a"), KEYS + COLS, rows(("2026-09", "m", 1, 10), ("2026-10", "m", 2, 20)))
-        self.assertEqual(usage.same_machine("a", rows(("2026-09", "m", 1, 10))), None)  # its own file
-        self.assertEqual(usage.same_machine("b", rows(("2026-09", "m", 1, 10), ("2026-10", "m", 3, 30))), "a")
-        self.assertEqual(usage.same_machine("b", rows(("2026-09", "m", 1, 11))), None)  # another machine
-        self.assertEqual(usage.same_machine("b", []), None)
+
+        def warned(machine, fresh):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                usage.same_machine(machine, fresh)
+            return err.getvalue()
+
+        self.assertEqual(warned("a", rows(("2026-09", "m", 1, 10))), "")  # its own file
+        self.assertEqual(warned("b", rows(("2026-09", "m", 1, 11))), "")  # another machine
+        self.assertEqual(warned("b", []), "")
+        got = warned("b", rows(("2026-09", "m", 1, 10), ("2026-10", "m", 3, 30)))
+        self.assertIn("usage/claude/a.csv holds a row identical", got)
+        # Both ways out undo what this run goes on to write: b's file and local.json.
+        self.assertIn("`git mv -f usage/claude/a.csv usage/claude/b.csv` and run again", got)
+        self.assertIn("`rm usage/claude/b.csv usage/local.json` and run with --machine a", got)
         self.assertEqual(usage.match_names(",oldname , motel,"), ["oldname", "motel"])
 
     def test_every_machine_file_is_read(self):

@@ -243,10 +243,12 @@ def local_settings(machine, match):
     if was and not MACHINE.fullmatch(was):
         sys.exit(f"{LOCAL}: machine {was!r} is not a label; delete the file and pass --machine and --match again")
     if machine and was and machine != was:
-        how = (f"git mv {claude_path(was)} to {claude_path(machine)} and delete {LOCAL}" if os.path.exists(claude_path(was))
+        how = (f"`git mv {claude_path(was)} {claude_path(machine)}` and delete {LOCAL}" if os.path.exists(claude_path(was))
                else f"delete {LOCAL}, since {claude_path(was)} does not exist here")
         sys.exit(f"{LOCAL} says this checkout's machine is {was!r} and --machine says {machine!r}: one machine "
                  f"under two labels is summed twice. To relabel it, {how}")
+    if match and not match_names(match):
+        sys.exit(f"--match {match!r} names nothing: a name, or several comma-separated")
     match = ",".join(match_names(match))
     if match and kept and match != kept:
         # Said out loud: a narrower list from here on is an undercount nothing else reports.
@@ -261,18 +263,22 @@ def save_local(machine, match):
 
 
 def same_machine(machine, fresh):
-    """The other label whose file holds a row identical to a fresh one, or None.
+    """Warn when another label's file holds a row identical to a fresh one.
 
     Two machines all but never produce the same six counts for a month
     and model, so an identical row means this machine was run before
     under another label, and summing the two files would count it twice.
+    A warning, not a stop: one small row (a single title call) can
+    coincide, and a stop would leave no way on. The run goes on to write
+    this label's file and local.json, so both ways out undo that.
     """
-    if not fresh:
-        return None
+    this = claude_path(machine)
     for other in machines():
         if other != machine and any(r in fresh for r in read_csv(claude_path(other))):
-            return other
-    return None
+            warn(f"{claude_path(other)} holds a row identical to one counted here. If that is this machine under "
+                 f"an earlier label, the two files are summed twice: either `git mv -f {claude_path(other)} {this}` "
+                 f"and run again, or `rm {this} {LOCAL}` and run with --machine {other}")
+            return
 
 
 def match_names(match):
@@ -779,11 +785,7 @@ def main():
     groups = []
     if "collect-claude" in args.steps:
         fresh = collect_claude(args.projects, match)
-        other = same_machine(machine, fresh)
-        if other:
-            warn(f"{claude_path(other)} holds a row identical to one counted here: if it is this machine under an "
-                 f"earlier label, the two files are summed twice; run with --machine {other}, or relabel by git mv "
-                 f"of that file to {claude_path(machine)} (merging the two by hand if both exist)")
+        same_machine(machine, fresh)
         os.makedirs(CLAUDE_DIR, exist_ok=True)
         groups.append([(claude_path(machine), ["month", "model"], CLAUDE_COLS, fresh)])
     if "collect-actions" in args.steps:
