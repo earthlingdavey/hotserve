@@ -14,7 +14,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // `GET /`'s recipient is age.pub's one line: omitted when there is none,
@@ -61,7 +61,7 @@ func TestHandlerStatusRecipient(t *testing.T) {
 // readsSecrets is boxFile whose app example reads its secrets.
 func readsSecrets(version int, signers ...testKey) []byte {
 	return bytes.Replace(boxFile(version, signers...), []byte("\t\t\tcommand node server.js\n"),
-		[]byte("\t\t\tcommand node server.js\n\t\t\tenv_file /etc/hotserve/secrets/example.env\n"), 1)
+		[]byte("\t\t\tcommand node server.js\n\t\t\tenv_file /etc/motel/secrets/example.env\n"), 1)
 }
 
 // A push whose secrets and Caddyfile disagree is refused at admission
@@ -72,7 +72,7 @@ func TestPushSecretsFit(t *testing.T) {
 	c := p.repo.commitSecrets(boxFile(2, p.alice), secrets{"example": {"KEY": val}}, &p.alice, p.base)
 	id := randomID(t)
 	m := wantResult(t, p.post(t, p.h, push{id: id, token: p.token(t, c), body: bytes.NewReader(tgz(t, p.repo.bundleFiles(c, p.base)))}), http.StatusUnprocessableEntity, id, phaseRefused)
-	if m["error"] != "app example has secrets and no env_file: add env_file /etc/hotserve/secrets/example.env to its block" {
+	if m["error"] != "app example has secrets and no env_file: add env_file /etc/motel/secrets/example.env to its block" {
 		t.Fatalf("%v", m)
 	}
 	p.untouched(t)
@@ -188,7 +188,7 @@ func TestDescribeSecrets(t *testing.T) {
 	box := newIdentity(t)
 	reader := newIdentity(t)
 	enc := func(v string) []byte { return encrypt(t, []byte(v), box.Recipient(), reader.Recipient()) }
-	reads := secretsFile("\t\t\tenv_file /etc/hotserve/secrets/example.env\n", "")
+	reads := secretsFile("\t\t\tenv_file /etc/motel/secrets/example.env\n", "")
 	recipients := []byte("# the box\n" + box.Recipient().String() + "\n# alice\n" + reader.Recipient().String() + "\n")
 
 	path := writeTree(t, reads, map[string][]byte{
@@ -327,7 +327,7 @@ func TestDescribeSecretsFirstRefusal(t *testing.T) {
 	for i := 0; i < proof.MaxSecretVars; i++ {
 		files["example/K"+itoa(i)+".age"] = []byte("x")
 	}
-	err = describe(writeTree(t, secretsFile("\t\t\tenv_file /etc/hotserve/secrets/example.env\n", ""), files), &bytes.Buffer{})
+	err = describe(writeTree(t, secretsFile("\t\t\tenv_file /etc/motel/secrets/example.env\n", ""), files), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "secrets/example/zz is not a secret: it is a directory") {
 		t.Errorf("%v", err)
 	}
@@ -336,7 +336,7 @@ func TestDescribeSecretsFirstRefusal(t *testing.T) {
 	// 65,537, but once 15a strips the LF it renders 65,536 bytes, at the
 	// cap, which the box accepts.
 	value := append(bytes.Repeat([]byte("x"), 65529), '\n')
-	path := writeTree(t, secretsFile("\t\t\tenv_file /etc/hotserve/secrets/example.env\n", ""), map[string][]byte{"example/KEY.age": encrypt(t, value, id.Recipient())})
+	path := writeTree(t, secretsFile("\t\t\tenv_file /etc/motel/secrets/example.env\n", ""), map[string][]byte{"example/KEY.age": encrypt(t, value, id.Recipient())})
 	var out bytes.Buffer
 	if err := describe(path, &out); err != nil || !strings.Contains(out.String(), "at or just over the cap") || strings.Contains(out.String(), "will refuse") {
 		t.Errorf("%v\n%s", err, out.String())
@@ -603,7 +603,7 @@ func TestDescribeSecretsWarns(t *testing.T) {
 		files["example/K"+strings.Repeat("A", i%5)+itoa(i)+".age"] = one
 	}
 	files["example/BIGGEST.age"] = encrypt(t, bytes.Repeat([]byte("x"), warnEnvFile), id.Recipient())
-	path := writeTree(t, secretsFile("\t\t\tenv_file /etc/hotserve/secrets/example.env\n", ""), files)
+	path := writeTree(t, secretsFile("\t\t\tenv_file /etc/motel/secrets/example.env\n", ""), files)
 	var out bytes.Buffer
 	if err := describe(path, &out); err != nil {
 		t.Fatal(err)
@@ -669,7 +669,7 @@ func TestDescribeSecretsCapsBeforeReading(t *testing.T) {
 	for i := 0; i <= proof.MaxSecretVars; i++ {
 		files["example/K"+itoa(i)+".age"] = []byte("not read") // a read would refuse it as not an age file
 	}
-	path := writeTree(t, secretsFile("\t\t\tenv_file /etc/hotserve/secrets/example.env\n", ""), files)
+	path := writeTree(t, secretsFile("\t\t\tenv_file /etc/motel/secrets/example.env\n", ""), files)
 	if err := describe(path, &bytes.Buffer{}); err == nil || err.Error() != "app example has 257 secrets; the cap is 256" {
 		t.Errorf("%v", err)
 	}

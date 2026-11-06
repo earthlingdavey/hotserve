@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/smallhoursorg/hotserve/liveswap/harden"
+	"github.com/smallhoursorg/motel/liveswap/harden"
 )
 
 func dumpable(t *testing.T) uintptr {
@@ -75,7 +75,7 @@ func TestInitRunsBeforeOS(t *testing.T) {
 		t.Fatalf("no init line for %s in:\n%s", pkg, out)
 		return -1
 	}
-	self, sys, osPos := pos("github.com/smallhoursorg/hotserve/liveswap/harden"), pos("syscall"), pos("os")
+	self, sys, osPos := pos("github.com/smallhoursorg/motel/liveswap/harden"), pos("syscall"), pos("os")
 	if sys >= self || self >= osPos {
 		t.Fatalf("init order: syscall=%d harden=%d os=%d, want syscall < harden < os", sys, self, osPos)
 	}

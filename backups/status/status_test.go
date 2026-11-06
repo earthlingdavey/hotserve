@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/record"
+	"github.com/smallhoursorg/motel/backups/record"
 )
 
 var now = time.Date(2026, 9, 20, 15, 0, 0, 0, time.UTC)
@@ -121,7 +121,7 @@ func TestWhatStatusSays(t *testing.T) {
 				a.RestoreProven = nil
 				a.RestoreDrill = &record.Drill{Snapshot: *snap(idA, time.Hour, nil), Time: ago(time.Hour), Detail: "app.db: the copy is damaged"}
 			}),
-			says:  []string{"blog: restore not proven", "app.db: the copy is damaged", "hotserve-backup drill"},
+			says:  []string{"blog: restore not proven", "app.db: the copy is damaged", "motel-backup drill"},
 			never: []string{"blog: restore last proven"},
 		},
 		// An app on record with no result — a record the engine never
@@ -136,7 +136,7 @@ func TestWhatStatusSays(t *testing.T) {
 				a.RestoreProven = nil
 				a.RestoreDrill = &record.Drill{Time: ago(time.Hour), Detail: "the repository could not be asked for this app's snapshots: no"}
 			}),
-			says:  []string{"blog: restore not proven: the repository could not be asked", "hotserve-backup drill"},
+			says:  []string{"blog: restore not proven: the repository could not be asked", "motel-backup drill"},
 			never: []string{"snapshot ,", "snapshot )"},
 		},
 		// Each part of a warning is cut on its own when the run writes it;
@@ -145,15 +145,15 @@ func TestWhatStatusSays(t *testing.T) {
 		"a long warning is said whole": {
 			st: func() *record.Status {
 				st := with(func(*record.App) {})
-				st.Warning = strings.Repeat("shop no longer declares a backup. ", 8) + "the repository could not be listed. What restic said is in /var/lib/hotserve-backup/listing.err"
+				st.Warning = strings.Repeat("shop no longer declares a backup. ", 8) + "the repository could not be listed. What restic said is in /var/lib/motel-backup/listing.err"
 				return st
 			}(),
 			healthy: true,
-			says:    []string{"What restic said is in /var/lib/hotserve-backup/listing.err"},
+			says:    []string{"What restic said is in /var/lib/motel-backup/listing.err"},
 		},
 		"no drill at all yet": {
 			st:   with(func(a *record.App) { a.RestoreProven = nil }),
-			says: []string{"blog: restore not proven", "hotserve-backup drill"},
+			says: []string{"blog: restore not proven", "motel-backup drill"},
 		},
 		"proven a minute short of old": {
 			st:      with(func(a *record.App) { a.RestoreProven.Time = ago(ProvenOldAfter - time.Minute) }),
@@ -205,7 +205,7 @@ func TestWhatStatusSays(t *testing.T) {
 			st: with(func(a *record.App) {
 				a.Class, a.Detail, a.Snapshot = record.DataMissing, "/var/lib/liveswap/blog/shared is gone, and was backed up before", nil
 			}),
-			says: []string{"blog: data missing", "was backed up before", "`hotserve-backup restore blog`, as root,"}, never: []string{"pending"},
+			says: []string{"blog: data missing", "was backed up before", "`motel-backup restore blog`, as root,"}, never: []string{"pending"},
 		},
 		"a unit three hours in is running, not failed": {
 			st:      with(func(*record.App) {}),
@@ -270,8 +270,8 @@ func TestWhatStatusSays(t *testing.T) {
 			healthy: true, says: []string{"running: upload of blog"}, never: []string{"0001", "since"},
 		},
 		"a unit whose name says nothing here is still running": {
-			st: with(func(*record.App) {}), unknown: []string{"hotserve_backup_newrole_x_y.service"}, healthy: true,
-			says: []string{"running: hotserve_backup_newrole_x_y.service"}, never: []string{"no backup unit running"},
+			st: with(func(*record.App) {}), unknown: []string{"motel_backup_newrole_x_y.service"}, healthy: true,
+			says: []string{"running: motel_backup_newrole_x_y.service"}, never: []string{"no backup unit running"},
 		},
 		"a drill that could not begin": {
 			st: func() *record.Status {
@@ -330,7 +330,7 @@ func TestWhatStatusSays(t *testing.T) {
 		},
 		"no check, set up nine days ago": {
 			st: with(func(*record.App) {}), setUp: ago(9 * 24 * time.Hour),
-			says: []string{"the repository has not been checked since backups were set up, 2026-09-11 15:00 UTC, more than 8 days ago; `hotserve-backup drill`, as root, checks it"},
+			says: []string{"the repository has not been checked since backups were set up, 2026-09-11 15:00 UTC, more than 8 days ago; `motel-backup drill`, as root, checks it"},
 		},
 		// A box set up before the check existed: none on record, but a
 		// drill lately, and the next drill checks. Not failing.
@@ -359,7 +359,7 @@ func TestWhatStatusSays(t *testing.T) {
 				st.CheckSince = at(9 * 24 * time.Hour)
 				return st
 			}(), setUp: ago(30 * 24 * time.Hour),
-			says: []string{"no check of the repository has come to a verdict since 2026-09-11 15:00 UTC, more than 8 days ago; `hotserve-backup drill`, as root, checks it"},
+			says: []string{"no check of the repository has come to a verdict since 2026-09-11 15:00 UTC, more than 8 days ago; `motel-backup drill`, as root, checks it"},
 		},
 		"checks begun three days ago": {
 			st: func() *record.Status {
@@ -377,7 +377,7 @@ func TestWhatStatusSays(t *testing.T) {
 		},
 		"checked clean, nine days ago": {
 			st:   checked(record.CheckClean, "", 9*24*time.Hour),
-			says: []string{"repository last checked 2026-09-11 15:00 UTC: its structure, and data group 38/52: clean: old, more than 8 days ago; `hotserve-backup drill`, as root, checks it"},
+			says: []string{"repository last checked 2026-09-11 15:00 UTC: its structure, and data group 38/52: clean: old, more than 8 days ago; `motel-backup drill`, as root, checks it"},
 		},
 		"checked and found damaged": {
 			st:   checked(record.CheckDamaged, "restic check found 2 errors, in 2 damaged packs", 48*time.Hour),

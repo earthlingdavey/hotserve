@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2/caddytest"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // The integration suite authenticates deploys with a local trust key:
@@ -1008,7 +1008,7 @@ func TestIntegrationRemovingAnAppMidDeployLeavesNoUnit(t *testing.T) {
 // appUnits is every unit the manager holds for app, in any state.
 func appUnits(t *testing.T, app string) string {
 	t.Helper()
-	return strings.TrimSpace(run(t, "systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "hotserve-"+app+".*"))
+	return strings.TrimSpace(run(t, "systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "motel-"+app+".*"))
 }
 
 // leftIn lists what dir still holds; nothing when it is gone.

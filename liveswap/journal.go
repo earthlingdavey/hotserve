@@ -17,7 +17,7 @@ import (
 // exited 3, the stack trace of an app that died on start. Reading the
 // journal back means running journalctl — the product binary is built
 // without cgo, so the sd-journal library is out — which is the one
-// external program hotserve executes. The argument lists are built
+// external program motel executes. The argument lists are built
 // here, of unit names, a pid the manager recorded, stream ids journald
 // printed, a count and a timestamp; the output is bounded
 // (deployLogMaxBytes, and the line count the operator sets with
@@ -28,7 +28,7 @@ import (
 // any other body, and deploy_log_lines 0 keeps app output on the box
 // entirely: no journal tail, and no health probe body either
 // (failureDetail, app.go) — the exit status and the probe's status
-// code are hotserve's observations, not the app's bytes, and stay.
+// code are motel's observations, not the app's bytes, and stay.
 
 // journalReader is the seam: the real reader runs journalctl, tests
 // script one.
@@ -52,7 +52,7 @@ type tailOf struct {
 // an absolute path, so what runs never depends on PATH.
 const journalctlPath = "/usr/bin/journalctl"
 
-// journalctlReader reads the hotserve user's own journal, where the
+// journalctlReader reads the motel user's own journal, where the
 // units on its user manager write.
 //
 // journald names a line's unit from /proc/<pid> of the process that

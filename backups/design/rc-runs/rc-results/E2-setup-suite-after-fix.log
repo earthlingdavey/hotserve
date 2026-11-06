@@ -1,15 +1,15 @@
 docker compose run --rm -e CGO_ENABLED=0 dev sh -c '\
-		go build -trimpath -o build/e2e-backup/hotserve ./cmd/hotserve & p1=$!; \
-		(cd backups && go build -trimpath -tags e2e -o ../build/e2e-backup/hotserve-backup ./cmd/hotserve-backup) & p2=$!; \
+		go build -trimpath -o build/e2e-backup/motel ./cmd/motel & p1=$!; \
+		(cd backups && go build -trimpath -tags e2e -o ../build/e2e-backup/motel-backup ./cmd/motel-backup) & p2=$!; \
 		wait $p1 || exit 1; wait $p2 || exit 1; \
 		chmod -R a+rwX build'
- Container hotserve-backups-v2-dev-run-f93656dcdd62 Creating 
- Container hotserve-backups-v2-dev-run-f93656dcdd62 Created 
+ Container motel-backups-v2-dev-run-f93656dcdd62 Creating 
+ Container motel-backups-v2-dev-run-f93656dcdd62 Created 
 docker compose rm -sf e2e-backup-box e2e-s3 >/dev/null
 No stopped containers
 docker compose up --build -d --scale e2e-backup-box=1 e2e-s3 e2e-backup-box
- Image hotserve-backups-v2-e2e-s3 Building 
- Image hotserve-e2e-backup Building 
+ Image motel-backups-v2-e2e-s3 Building 
+ Image motel-e2e-backup Building 
 #1 [internal] load local bake definitions
 #1 reading from stdin 1.25kB done
 #1 DONE 0.0s
@@ -52,7 +52,7 @@ docker compose up --build -d --scale e2e-backup-box=1 e2e-s3 e2e-backup-box
 #12 [e2e-s3] exporting to image
 #12 exporting layers done
 #12 writing image sha256:353dc7a54ae1358dcaf5acc7a3932c2039e4568451fcbf425f529d4a060eb5ab done
-#12 naming to docker.io/library/hotserve-backups-v2-e2e-s3 done
+#12 naming to docker.io/library/motel-backups-v2-e2e-s3 done
 #12 DONE 0.0s
 
 #13 [e2e-backup-box context bin] load from client
@@ -71,20 +71,20 @@ docker compose up --build -d --scale e2e-backup-box=1 e2e-s3 e2e-backup-box
 #16 [e2e-backup-box stage-0 3/8] RUN systemctl mask 	systemd-udevd.service 	systemd-udevd-kernel.socket 	systemd-udevd-control.socket 	systemd-modules-load.service 	getty.target 	console-getty.service 	|| true
 #16 CACHED
 
-#17 [e2e-backup-box stage-0 4/8] COPY --from=bin hotserve hotserve-backup /usr/bin/
+#17 [e2e-backup-box stage-0 4/8] COPY --from=bin motel motel-backup /usr/bin/
 #17 DONE 0.7s
 
-#18 [e2e-backup-box stage-0 5/8] COPY packaging/hotserve-backup.service packaging/hotserve-backup.timer 	packaging/hotserve-backup-drill.service packaging/hotserve-backup-drill.timer /lib/systemd/system/
+#18 [e2e-backup-box stage-0 5/8] COPY packaging/motel-backup.service packaging/motel-backup.timer 	packaging/motel-backup-drill.service packaging/motel-backup-drill.timer /lib/systemd/system/
 #18 DONE 0.1s
 
 #19 [e2e-backup-box stage-0 6/8] COPY packaging/postinstall.sh /tmp/postinstall.sh
 #19 DONE 0.1s
 
-#20 [e2e-backup-box stage-0 7/8] RUN mkdir -p /var/lib/hotserve /var/lib/liveswap /etc/hotserve 	&& chmod 750 /var/lib/hotserve /var/lib/liveswap 	&& sh /tmp/postinstall.sh && rm /tmp/postinstall.sh 	&& userdel hotserve-backup 	&& rm -f /etc/systemd/system/timers.target.wants/hotserve-backup.timer /etc/systemd/system/timers.target.wants/hotserve-backup-drill.timer 	&& rm -rf /var/lib/systemd/deb-systemd-helper-enabled
+#20 [e2e-backup-box stage-0 7/8] RUN mkdir -p /var/lib/motel /var/lib/liveswap /etc/motel 	&& chmod 750 /var/lib/motel /var/lib/liveswap 	&& sh /tmp/postinstall.sh && rm /tmp/postinstall.sh 	&& userdel motel-backup 	&& rm -f /etc/systemd/system/timers.target.wants/motel-backup.timer /etc/systemd/system/timers.target.wants/motel-backup-drill.timer 	&& rm -rf /var/lib/systemd/deb-systemd-helper-enabled
 #20 0.771 System has not been booted with systemd as init system (PID 1). Can't operate.
 #20 0.771 Failed to connect to system scope bus via local transport: Host is down
-#20 0.779 hotserve installed. Start it with:
-#20 0.779   sudo systemctl enable --now hotserve
+#20 0.779 motel installed. Start it with:
+#20 0.779   sudo systemctl enable --now motel
 #20 0.826 /usr/bin/deb-systemd-helper was not called from dpkg. Exiting.
 #20 0.849 /usr/bin/deb-systemd-helper was not called from dpkg. Exiting.
 #20 0.878 /usr/bin/deb-systemd-helper was not called from dpkg. Exiting.
@@ -93,27 +93,27 @@ docker compose up --build -d --scale e2e-backup-box=1 e2e-s3 e2e-backup-box
 #20 0.947 /usr/bin/deb-systemd-helper was not called from dpkg. Exiting.
 #20 DONE 1.0s
 
-#21 [e2e-backup-box stage-0 8/8] COPY e2e/backup/Caddyfile /etc/hotserve/Caddyfile
+#21 [e2e-backup-box stage-0 8/8] COPY e2e/backup/Caddyfile /etc/motel/Caddyfile
 #21 DONE 0.1s
 
 #22 [e2e-backup-box] exporting to image
 #22 exporting layers 0.2s done
 #22 writing image sha256:7ead3b9ae3936d199bb325f9dc14bb96ce37ac10290bfe820eb9d64bb068d929 done
-#22 naming to docker.io/library/hotserve-e2e-backup 0.0s done
+#22 naming to docker.io/library/motel-e2e-backup 0.0s done
 #22 DONE 0.2s
 
 #23 [e2e-backup-box] resolving provenance for metadata file
 #23 DONE 0.0s
- Image hotserve-backups-v2-e2e-s3 Built 
- Image hotserve-e2e-backup Built 
- Container hotserve-backups-v2-e2e-s3-1 Creating 
- Container hotserve-backups-v2-e2e-s3-1 Created 
- Container hotserve-backups-v2-e2e-backup-box-1 Creating 
- Container hotserve-backups-v2-e2e-backup-box-1 Created 
- Container hotserve-backups-v2-e2e-s3-1 Starting 
- Container hotserve-backups-v2-e2e-s3-1 Started 
- Container hotserve-backups-v2-e2e-backup-box-1 Starting 
- Container hotserve-backups-v2-e2e-backup-box-1 Started 
+ Image motel-backups-v2-e2e-s3 Built 
+ Image motel-e2e-backup Built 
+ Container motel-backups-v2-e2e-s3-1 Creating 
+ Container motel-backups-v2-e2e-s3-1 Created 
+ Container motel-backups-v2-e2e-backup-box-1 Creating 
+ Container motel-backups-v2-e2e-backup-box-1 Created 
+ Container motel-backups-v2-e2e-s3-1 Starting 
+ Container motel-backups-v2-e2e-s3-1 Started 
+ Container motel-backups-v2-e2e-backup-box-1 Starting 
+ Container motel-backups-v2-e2e-backup-box-1 Started 
 logs=$(mktemp -d); i=0; \
 	for s in setup; do \
 		i=$((i + 1)); \
@@ -147,28 +147,28 @@ PASS: setup with no terminal says so, and where to go
 PASS: and nothing was made under /etc
 PASS: and no unit was started
 === setup 2: what is knowable is refused before any prompt, and before the account is made ===
-PASS: fixture: no hotserve-backup account before setup
+PASS: fixture: no motel-backup account before setup
 PASS: without restic, setup names the package
 PASS: and asked nothing
 PASS: and made no account
-PASS: an account hotserve did not make is refused, naming the remedy
+PASS: an account motel did not make is refused, naming the remedy
 PASS: and asked nothing
 PASS: and the account was left as it was
-PASS: hotserve-backup account says the same, as nobody
+PASS: motel-backup account says the same, as nobody
 PASS: and nothing was made under /etc
-PASS: refused before any prompt: sftp:user@host:/srv/backups — hotserve-backup: sftp: is not supported: ssh takes its key and known_hosts from a home dir
-PASS: refused before any prompt: /srv/backups — hotserve-backup: a path on this box is not a repository: a backup must survive losing the 
-PASS: refused before any prompt: local:/srv/backups — hotserve-backup: a path on this box is not a repository: a backup must survive losing the 
-PASS: refused before any prompt: rclone:remote:bucket — hotserve-backup: rclone: is not supported: rclone takes its remotes from a config file, wh
-PASS: refused before any prompt: azure:container:path — hotserve-backup: azure: is not a backend Debian's restic has
-PASS: refused before any prompt: gs:bucket:path — hotserve-backup: rest:, gs: and swift: are not set up by this command: write /etc/hotserve
-PASS: refused before any prompt: swift:container:/path — hotserve-backup: rest:, gs: and swift: are not set up by this command: write /etc/hotserve
-PASS: refused before any prompt: rest:https://host:8000/ — hotserve-backup: rest:, gs: and swift: are not set up by this command: write /etc/hotserve
-PASS: refused before any prompt: s3:http://user:pass@e2e-s3:9000/box — hotserve-backup: credentials in the repository URL are on the command line and in the shel
-PASS: refused before any prompt: s3:user:pass@e2e-s3:9000/box — hotserve-backup: credentials in the repository URL are on the command line and in the shel
-PASS: refused before any prompt: s3://user:pass@e2e-s3:9000/box — hotserve-backup: credentials in the repository URL are on the command line and in the shel
-PASS: refused before any prompt: ftp://host/x — hotserve-backup: "ftp:" is not a repository restic knows (s3: or b2:)
-PASS: refused before any prompt: s3: — hotserve-backup: s3: names no bucket
+PASS: refused before any prompt: sftp:user@host:/srv/backups — motel-backup: sftp: is not supported: ssh takes its key and known_hosts from a home dir
+PASS: refused before any prompt: /srv/backups — motel-backup: a path on this box is not a repository: a backup must survive losing the 
+PASS: refused before any prompt: local:/srv/backups — motel-backup: a path on this box is not a repository: a backup must survive losing the 
+PASS: refused before any prompt: rclone:remote:bucket — motel-backup: rclone: is not supported: rclone takes its remotes from a config file, wh
+PASS: refused before any prompt: azure:container:path — motel-backup: azure: is not a backend Debian's restic has
+PASS: refused before any prompt: gs:bucket:path — motel-backup: rest:, gs: and swift: are not set up by this command: write /etc/motel
+PASS: refused before any prompt: swift:container:/path — motel-backup: rest:, gs: and swift: are not set up by this command: write /etc/motel
+PASS: refused before any prompt: rest:https://host:8000/ — motel-backup: rest:, gs: and swift: are not set up by this command: write /etc/motel
+PASS: refused before any prompt: s3:http://user:pass@e2e-s3:9000/box — motel-backup: credentials in the repository URL are on the command line and in the shel
+PASS: refused before any prompt: s3:user:pass@e2e-s3:9000/box — motel-backup: credentials in the repository URL are on the command line and in the shel
+PASS: refused before any prompt: s3://user:pass@e2e-s3:9000/box — motel-backup: credentials in the repository URL are on the command line and in the shel
+PASS: refused before any prompt: ftp://host/x — motel-backup: "ftp:" is not a repository restic knows (s3: or b2:)
+PASS: refused before any prompt: s3: — motel-backup: s3: names no bucket
 PASS: nothing was made at the refused path
 PASS: and nothing under /etc
 === setup 3: a fresh setup at a terminal ===
@@ -177,7 +177,7 @@ PASS: the key id showed as it was typed; the secret did not
 PASS: a password was shown
 PASS: and had to be confirmed stored, with what to store beside it
 PASS: the account was made: no home, no shell
-PASS: and hotserve-backup account accepts it
+PASS: and motel-backup account accepts it
 PASS: the directory is root's and open to look into; the file is root's alone
 PASS: the file holds the four settings, the password among them, and nothing else
 PASS: nothing was left beside it
@@ -192,7 +192,7 @@ PASS: a run works with what setup wrote
 PASS: after setup: blog is 'ok'
 PASS: after setup: shop is 'ok'
 === setup 4: a Caddyfile a run could not plan from is refused before any prompt ===
-PASS: fixture: hotserve accepts the file
+PASS: fixture: motel accepts the file
 PASS: refused with the adapter's reason, naming the variable, before any prompt
 PASS: the working file is as it was
 === setup 5: a file at the old path is named, and not read ===
@@ -280,11 +280,11 @@ PASS: at the end: no unit is left
 === setup 15: a secret typed ahead of its prompt is not taken ===
 PASS: the line typed ahead was discarded, and the secret typed at its prompt is the one in the file
 ALL SETUP SCENARIOS PASSED
- Container hotserve-backups-v2-e2e-backup-box-1 Stopping 
- Container hotserve-backups-v2-e2e-backup-box-1 Stopped 
- Container hotserve-backups-v2-e2e-s3-1 Stopping 
- Container hotserve-backups-v2-e2e-s3-1 Stopped 
- Container hotserve-backups-v2-e2e-s3-1 Removing 
- Container hotserve-backups-v2-e2e-backup-box-1 Removing 
- Container hotserve-backups-v2-e2e-s3-1 Removed 
- Container hotserve-backups-v2-e2e-backup-box-1 Removed 
+ Container motel-backups-v2-e2e-backup-box-1 Stopping 
+ Container motel-backups-v2-e2e-backup-box-1 Stopped 
+ Container motel-backups-v2-e2e-s3-1 Stopping 
+ Container motel-backups-v2-e2e-s3-1 Stopped 
+ Container motel-backups-v2-e2e-s3-1 Removing 
+ Container motel-backups-v2-e2e-backup-box-1 Removing 
+ Container motel-backups-v2-e2e-s3-1 Removed 
+ Container motel-backups-v2-e2e-backup-box-1 Removed 

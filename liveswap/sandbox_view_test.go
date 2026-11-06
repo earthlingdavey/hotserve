@@ -40,8 +40,8 @@ var sandboxViewKeys = []string{
 	"pid", "uidmap", "nprocs", "uid",
 	// The app's own dirs, and the rest of the liveswap root.
 	"root_listing", "state", "apptmp", "current", "release", "root",
-	// hotserve's own state, sockets and config.
-	"hotserve_lib", "run_hotserve", "etc_hotserve", "admin_socket", "mgr_socket",
+	// motel's own state, sockets and config.
+	"motel_lib", "run_motel", "etc_motel", "admin_socket", "mgr_socket",
 	// The manager's process, via /proc.
 	"mgr_root", "mgr_environ",
 	// The rest of the host, which nothing bound.

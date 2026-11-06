@@ -139,7 +139,7 @@ func TestDeployShReadsEveryShapeOfAnswer(t *testing.T) {
 		{"redirect", 1, "", ""},
 		{"truncated", 1, "", ""},
 		{"accepted", 1, "", ""},
-		// A laptop deploy (HOTSERVE_TOKEN) refused: the hint names the
+		// A laptop deploy (MOTEL_TOKEN) refused: the hint names the
 		// local block, not claims the run does not have.
 		{"refused", 1, "deploy_trust local", "claim repository"},
 		{"refused-elsewhere", 1, "who are you", "deploy_trust"},
@@ -148,7 +148,7 @@ func TestDeployShReadsEveryShapeOfAnswer(t *testing.T) {
 		t.Run(tc.mode, func(t *testing.T) {
 			srv := box(t, tc.mode)
 			defer srv.Close()
-			out, code := deploySh(t, srv, "HOTSERVE_TOKEN=x", "GITHUB_ACTIONS=", "ACTIONS_ID_TOKEN_REQUEST_URL=")
+			out, code := deploySh(t, srv, "MOTEL_TOKEN=x", "GITHUB_ACTIONS=", "ACTIONS_ID_TOKEN_REQUEST_URL=")
 			if code != tc.exit || !strings.Contains(out, tc.want) || (tc.not != "" && strings.Contains(out, tc.not)) {
 				t.Fatalf("mode %s: exit %d (want %d), output:\n%s", tc.mode, code, tc.exit, out)
 			}
@@ -182,16 +182,16 @@ func deployShIn(t *testing.T, srv *httptest.Server, dir string, args []string, e
 	}
 	cmd := exec.Command("sh", append([]string{script}, args...)...)
 	cmd.Dir = dir
-	// Later entries win, so a developer's own HOTSERVE_AUDIENCE, or the
+	// Later entries win, so a developer's own MOTEL_AUDIENCE, or the
 	// job summary of an Actions run this test runs in, never reaches
 	// the script unless a case sets it. ARTIFACT_SHA256 is dropped
 	// rather than blanked: the script tells set-but-empty from unset.
 	// GIT_* is dropped too (a GIT_DIR from a hook running the tests
 	// would point the script's git at another repository). The stand-in
-	// box is plain http, so HOTSERVE_ALLOW_HTTP=1 unless a case says
+	// box is plain http, so MOTEL_ALLOW_HTTP=1 unless a case says
 	// otherwise.
 	all := append(append(environ("ARTIFACT_SHA256=", "GIT_"),
-		"HOTSERVE_URL="+srv.URL+"/demo", "HOTSERVE_ALLOW_HTTP=1", "VERSION=v1", "HOTSERVE_AUDIENCE=", "GITHUB_STEP_SUMMARY="), env...)
+		"MOTEL_URL="+srv.URL+"/demo", "MOTEL_ALLOW_HTTP=1", "VERSION=v1", "MOTEL_AUDIENCE=", "GITHUB_STEP_SUMMARY="), env...)
 	var unset []string
 	for _, kv := range all {
 		if !strings.Contains(kv, "=") {
@@ -239,7 +239,7 @@ func TestDeployShPinsTheArtifactDigest(t *testing.T) {
 	}))
 	defer srv.Close()
 	pin := strings.Repeat("ab", 32)
-	env := []string{"HOTSERVE_TOKEN=x", "GITHUB_ACTIONS=", "ACTIONS_ID_TOKEN_REQUEST_URL="}
+	env := []string{"MOTEL_TOKEN=x", "GITHUB_ACTIONS=", "ACTIONS_ID_TOKEN_REQUEST_URL="}
 
 	if out, code := deploySh(t, srv, append(env, "ARTIFACT_SHA256="+pin)...); code != 0 || body() != `{"url":"https://example.test/a.tgz","version":"v1","sha256":"`+pin+`"}` {
 		t.Fatalf("pinned: exit %d, body %s\n%s", code, body(), out)
@@ -285,17 +285,17 @@ func TestDeployShSaysWhatARefusedRunMustBeTrustedFor(t *testing.T) {
 	out, code := deploySh(t, srv,
 		"GITHUB_ACTIONS=true", "GITHUB_REPOSITORY=org/blog", "GITHUB_REF=refs/heads/main",
 		"ACTIONS_ID_TOKEN_REQUEST_URL="+srv.URL+"/token?api-version=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=run",
-		"HOTSERVE_TOKEN=", "GITHUB_STEP_SUMMARY="+summary)
+		"MOTEL_TOKEN=", "GITHUB_STEP_SUMMARY="+summary)
 	if code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s", code, out)
 	}
 	for _, want := range []string{
-		"::add-mask::minted-hotserve",
-		"audience          hotserve",
+		"::add-mask::minted-motel",
+		"audience          motel",
 		"claim repository  org/blog",
 		"claim ref         refs/heads/main",
-		"journalctl -u hotserve",
-		"::error title=hotserve%3A demo v1 failed::invalid or missing deploy token (Authorization: Bearer \\u003cjwt\\u003e); the log says what the box must trust",
+		"journalctl -u motel",
+		"::error title=motel%3A demo v1 failed::invalid or missing deploy token (Authorization: Bearer \\u003cjwt\\u003e); the log says what the box must trust",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -312,7 +312,7 @@ func TestDeployShSaysWhatARefusedRunMustBeTrustedFor(t *testing.T) {
 
 // The box's 401 is sent once more, 3s later: the first token under an
 // issuer's new key is refused while the box fetches it (#306), and the
-// retry deploys — a minted token's, and a HOTSERVE_TOKEN's, which can
+// retry deploys — a minted token's, and a MOTEL_TOKEN's, which can
 // be an issuer's too (a GitLab id_token). A 401 from something that
 // is not the box is not sent again.
 func TestDeployShSendsARefusedTokenOnceMore(t *testing.T) {
@@ -321,9 +321,9 @@ func TestDeployShSendsARefusedTokenOnceMore(t *testing.T) {
 	}
 	minted := func(srv *httptest.Server) []string {
 		return []string{"GITHUB_ACTIONS=true", "GITHUB_REPOSITORY=org/blog", "GITHUB_REF=refs/heads/main",
-			"ACTIONS_ID_TOKEN_REQUEST_URL=" + srv.URL + "/token?api-version=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=run", "HOTSERVE_TOKEN="}
+			"ACTIONS_ID_TOKEN_REQUEST_URL=" + srv.URL + "/token?api-version=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=run", "MOTEL_TOKEN="}
 	}
-	laptop := []string{"HOTSERVE_TOKEN=x", "GITHUB_ACTIONS=", "ACTIONS_ID_TOKEN_REQUEST_URL="}
+	laptop := []string{"MOTEL_TOKEN=x", "GITHUB_ACTIONS=", "ACTIONS_ID_TOKEN_REQUEST_URL="}
 	for _, tc := range []struct {
 		name, mode string
 		minted     bool
@@ -332,7 +332,7 @@ func TestDeployShSendsARefusedTokenOnceMore(t *testing.T) {
 	}{
 		{"minted, the retry deploys", "refused-once", true, 0, 2},
 		{"minted, refused again", "refused", true, 1, 2},
-		{"HOTSERVE_TOKEN, the retry deploys", "refused-once", false, 0, 2},
+		{"MOTEL_TOKEN, the retry deploys", "refused-once", false, 0, 2},
 		{"minted, a 401 not the box's", "refused-elsewhere", true, 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -365,22 +365,22 @@ func TestDeployShNamesTheRunnerVariableForAWrongArchitecture(t *testing.T) {
 	out, code := deploySh(t, srv,
 		"GITHUB_ACTIONS=true", "GITHUB_REPOSITORY=org/blog", "GITHUB_REF=refs/heads/main",
 		"ACTIONS_ID_TOKEN_REQUEST_URL="+srv.URL+"/token?api-version=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=run",
-		"HOTSERVE_TOKEN=")
-	if code != 1 || !strings.Contains(out, "gh variable set HOTSERVE_RUNS_ON -R org/blog --body ubuntu-24.04") {
+		"MOTEL_TOKEN=")
+	if code != 1 || !strings.Contains(out, "gh variable set MOTEL_RUNS_ON -R org/blog --body ubuntu-24.04") {
 		t.Fatalf("in Actions: exit %d (want 1), and the output should name the variable and its value:\n%s", code, out)
 	}
-	out, code = deploySh(t, srv, "HOTSERVE_TOKEN=x", "GITHUB_ACTIONS=", "ACTIONS_ID_TOKEN_REQUEST_URL=")
-	if code != 1 || !strings.Contains(out, "(runs-on: ubuntu-24.04)") || strings.Contains(out, "HOTSERVE_RUNS_ON") {
+	out, code = deploySh(t, srv, "MOTEL_TOKEN=x", "GITHUB_ACTIONS=", "ACTIONS_ID_TOKEN_REQUEST_URL=")
+	if code != 1 || !strings.Contains(out, "(runs-on: ubuntu-24.04)") || strings.Contains(out, "MOTEL_RUNS_ON") {
 		t.Fatalf("from a laptop: exit %d (want 1), and the box's refusal without the workflow's variable:\n%s", code, out)
 	}
 }
 
-// HOTSERVE_URL is https:// or the run stops before the token is minted
+// MOTEL_URL is https:// or the run stops before the token is minted
 // and before any request: over http the deploy token (and, for a URL
 // deploy, the job's GITHUB_TOKEN in the body) would cross the wire in
 // the clear. The scheme is matched in any case; anything else —
 // http://, no scheme, a space in front — is refused unless
-// HOTSERVE_ALLOW_HTTP is exactly 1.
+// MOTEL_ALLOW_HTTP is exactly 1.
 func TestDeployShRefusesAPlaintextURLBeforeTheMint(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Fatal("deploy.sh needs curl; install it to run this test")
@@ -405,13 +405,13 @@ func TestDeployShRefusesAPlaintextURLBeforeTheMint(t *testing.T) {
 	host := strings.TrimPrefix(srv.URL, "http://")
 	// In Actions, minting from the stand-in, so a refusal after the mint
 	// or the group line would show.
-	actions := []string{"GITHUB_ACTIONS=true", "HOTSERVE_TOKEN=",
+	actions := []string{"GITHUB_ACTIONS=true", "MOTEL_TOKEN=",
 		"ACTIONS_ID_TOKEN_REQUEST_URL=" + srv.URL + "/token?api-version=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=run"}
 	run := func(url, allow string) (string, int) {
 		mu.Lock()
 		paths = nil
 		mu.Unlock()
-		return deploySh(t, srv, append(actions, "HOTSERVE_URL="+url, "HOTSERVE_ALLOW_HTTP="+allow)...)
+		return deploySh(t, srv, append(actions, "MOTEL_URL="+url, "MOTEL_ALLOW_HTTP="+allow)...)
 	}
 
 	for _, tc := range []struct{ name, url, allow string }{
@@ -424,7 +424,7 @@ func TestDeployShRefusesAPlaintextURLBeforeTheMint(t *testing.T) {
 		{"opt-out padded", srv.URL + "/demo", " 1"},
 	} {
 		out, code := run(tc.url, tc.allow)
-		if code != 1 || !strings.Contains(out, "is not https://") || !strings.Contains(out, "HOTSERVE_ALLOW_HTTP=1") ||
+		if code != 1 || !strings.Contains(out, "is not https://") || !strings.Contains(out, "MOTEL_ALLOW_HTTP=1") ||
 			strings.Contains(out, "::add-mask::") || strings.Contains(out, "::group::") || len(seen()) != 0 {
 			t.Fatalf("%s: exit %d (want 1 before the mint or any request), requests %v\n%s", tc.name, code, seen(), out)
 		}
@@ -442,7 +442,7 @@ func TestDeployShRefusesAPlaintextURLBeforeTheMint(t *testing.T) {
 
 	// The opt-out: http deploys, the mint first.
 	if out, code := run(srv.URL+"/demo", "1"); code != 0 || strings.Join(seen(), " ") != "/token /demo" {
-		t.Fatalf("HOTSERVE_ALLOW_HTTP=1: exit %d, requests %v\n%s", code, seen(), out)
+		t.Fatalf("MOTEL_ALLOW_HTTP=1: exit %d, requests %v\n%s", code, seen(), out)
 	}
 }
 
@@ -466,7 +466,7 @@ func TestDeployShRefusesADirtyCheckoutsDefaultVersion(t *testing.T) {
 	// In Actions, minting from the stand-in, so a refusal after the mint
 	// or the group line would show; git without the caller's config, and
 	// in English.
-	env := []string{"GITHUB_ACTIONS=true", "HOTSERVE_TOKEN=",
+	env := []string{"GITHUB_ACTIONS=true", "MOTEL_TOKEN=",
 		"ACTIONS_ID_TOKEN_REQUEST_URL=" + srv.URL + "/token?api-version=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=run",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "LC_ALL=C"}
 	write := func(t *testing.T, path, s string) {
@@ -576,7 +576,7 @@ func TestDeployShRefusesAVersionOutsideTheBoxAlphabet(t *testing.T) {
 		t.Fatal("deploy.sh needs curl; install it to run this test")
 	}
 	srv, seen := requestLog(t)
-	actions := []string{"GITHUB_ACTIONS=true", "HOTSERVE_TOKEN=",
+	actions := []string{"GITHUB_ACTIONS=true", "MOTEL_TOKEN=",
 		"ACTIONS_ID_TOKEN_REQUEST_URL=" + srv.URL + "/token?api-version=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=run"}
 	tarball := filepath.Join(t.TempDir(), "app.tar.gz")
 	if err := os.WriteFile(tarball, []byte("not really gzip"), 0o600); err != nil {

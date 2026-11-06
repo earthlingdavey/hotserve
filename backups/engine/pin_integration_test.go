@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // The app flips its declared path between the real directory and a link
@@ -30,8 +30,8 @@ func TestIntegrationWhatIsBoundIsWhatWasPinnedWhateverTheAppDoesToTheName(t *tes
 	}
 	// Its own account: a fresh box has none, and the packages run in an
 	// order that does not make one first.
-	if exec.Command("id", "hotserve-backup").Run() != nil {
-		if out, err := exec.Command("useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "hotserve-backup").CombinedOutput(); err != nil {
+	if exec.Command("id", "motel-backup").Run() != nil {
+		if out, err := exec.Command("useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "motel-backup").CombinedOutput(); err != nil {
 			t.Fatalf("useradd: %v: %s", err, out)
 		}
 	}
@@ -112,7 +112,7 @@ func TestIntegrationWhatIsBoundIsWhatWasPinnedWhateverTheAppDoesToTheName(t *tes
 		}
 		out := filepath.Join(base, "stdout")
 		o, err := r.Run(context.Background(), unit.Spec{
-			Name: "hotserve_backup_test_pinrace_" + strconv.Itoa(shown) + ".service", User: "hotserve-backup",
+			Name: "motel_backup_test_pinrace_" + strconv.Itoa(shown) + ".service", User: "motel-backup",
 			Capabilities: []unit.Capability{unit.CapDACReadSearch},
 			Argv:         []string{"/bin/cat", "/backup/x/files/uploads/marker"},
 			Binds:        []unit.Bind{{Source: target, Dest: "/backup/x/files/uploads"}}, StdoutFile: out,

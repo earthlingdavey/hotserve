@@ -204,20 +204,20 @@ func TestIntegrationWhatIsSwappedInAfterTheChecksFailsAtOnce(t *testing.T) {
 // What the ATTACH form does not close: the read-write open of a FIFO
 // the app has made read-only is refused, SQLite retries read-only, and
 // that open waits for ever. Only as an unprivileged user — root's opens
-// ignore mode bits — so sqlite3 runs as hotserve here, as it does in
+// ignore mode bits — so sqlite3 runs as motel here, as it does in
 // the dump unit. A real sqlite3, really blocked; the bound on opening is
 // what ends it, and the next database is still dumped.
 func TestIntegrationAReadOnlyFifoIsKilledAtTheOpenBound(t *testing.T) {
-	if exec.Command("id", "-u", "hotserve").Run() != nil {
-		if out, err := exec.Command("useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "hotserve").CombinedOutput(); err != nil {
+	if exec.Command("id", "-u", "motel").Run() != nil {
+		if out, err := exec.Command("useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "motel").CombinedOutput(); err != nil {
 			t.Fatalf("useradd: %v: %s", err, out)
 		}
 	}
 	var uid, gid uint32
-	out, _ := exec.Command("id", "-u", "hotserve").Output()
+	out, _ := exec.Command("id", "-u", "motel").Output()
 	_, err := fmt.Sscan(string(out), &uid)
 	must(t, err)
-	out, _ = exec.Command("id", "-g", "hotserve").Output()
+	out, _ = exec.Command("id", "-g", "motel").Output()
 	_, err = fmt.Sscan(string(out), &gid)
 	must(t, err)
 
@@ -230,7 +230,7 @@ func TestIntegrationAReadOnlyFifoIsKilledAtTheOpenBound(t *testing.T) {
 	victim := filepath.Join(shared, "swapped.db")
 	sql(t, victim, "create table t(x);")
 	sql(t, filepath.Join(shared, "next.db"), "create table t(x); insert into t values (1);")
-	must(t, exec.Command("chown", "-R", "hotserve:hotserve", base).Run())
+	must(t, exec.Command("chown", "-R", "motel:motel", base).Run())
 	must(t, os.Chmod(base, 0o755))
 
 	oldHook, oldWithin, oldTweak, swapped := beforeSqlite, openWithin, tweakCmd, false

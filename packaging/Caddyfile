@@ -1,31 +1,31 @@
-# /etc/hotserve/Caddyfile — hotserve starter configuration.
+# /etc/motel/Caddyfile — motel starter configuration.
 #
-# hotserve speaks standard Caddyfile (it IS Caddy under the hood) plus
+# motel speaks standard Caddyfile (it IS Caddy under the hood) plus
 # the built-in modules: liveswap (zero-downtime deploys), penaltybox
 # (rate-limit hint enforcement) and cache (Souin + Otter).
 #
-# A box whose config lives in a repository of its own (hotserve's
+# A box whose config lives in a repository of its own (motel's
 # docs/first-deploy.md, step 3) never has this file edited by hand:
-# `hotserve init` replaces it, and signed pushes change it after that.
+# `motel init` replaces it, and signed pushes change it after that.
 # Edit it here on a box without one, or, as root on the box, when a
 # push cannot reach it.
 #
 # Check before reloading: a file that fails to load leaves the old config
 # running, but it also stops the next restart or upgrade from starting.
-#   hotserve validate --config /etc/hotserve/Caddyfile
-#   systemctl reload hotserve
+#   motel validate --config /etc/motel/Caddyfile
+#   systemctl reload motel
 
 {
 	# Admin API on a unix socket instead of the default localhost:2019.
-	# "localhost" includes every app hotserve runs: an SSRF bug in any
+	# "localhost" includes every app motel runs: an SSRF bug in any
 	# deployed app could otherwise be steered at the TCP admin API and
 	# reconfigure the whole server. HTTP clients can't be steered at a
-	# unix socket, and /run/hotserve is absent from every app's sandbox.
-	# `systemctl reload hotserve` finds the socket via this config; keep
+	# unix socket, and /run/motel is absent from every app's sandbox.
+	# `systemctl reload motel` finds the socket via this config; keep
 	# the line if you edit this block.
-	admin unix//run/hotserve/admin.sock
+	admin unix//run/motel/admin.sock
 
-	# ── Example: the Node.js app in hotserve's examples/node, with
+	# ── Example: the Node.js app in motel's examples/node, with
 	#    zero-downtime deploys. Its tarball holds two executables,
 	#    server and migrate, each with Node inside; its README says
 	#    what the box needs for them. ──
@@ -43,15 +43,15 @@
 	# 	# Who may deploy (required). CI sends an OIDC token; the box
 	# 	# verifies it against the provider's public keys — no shared
 	# 	# secret on the server. For non-CI deploys use a local key:
-	# 	# `hotserve deploy-keygen`, then `deploy_trust local { public_key …; audience … }`.
+	# 	# `motel deploy-keygen`, then `deploy_trust local { public_key …; audience … }`.
 	# 	deploy_trust github {
-	# 		audience hotserve
+	# 		audience motel
 	# 		claim repository your-org/myapp
 	# 		claim ref        refs/heads/main
 	# 	}
 	#
 	# 	app myapp {
-	# 		# From examples/node/hotserve.caddy: both commands are
+	# 		# From examples/node/motel.caddy: both commands are
 	# 		# executables inside the tarball.
 	# 		command ./server
 	# 		pre_start ./migrate
@@ -59,7 +59,7 @@
 	# 		env DATA_DIR {shared_dir}
 	# 		# Secrets, read at each launch. The file must exist once
 	# 		# this line is in: a missing one fails the launch.
-	# 		# env_file /etc/hotserve/myapp.env
+	# 		# env_file /etc/motel/myapp.env
 	#
 	# 		# Each app runs in its own systemd sandbox, and the
 	# 		# filesystem it sees is deny-by-default: its release dir,
@@ -73,11 +73,11 @@
 	#
 	# 		# There is no setting that turns the sandbox off or widens
 	# 		# it. On a host that cannot deliver it — a container, an
-	# 		# LXC VPS, a kernel without user namespaces — hotserve does
+	# 		# LXC VPS, a kernel without user namespaces — motel does
 	# 		# NOT start, and says what is missing. That is deliberate:
 	# 		# the alternative is an app running with no isolation, which
 	# 		# on a shared uid means every other app's data and
-	# 		# hotserve's own keys. The supported host is Debian 13.
+	# 		# motel's own keys. The supported host is Debian 13.
 	#
 	# 		# Crash/health watchdog (on by default). Defaults shown:
 	# 		# watchdog          on     # off = never auto-restart
@@ -99,10 +99,10 @@
 	# }
 }
 
-# ── Replace with your domain once DNS points here — hotserve then
+# ── Replace with your domain once DNS points here — motel then
 #    provisions TLS automatically. ──
 :80 {
-	respond "hotserve is running. To serve your apps: hotserve init from your box's repository, or edit /etc/hotserve/Caddyfile."
+	respond "motel is running. To serve your apps: motel init from your box's repository, or edit /etc/motel/Caddyfile."
 }
 
 # ── Example: the sites for the app above ──
@@ -110,7 +110,7 @@
 # myapp.example.com {
 # 	# A route keeps the written order, so hint_penaltybox checks every
 # 	# request before cache can answer it. Outside a route Caddy runs
-# 	# cache first, and cached pages skip the penalty box (hotserve's
+# 	# cache first, and cached pages skip the penalty box (motel's
 # 	# penaltybox/README.md, "Compatibility with Souin").
 # 	route {
 # 		# hint_penaltybox        # rate limiting driven by app hint headers

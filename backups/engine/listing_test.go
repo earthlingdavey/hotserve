@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // seenAt is when the record says a snapshot was last in the repository.
@@ -51,7 +51,7 @@ func TestARunListsTheRepositoryOnceAtTheEnd(t *testing.T) {
 		t.Fatalf("units: %s", b.roles())
 	}
 	s := b.spec("listing")
-	// Every app's: no app's own tag (`hotserve` is every app's, and no
+	// Every app's: no app's own tag (`motel` is every app's, and no
 	// clean-run record's).
 	if !slices.Contains(s.Argv, "--no-lock") || slices.ContainsFunc(s.Argv, func(a string) bool { return strings.HasPrefix(a, "app:") }) || s.Argv[0] != b.cfg.Restic || s.Argv[1] != "snapshots" {
 		t.Errorf("argv: %q", s.Argv)
@@ -99,7 +99,7 @@ func TestASnapshotTheListingLacksKeepsWhenItWasLastSeen(t *testing.T) {
 	}
 }
 
-// A snapshot tagged for more than one app — hotserve writes one app tag,
+// A snapshot tagged for more than one app — motel writes one app tag,
 // but a tag can be added off the box — is held for each of them: the
 // last tag alone would call blog's snapshot gone while app:blog is on it.
 func TestASnapshotTaggedForTwoAppsIsHeldForBoth(t *testing.T) {
@@ -301,7 +301,7 @@ func TestAUnitNameIsReadBack(t *testing.T) {
 			t.Errorf("%s: read back as %q of %q (%v)", x.name(tc.role, tc.app), role, app, ok)
 		}
 	}
-	for _, other := range []string{"hotserve.service", "hotserve-backup.service", "hotserve_backup_test_x.service", "hotserve_backup_upload_Blog_0123456789ab.service", "hotserve_backup_upload_blog_0123456789ab.timer"} {
+	for _, other := range []string{"motel.service", "motel-backup.service", "motel_backup_test_x.service", "motel_backup_upload_Blog_0123456789ab.service", "motel_backup_upload_blog_0123456789ab.timer"} {
 		if role, app, ok := ParseUnitName(other); ok {
 			t.Errorf("%s was read as %q of %q", other, role, app)
 		}

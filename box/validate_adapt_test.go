@@ -25,7 +25,7 @@ func TestValidateAdapt(t *testing.T) {
 		if err != nil || msg != msgUnreachable("static_response answers first") {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
-		if exists(filepath.Join(dir, "hotserve-backup.args")) {
+		if exists(filepath.Join(dir, "motel-backup.args")) {
 			t.Fatal("backup validate ran after the refusal")
 		}
 	})
@@ -48,7 +48,7 @@ func TestValidateAdapt(t *testing.T) {
 		if err != nil || msg != msgListenMoved {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
-		if exists(filepath.Join(dir, "hotserve-backup.args")) {
+		if exists(filepath.Join(dir, "motel-backup.args")) {
 			t.Fatal("backup validate ran after the refusal")
 		}
 		// The same door, kept: admitted.
@@ -90,7 +90,7 @@ func TestValidateAdapt(t *testing.T) {
 		if msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "" || err != nil {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
-		if !exists(filepath.Join(dir, "hotserve-backup.args")) {
+		if !exists(filepath.Join(dir, "motel-backup.args")) {
 			t.Fatal("backup validate did not run")
 		}
 	})
@@ -113,21 +113,21 @@ func TestValidateAdapt(t *testing.T) {
 	t.Run("an exit is the box's, its words kept out", func(t *testing.T) {
 		c, _ := stubAdapt(t, "echo 'Error: DB_PASS is not a number' >&2; exit 1")
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if msg != "" || err == nil || err.Error() != "hotserve adapt: exit status 1" {
+		if msg != "" || err == nil || err.Error() != "motel adapt: exit status 1" {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
 	t.Run("an adaptation that does not read is the box's", func(t *testing.T) {
 		c, _ := stubAdapt(t, "printf '{'; exit 0")
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if msg != "" || err == nil || !strings.HasPrefix(err.Error(), "hotserve adapt: the adaptation does not parse") {
+		if msg != "" || err == nil || !strings.HasPrefix(err.Error(), "motel adapt: the adaptation does not parse") {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
 	t.Run("the host asked for is the walk's", func(t *testing.T) {
 		c, _ := stubAdapt(t, "printf '%s' '"+reachableAdaptation+"'; exit 0")
 		msg, err := c.validate(context.Background(), randomID(t), file, "other.example.com", nil)
-		if msg != "" || err == nil || !strings.HasPrefix(err.Error(), "hotserve adapt: the adaptation routes GET / on other.example.com past box_webhook") {
+		if msg != "" || err == nil || !strings.HasPrefix(err.Error(), "motel adapt: the adaptation routes GET / on other.example.com past box_webhook") {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
@@ -142,16 +142,16 @@ func TestValidateAdapt(t *testing.T) {
 		c, _ := stubAdapt(t, "exec sleep 60")
 		c.timeout = 200 * time.Millisecond
 		msg, err := c.validate(context.Background(), randomID(t), file, stubHost, nil)
-		if err != nil || msg != "hotserve adapt: did not finish within 200ms" {
+		if err != nil || msg != "motel adapt: did not finish within 200ms" {
 			t.Fatalf("msg %q err %v", msg, err)
 		}
 	})
 	t.Run("not after validate refused", func(t *testing.T) {
 		c, dir := stubChildren(t, "echo 'Error: no'; exit 1", "printf '%s' '"+reachableAdaptation+"'; exit 0", "")
-		if msg, _ := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "hotserve validate: no" {
+		if msg, _ := c.validate(context.Background(), randomID(t), file, stubHost, nil); msg != "motel validate: no" {
 			t.Fatalf("msg %q", msg)
 		}
-		args, _ := os.ReadFile(filepath.Join(dir, "hotserve.args"))
+		args, _ := os.ReadFile(filepath.Join(dir, "motel.args"))
 		if strings.Count(string(args), "\n") != 1 || !strings.HasPrefix(string(args), "validate ") {
 			t.Fatalf("the program ran more than validate: %q", args)
 		}

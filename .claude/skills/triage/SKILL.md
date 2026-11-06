@@ -1,6 +1,6 @@
 ---
 name: triage
-description: Decide whether a finding in hotserve gets fixed — from Copilot, /code-review, a test or the field. Scores the failure (severity × occurrence × detection) and the fix (size, risk), applies the rule, and records what is accepted in the subsystem's design doc.
+description: Decide whether a finding in motel gets fixed — from Copilot, /code-review, a test or the field. Scores the failure (severity × occurrence × detection) and the fix (size, risk), applies the rule, and records what is accepted in the subsystem's design doc.
 ---
 
 # Triage: which findings get fixed
@@ -21,7 +21,7 @@ the behaviour they describe. Read only the one the finding is in:
 | box | `box/DESIGN-box.md`, "Triage: which failures to defend" |
 | packaging (`packaging/`, the `.deb`'s maintainer scripts) | `packaging/DESIGN-packaging.md`, "Triage" |
 | liveswap | `liveswap/DESIGN-liveswap.md`, "Accepted residuals" and the **Owed** table after it (scored rows; no per-level examples yet, so the general scales) |
-| backups (`backups/`, and `cmd/hotserve/backupcheck.go`, the validate and reload gate) | `backups/README.md`, "Accepted residuals" (scored rows; general scales) |
+| backups (`backups/`, and `cmd/motel/backupcheck.go`, the validate and reload gate) | `backups/README.md`, "Accepted residuals" (scored rows; general scales) |
 | usage ledger (`.github/scripts/usage.py`, `usage/`, `docs/footprint.md`) | the docstring of `usage.py`, "Accepted residuals" (scored rows; general scales) |
 
 A subsystem with no examples yet is scored on the general scales
@@ -56,7 +56,7 @@ the input, and detection carries it: a line dropped silently scores 5,
 one refused and named scores 1. How likely the input is stays out of
 the score, since scorers would each guess it differently.
 
-A hostile hotserve uid (T5 in `DESIGN-threat-model.md`) is scored by
+A hostile motel uid (T5 in `DESIGN-threat-model.md`) is scored by
 what it gains: an effect it could already have by other means scores
 severity 1.
 

@@ -22,8 +22,8 @@ import (
 
 const (
 	packagingDir = "../packaging"
-	pathUnit     = "hotserve-box-apply.path"
-	serviceUnit  = "hotserve-box-apply.service"
+	pathUnit     = "motel-box-apply.path"
+	serviceUnit  = "motel-box-apply.service"
 )
 
 // forbidden is what neither unit may say, whatever the design's table
@@ -37,8 +37,8 @@ var forbidden = []string{"User", "Group", "DynamicUser", "Restart", "RemainAfter
 // that start it — a bundle in in/, and what a killed run left, in work/
 // and as the record — whatever the design's table comes to say.
 const (
-	applierCommand = "/usr/bin/hotserve box apply"
-	exchangeTree   = "/var/lib/hotserve-box"
+	applierCommand = "/usr/bin/motel box apply"
+	exchangeTree   = "/var/lib/motel-box"
 )
 
 func TestTheShippedUnitsSayWhatTheDesignLists(t *testing.T) {
@@ -162,7 +162,7 @@ func TestEachCapabilityCarriesItsReason(t *testing.T) {
 
 // The units and the tree agree, across the design's two tables: what
 // the path unit watches is a directory tmpfiles.d makes, or the record
-// in its base; the service may write the tree and /etc/hotserve; and
+// in its base; the service may write the tree and /etc/motel; and
 // each watched directory counts every name in it — DirectoryNotEmpty=
 // skips the names systemd takes for hidden or backup files, and the
 // three globs beside it are what count those.
@@ -194,7 +194,7 @@ func TestTheUnitsWatchAndWriteTheTree(t *testing.T) {
 		}
 	}
 	rw := strings.Fields(strings.Join(values(readUnit(t, serviceUnit))["Service"]["ReadWritePaths"], " "))
-	for _, need := range []string{"/etc/hotserve", exchangeTree} {
+	for _, need := range []string{"/etc/motel", exchangeTree} {
 		if !slices.Contains(rw, need) {
 			t.Errorf("ReadWritePaths %q lacks %s", rw, need)
 		}
@@ -244,17 +244,17 @@ func TestThePathsTableReader(t *testing.T) {
 		err       string
 	}{
 		{"the base and a child, to the first line that is not a row", head +
-			"| `/var/lib/hotserve-box/` | 2750 | root:hotserve | tmpfiles.d | — | — | — |\n" +
-			"| `…/in/` | 0770 | root:hotserve | tmpfiles.d | handler | applier | applier |\n" +
-			"| `…/txn.json` | 0600 | root:hotserve | applier | applier | applier | applier |\n\n" +
-			"| `…/out/` | 2750 | root:hotserve | tmpfiles.d | applier | handler | — |\n",
-			map[string]string{"/var/lib/hotserve-box": "2750 root:hotserve", "/var/lib/hotserve-box/in": "0770 root:hotserve"}, ""},
+			"| `/var/lib/motel-box/` | 2750 | root:motel | tmpfiles.d | — | — | — |\n" +
+			"| `…/in/` | 0770 | root:motel | tmpfiles.d | handler | applier | applier |\n" +
+			"| `…/txn.json` | 0600 | root:motel | applier | applier | applier | applier |\n\n" +
+			"| `…/out/` | 2750 | root:motel | tmpfiles.d | applier | handler | — |\n",
+			map[string]string{"/var/lib/motel-box": "2750 root:motel", "/var/lib/motel-box/in": "0770 root:motel"}, ""},
 		{"no marker", "| Path | Mode | Owner | Creates | Writes | Reads | Removes |\n|---|---|---|---|---|---|---|\n", nil, "no line"},
 		{"the marker twice", head + "\n" + head, nil, "twice"},
 		{"the marker, but another table", pathsMarker + "\n| Situation | Action |\n|---|---|\n", nil, "no table"},
 		{"no rows", head + "\n", nil, "no row"},
-		{"a pipe in a cell", head + "| `…/in/` | 0770 | root:hotserve | tmpfiles.d | a | b | c | d |\n", nil, "8 cells"},
-		{"a child before the base", head + "| `…/in/` | 0770 | root:hotserve | tmpfiles.d | — | — | — |\n", nil, "before the base"},
+		{"a pipe in a cell", head + "| `…/in/` | 0770 | root:motel | tmpfiles.d | a | b | c | d |\n", nil, "8 cells"},
+		{"a child before the base", head + "| `…/in/` | 0770 | root:motel | tmpfiles.d | — | — | — |\n", nil, "before the base"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := parseTmpfilesRows(tc.doc)
@@ -450,7 +450,7 @@ func parseUnitTable(doc string) ([]unitRow, error) {
 	var rows []unitRow
 	seen := map[string]bool{}
 	for _, c := range cells {
-		unit := "hotserve-box-apply" + strings.Trim(c[0], "`")
+		unit := "motel-box-apply" + strings.Trim(c[0], "`")
 		if unit != pathUnit && unit != serviceUnit {
 			return nil, fmt.Errorf("an unknown unit %s", c[0])
 		}
@@ -519,7 +519,7 @@ type tmpfilesEntry struct{ typ, path, mode, user, group, age string }
 
 func readTmpfiles(t *testing.T) []tmpfilesEntry {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(packagingDir, "hotserve-box.tmpfiles"))
+	raw, err := os.ReadFile(filepath.Join(packagingDir, "motel-box.tmpfiles"))
 	if err != nil {
 		t.Fatal(err)
 	}

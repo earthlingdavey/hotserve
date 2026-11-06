@@ -1,9 +1,9 @@
 package box
 
 // Step 6 (DESIGN-box.md, "The trust chain"): the pushed file validated
-// as the serving process would load it — by `hotserve validate`, then
-// its adaptation read by `hotserve adapt` for reachability
-// ("Reachability", reach.go), then `hotserve-backup validate` when
+// as the serving process would load it — by `motel validate`, then
+// its adaptation read by `motel adapt` for reachability
+// ("Reachability", reach.go), then `motel-backup validate` when
 // backups are installed — three bounded children with the service's
 // own environment. Root runs none of them: validate provisions every
 // module, and the adapter expands `{$VAR}` from the caller's
@@ -23,8 +23,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 // The children's bounds (DESIGN-box.md, Caps): one deadline for each
@@ -38,8 +38,8 @@ const (
 
 // The programs, by absolute path: the package installs both there.
 const (
-	hotserveProgram = "/usr/bin/hotserve"
-	backupProgram   = "/usr/bin/hotserve-backup"
+	motelProgram  = "/usr/bin/motel"
+	backupProgram = "/usr/bin/motel-backup"
 )
 
 // xOK is access(2)'s X_OK: `test -x`'s question.
@@ -59,10 +59,10 @@ type validator interface {
 
 // childValidator runs the real children.
 type childValidator struct {
-	stage            string // where the staged copy is written
-	hotserve, backup string
-	env              []string
-	timeout          time.Duration
+	stage         string // where the staged copy is written
+	motel, backup string
+	env           []string
+	timeout       time.Duration
 	// redactor is primed with the service's environment: validate's
 	// errors quote expanded values.
 	redactor *liveswap.Redactor
@@ -71,7 +71,7 @@ type childValidator struct {
 func newChildValidator(stage string) *childValidator {
 	env := os.Environ()
 	return &childValidator{
-		stage: stage, hotserve: hotserveProgram, backup: backupProgram,
+		stage: stage, motel: motelProgram, backup: backupProgram,
 		env: env, timeout: validateTimeout, redactor: liveswap.NewRedactor(secretCandidates(env), nil),
 	}
 }
@@ -79,7 +79,7 @@ func newChildValidator(stage string) *childValidator {
 // secretCandidates is the environment as the redactor's known values,
 // without the variables systemd and the login shell set for every
 // service (systemd.exec(5), "Environment Variables in Spawned
-// Processes"): they are the box's own words — `hotserve` as USER, the
+// Processes"): they are the box's own words — `motel` as USER, the
 // state paths — and a diagnostic needs them readable, as liveswap keeps
 // an app's SOCKET, HOME and PATH. Everything else, the operator's
 // Environment= and EnvironmentFile= lines among it, is a value the
@@ -115,7 +115,7 @@ func (c *childValidator) validate(ctx context.Context, id string, caddyfile []by
 		return "", fmt.Errorf("staging the Caddyfile for validate: %w", err)
 	}
 	defer os.Remove(staged) //nolint:errcheck // a leftover is swept at the next admission
-	if msg, err := c.run(ctx, "hotserve validate", loadError, c.hotserve, "validate", "--adapter", "caddyfile", "--config", staged); msg != "" || err != nil {
+	if msg, err := c.run(ctx, "motel validate", loadError, c.motel, "validate", "--adapter", "caddyfile", "--config", staged); msg != "" || err != nil {
 		return msg, err
 	}
 	if msg, err := c.adapt(ctx, staged, host, door); msg != "" || err != nil {
@@ -129,7 +129,7 @@ func (c *childValidator) validate(ctx context.Context, id string, caddyfile []by
 	case err != nil:
 		return "", fmt.Errorf("could not ask whether backups are installed: %w", err)
 	}
-	return c.run(ctx, "hotserve-backup validate", nil, c.backup, "validate", staged)
+	return c.run(ctx, "motel-backup validate", nil, c.backup, "validate", staged)
 }
 
 // run runs one validate child. A non-zero exit is a refusal quoting its
@@ -166,7 +166,7 @@ func (c *childValidator) run(ctx context.Context, what string, saysWhyLast func(
 	return what + ": " + bound(line), nil
 }
 
-// loadError reports whether `hotserve validate`'s error line says why
+// loadError reports whether `motel validate`'s error line says why
 // last, so is bounded by its tail. A load error walks the module path
 // first (`loading http app module: provision http: server srv1: ...:
 // provision liveswap: app <name>: <why>`), and the path alone outruns
@@ -189,14 +189,14 @@ func loadError(line string) bool {
 // function (a moved door is named, its addresses are not).
 func (c *childValidator) adapt(ctx context.Context, staged, host string, door []string) (string, error) {
 	out := newCappedBuffer(maxAdaptation)
-	exit, timedOut, err := c.exec(ctx, c.hotserve, out, nil, "adapt", "--adapter", "caddyfile", "--config", staged)
+	exit, timedOut, err := c.exec(ctx, c.motel, out, nil, "adapt", "--adapter", "caddyfile", "--config", staged)
 	switch {
 	case err != nil:
-		return "", fmt.Errorf("hotserve adapt: %w", err)
+		return "", fmt.Errorf("motel adapt: %w", err)
 	case timedOut:
-		return fmt.Sprintf("hotserve adapt: did not finish within %s", c.timeout), nil
+		return fmt.Sprintf("motel adapt: did not finish within %s", c.timeout), nil
 	case exit != nil:
-		return "", fmt.Errorf("hotserve adapt: %w", exit)
+		return "", fmt.Errorf("motel adapt: %w", exit)
 	case out.over():
 		return msgAdaptationTooLarge, nil
 	}
@@ -206,7 +206,7 @@ func (c *childValidator) adapt(ctx context.Context, staged, host string, door []
 	case errors.As(err, &r):
 		return r.msg, nil
 	case err != nil:
-		return "", fmt.Errorf("hotserve adapt: %w", err)
+		return "", fmt.Errorf("motel adapt: %w", err)
 	}
 	return "", nil
 }

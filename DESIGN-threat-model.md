@@ -6,16 +6,16 @@ the "History" section at the end holds only dated one-liners.
 Amendments are for decisions still fresh or contested and get folded
 into the body once they settle.
 
-This document states what hotserve is defending, who the attacker is,
+This document states what motel is defending, who the attacker is,
 the concrete paths from an entry point to an asset, and how the shipped
 isolation closes or bounds each one.
 [liveswap/DESIGN-sandbox.md](liveswap/DESIGN-sandbox.md) is authoritative
 for the sandbox's behaviour specification; this document places that
 work in the wider attack surface rather than restating it.
 
-Scope: a single Debian 13 box running `hotserve` (a Caddy distribution)
-as the `hotserve` system user, supervising deployed apps as transient
-systemd units under the hotserve user's own service manager via
+Scope: a single Debian 13 box running `motel` (a Caddy distribution)
+as the `motel` system user, supervising deployed apps as transient
+systemd units under the motel user's own service manager via
 liveswap's `systemdRunner` (liveswap/runner_systemd.go). Backups add
 one place off the box: the bucket their repository lives in
 ("Backups"). Multi-node, Windows, and macOS-as-a-server are out of
@@ -27,10 +27,10 @@ scope by product design.
    highest-value item on the box. The `/proc/<supervisor>/environ`
    route is closed by the non-dumpable supervisor and by the app-side
    namespaces ("The shared-UID rule"). Still on disk wherever Caddy
-   persists config (`/var/lib/hotserve/caddy/autosave.json`) — a
+   persists config (`/var/lib/motel/caddy/autosave.json`) — a
    filesystem route, closed by the sandbox view.
 2. **The backup repository's credential** —
-   `/etc/hotserve-backup/repository.env`, root 0600 in a root 0755
+   `/etc/motel-backup/repository.env`, root 0600 in a root 0755
    directory: the repository URL, its password and the storage key.
    With the three, restic reads every app's declared data and all its
    history, what an app has since deleted included, from any machine
@@ -39,39 +39,39 @@ scope by product design.
    days the bucket keeps it. The password outlasts the box: restic
    changes a master key only through a new repository. Ranked under
    the ACME tokens and above the TLS keys because it is every app's
-   data, past and present, readable from anywhere. The hotserve uid
-   cannot read it: root reads the file, and the `hotserve-backup` uid
+   data, past and present, readable from anywhere. The motel uid
+   cannot read it: root reads the file, and the `motel-backup` uid
    holds the values while a job runs ("Backups"). It holds no env
    file: a backup holds what each app declares under its `shared/`.
-3. **TLS private keys** — `/var/lib/hotserve/caddy/**`, mode `0750`
-   owned by `hotserve`.
-4. **Admin API socket** — `/run/hotserve/admin.sock` (the `admin`
+3. **TLS private keys** — `/var/lib/motel/caddy/**`, mode `0750`
+   owned by `motel`.
+4. **Admin API socket** — `/run/motel/admin.sock` (the `admin`
    directive, packaging/Caddyfile); reconfigures the whole server.
-   Gated on being the `hotserve` user, not on the network.
+   Gated on being the `motel` user, not on the network.
 5. **Per-app secrets** — an app's own env vars / `env_file`
-   (`/etc/hotserve/*.env`). Legitimately reachable by that app; the
+   (`/etc/motel/*.env`). Legitimately reachable by that app; the
    goal is to keep them from *siblings*. From accounts beyond the
    file's owner and group it is the file's mode that keeps them (0640
-   root:hotserve as documented; root reads anything); config load and
+   root:motel as documented; root reads anything); config load and
    each launch warn when the mode admits everyone (`warnEnvFileModeOf`,
    liveswap/app.go). Owner and group are not checked. Where the box's
    config repository carries an app's secrets (box/DESIGN-box.md,
    "Secrets"), the env file is
-   `/etc/hotserve/secrets/<app>.env`, written 0640 by the `box` applier
-   into a setgid `root:hotserve` directory, and the values also exist
+   `/etc/motel/secrets/<app>.env`, written 0640 by the `box` applier
+   into a setgid `root:motel` directory, and the values also exist
    encrypted in that repository's history, which the box's key for
-   secrets (`/etc/hotserve/age/identity`, root 0600 in a 0700 root
+   secrets (`/etc/motel/age/identity`, root 0600 in a 0700 root
    directory) and each reader's key decrypt.
-6. **The box's configuration at rest** — `/etc/hotserve/Caddyfile`:
+6. **The box's configuration at rest** — `/etc/motel/Caddyfile`:
    which repository may deploy each app, each app's command and
    flags, which hosts are served, and who may change the file itself.
-   Root-owned, 0644; written only by root — `hotserve init`, the `box`
+   Root-owned, 0644; written only by root — `motel init`, the `box`
    applier, the console ([box/DESIGN-box.md](box/DESIGN-box.md)), and
    the package's postinstall, which puts the starter there only where
    nothing stands or while the file is byte-identical to the starter
    it last wrote. Its record of that starter's digest
-   (`/var/lib/hotserve-package/starter.sha256`, in a 0700 root
-   directory) is root's alone, so the hotserve uid cannot steer an
+   (`/var/lib/motel-package/starter.sha256`, in a 0700 root
+   directory) is root's alone, so the motel uid cannot steer an
    upgrade into overwriting the box's config. A
    writer here outlasts a restart, which is what makes it an asset
    distinct from the admin socket (whose changes do not).
@@ -148,7 +148,7 @@ Properties that matter to the model:
   not. A failed deploy's body carries the app's own bytes on purpose
   (liveswap/journal.go, `deployDetail` in liveswap/app.go): the last
   lines its units wrote, read back with `journalctl` — the one
-  external program hotserve runs, with argument lists of its own
+  external program motel runs, with argument lists of its own
   making — bounded by `deploy_log_lines` (default 40) and 8 KiB; the
   first 512 bytes of a failing health probe's body; and the exit status
   the runner recorded. A line is the units' when journald named one of
@@ -160,14 +160,14 @@ Properties that matter to the model:
   recorded it, or as the runner follows it while it runs), which
   another process could hold only once pids wrap. `deploy_log_lines 0`
   keeps the app's bytes — the tail and the probe body both — on the
-  box; the exit status and the probe's status code are hotserve's
+  box; the exit status and the probe's status code are motel's
   observations and stay. Reading
   the journal is a grant: journald keeps a system user's output in the
-  system journal, so the packaged unit puts hotserve's process in
+  system journal, so the packaged unit puts motel's process in
   `systemd-journal` (`SupplementaryGroups=`, the process and not the
   account, so the apps under the user manager keep the account's
   groups and see no journal in their sandbox anyway). What that
-  widens is what a compromised hotserve reads — every unit's lines —
+  widens is what a compromised motel reads — every unit's lines —
   which the shipped units keep free of secrets (no `--environ`, the
   smoke test asserts it). Every body passes
   four layers before it is written. A streamed deploy (`Accept:
@@ -183,7 +183,7 @@ Properties that matter to the model:
   the filter recognises (as written, JSON-escaped, base64 standard and
   URL alphabets padded and not, hex, URL-escaped, and a URL value's
   password on its own), becomes `[redacted:KEY]`, and the body gains
-  `redacted_env` naming the keys. hotserve is the party that knows
+  `redacted_env` naming the keys. motel is the party that knows
   these values, which is why the filter lives here and not in CI,
   where `::add-mask::` can only hide what the job itself knows.
   Second, an allowlist: the versions the status names and the app's
@@ -223,7 +223,7 @@ Properties that matter to the model:
   a secret the app fetched at runtime and printed in a low-entropy
   form, an inline `env` value (not a secret by policy: the Caddyfile
   is in a repo), or a value the still-running instance was launched
-  with before a hotserve restart if the file has changed since.
+  with before a motel restart if the file has changed since.
   Tested from both sides — a fuzz property that no known value or
   form survives and the JSON stays valid (`FuzzRedactor`), and a
   corpus that the diagnostics a reader needs do (`TestRedactorCorpus`)
@@ -232,7 +232,7 @@ Properties that matter to the model:
 - **Auth failures are throttled in the journal**
   (liveswap/deploytrust/limiter.go). Token *forgery* is infeasible (no private
   key), so this is not a guessing oracle; what
-  an unauthenticated caller can do with failures is make hotserve
+  an unauthenticated caller can do with failures is make motel
   write a Warn per request. Two sliding windows bound that, in one
   lock scope so a burst of concurrent requests cannot each see room:
   per address, 10 failures a minute are logged, and further ones are
@@ -399,7 +399,7 @@ the link points, and a chain of links that are each inside as strings
 (`l1 -> .`, `l1/x/y -> ../..`, `l1/x/y/z/w -> ../..`, then a regular
 file or hardlink under the last) climbs out one directory per hop —
 into the app dir, a sibling app, the supervisor's own state, or the
-user manager's unit directory, as the `hotserve` uid. So the kernel,
+user manager's unit directory, as the `motel` uid. So the kernel,
 not a model of it, judges what resolves where. The write pass goes
 through an `os.Root` (`writeArchive`): every mkdir, open, symlink and
 link is resolved by the Root's own walk, which refuses any hop that
@@ -473,12 +473,12 @@ Residual items for the model:
 The starter config exposes only `:80` returning a static string; the
 entire liveswap/webhook block ships commented out
 (packaging/Caddyfile) — a fresh install has no deploy endpoint. Admin
-is off TCP, on `unix//run/hotserve/admin.sock` (the `admin` directive,
+is off TCP, on `unix//run/motel/admin.sock` (the `admin` directive,
 same file), `RuntimeDirectoryMode=0750` owned by the service user
-(packaging/hotserve.service) — so admin access is gated on *being the
-`hotserve` user*. Every deployed app is that user, but a sandboxed app
-cannot reach `/run/hotserve` at all (the path is not in its view), so
-the gate holds against apps and only hotserve itself can connect. The
+(packaging/motel.service) — so admin access is gated on *being the
+`motel` user*. Every deployed app is that user, but a sandboxed app
+cannot reach `/run/motel` at all (the path is not in its view), so
+the gate holds against apps and only motel itself can connect. The
 commented-out `deploy.example.com` example is a public TLS vhost with
 `liveswap_webhook` behind `deploy_trust`; nothing rate-limits requests
 in front of it, and the handler's own per-address auth-failure throttle
@@ -496,13 +496,13 @@ injection or exhaustion.
 
 ### Supervisor⇄app and app⇄app boundaries
 
-Every app runs as `hotserve`, in its own user namespace and its own PID
+Every app runs as `motel`, in its own user namespace and its own PID
 namespace, with a deny-by-default filesystem view — see "The shared-UID
 rule" and "The shipped mechanism". The network namespace is shared, by
 design. The unit environment is the user manager's defaults
 (`INVOCATION_ID`, …; `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`
 are unset because `/run/user` is not in the view) plus an allowlisted
-slice of hotserve's (`PATH`, `LANG`, `TZ`, `LC_*` — `envAllowlist`,
+slice of motel's (`PATH`, `LANG`, `TZ`, `LC_*` — `envAllowlist`,
 liveswap/app.go; `HOME` is never inherited, `buildEnv` sets it to the
 app's shared dir) — closing *direct*
 inheritance of ACME tokens and any other supervisor secret
@@ -510,17 +510,17 @@ inheritance of ACME tokens and any other supervisor secret
 closed twice over (non-dumpable supervisor; cross-namespace refusal);
 the filesystem routes are closed by absence.
 
-**Where `env_file` values sit once the app runs.** hotserve reads the
+**Where `env_file` values sit once the app runs.** motel reads the
 file itself and hands the pairs to the manager as the transient unit's
 inline `Environment=` property (`unitProperties`,
 liveswap/systemd_dbus.go), never `EnvironmentFile=`. From then on the
-`hotserve` uid — the trust domain that read the file — holds them by
+`motel` uid — the trust domain that read the file — holds them by
 four routes, and nothing else holds them by any; a fifth, a core dump,
 is closed by the unit's limit — enforced by the kernel under a file
 `core_pattern`, and under a piped one by the collector honouring it:
 
 - **The unit's property**, for as long as the unit exists:
-  `systemctl --user -M hotserve@ show -p Environment <unit>` (as that
+  `systemctl --user -M motel@ show -p Environment <unit>` (as that
   uid or as root; a bare `--user` targets the caller's own manager). A
   key that inline `env` or the injected `SOCKET` also sets is not
   here: `buildEnvFull` (liveswap/app.go) emits both and the manager
@@ -533,8 +533,8 @@ is closed by the unit's limit — enforced by the kernel under a file
   closure measured on the spike ("The shared-UID rule", below) runs
   the other way, app to supervisor; this direction follows from the
   same `ptrace_may_access` rule, since the app's namespace is owned by
-  the hotserve uid, which holds `CAP_SYS_PTRACE` in it. Not measured.
-- **hotserve's own memory**, which keeps every value it has read — for
+  the motel uid, which holds `CAP_SYS_PTRACE` in it. Not measured.
+- **motel's own memory**, which keeps every value it has read — for
   a launch, or for the response filter, which reads the file without
   one (`managedApp.secrets` and `redactorFor`, liveswap/app.go) — for
   as long as the app stays configured, behind the non-dumpable floor.
@@ -558,7 +558,7 @@ is closed by the unit's limit — enforced by the kernel under a file
   a core dump for debugging; there is no per-app opt-in.
 
 No account gains a read it did not already have: the file is
-root:hotserve 0640 by the tutorial's install line (nothing in hotserve
+root:motel 0640 by the tutorial's install line (nothing in motel
 enforces that), or, for a file the `box` applier writes, by the
 applier's own mode and the setgid directory it writes into, `/run/user` — the manager's socket and the transient
 file alike — is outside every view (`sandboxNeverReachable`,
@@ -577,26 +577,26 @@ authoritative for its behaviour; this section places it. Status:
 released in v0.3.0, and the secrets it carries (below) in v0.3.1.
 On a box set up from the
 template (`examples/box`; docs/first-deploy.md, step 3) root writes
-the file once, with `hotserve init`, and the config repository's
+the file once, with `motel init`, and the config repository's
 signed pushes write it after that. A box with no `box` block has no
 config webhook, and its file is root's to edit.
 
 The operator's config repository is the only writer of
-`/etc/hotserve/Caddyfile`. Its workflow mints an OIDC token and POSTs
+`/etc/motel/Caddyfile`. Its workflow mints an OIDC token and POSTs
 a bundle — the Caddyfile, the raw commit object of `HEAD`, the tree
 objects on the path to the file, and the first-parent chain back to
 the commit the box runs — to `box_webhook`, a site directive beside
 `liveswap_webhook`. Two processes stand between that request and the
 file, and the boundary between them is the one that matters.
 
-**The handler** (uid hotserve, in the serving process) verifies the
+**The handler** (uid motel, in the serving process) verifies the
 token against the `box` global option's `deploy_trust` through the
 same entry point liveswap's handler uses — same 401, same budgets,
 same `refused` line — so an unauthenticated caller learns nothing it
 could not learn from a deploy webhook. It parses the bundle from
 memory under fixed names and caps, binds the bundle's commit to the
-token's `sha` claim, pre-checks the signature, runs `hotserve
-validate` (and `hotserve-backup validate` where installed) as bounded
+token's `sha` claim, pre-checks the signature, runs `motel
+validate` (and `motel-backup validate` where installed) as bounded
 children with their output redacted, and drops the bundle as one
 regular file for root. It answers by the first result it reads within
 a bounded wait: 202 if that is `verified`, which precedes the install,
@@ -606,11 +606,11 @@ none (a push of the commit the box already runs is answered
 because root's part can take minutes, and a proxy in front of the box
 may cut a request held that long.
 
-**The applier** (`hotserve-box-apply.service`, root, one shot, started
+**The applier** (`motel-box-apply.service`, root, one shot, started
 by a path unit watching the drop directory) trusts nothing the
 handler did. It reads the bundle once into memory and never from disk
 again; takes the signer list from the installed file's raw tokens
-(never from the running configuration, which the hotserve uid
+(never from the running configuration, which the motel uid
 authors); requires the incoming file's `box_webhook` host to equal the
 installed one and the bundle's path to equal the path `init` recorded
 (the box's identity and which file is its: another box's equally
@@ -622,7 +622,7 @@ in under the next signed one); proves the file is the committed file
 (commit, tree and blob hashes); requires first-parent descent from the
 recorded baseline; refuses a file that drops the `box` block, every
 signer, the `box_webhook` site or the key that signed it; and only
-then writes, reloads through `systemctl reload hotserve`, and rolls
+then writes, reloads through `systemctl reload motel`, and rolls
 back — reloading again — on failure. It never runs Caddy's validate or
 adapter: both execute module code on the input and expand `{$VAR}`
 from root's environment.
@@ -652,7 +652,7 @@ the stated 3am contract — and cannot land a sibling
 box's file.
 
 What it changes for T5, honestly. The Caddyfile was root-owned before
-`box` and the hotserve uid never wrote it, so "a supervisor RCE cannot
+`box` and the motel uid never wrote it, so "a supervisor RCE cannot
 persist config" is not a gain — it held under `bin/push` too. The
 delta is the other way: `box` adds a root process that consumes input
 the supervisor controls — a tar reader, a commit and tree parser, a
@@ -662,7 +662,7 @@ re-verifies everything from the bytes, reads them once into memory,
 parses under fixed names and small caps, runs `ssh-keygen` as uid
 65534, trusts the handler for nothing but a well-formed bundle, and
 refuses a Caddyfile with any `import` — an imported file is unsigned
-bytes, and one under a hotserve-writable path would be T5's way to
+bytes, and one under a motel-writable path would be T5's way to
 make a change outlast a restart — including one spelled as a
 placeholder: Caddy expands `{$NAME:default}` before it tokenizes, so
 the applier refuses any `{$` at directive position, in a site address
@@ -670,7 +670,7 @@ or in the `box` block, and checks the file again after expanding
 placeholders with an empty environment (box/DESIGN-box.md, "Reading
 the signed file"). What the workflow is *told* remains the serving
 process's word: the response and the result poll are served by
-hotserve, so a T5 can lie to CI; it cannot change root's record or
+motel, so a T5 can lie to CI; it cannot change root's record or
 root's file *itself*. What it can do through root is bounded by the
 signers, not closed: the token-to-commit binding is the handler's
 check, and root cannot repeat it (the token is not in the bundle, and
@@ -684,13 +684,13 @@ sign; dropping an unsigned or self-authored file is refused outright.
 Skipping the handler's validation, which root never repeats, is a
 remaining T5 capability bounded by the signature, identity, proof and
 descent checks: a signer-signed file that fails to load is rolled back,
-one that loads but `hotserve-backup validate` would have refused is
+one that loads but `motel-backup validate` would have refused is
 installed. The box repository's
 README rule that unmerged configuration stays unsigned is what keeps
 that set to `main`'s own history.
 
 What it does not close. `systemctl reload`'s exit status is the
-hotserve uid's word; the `applied` phase trusts it, the file on disk
+motel uid's word; the `applied` phase trusts it, the file on disk
 does not depend on it, and `systemctl restart` is the remedy. Root's
 never-cut-the-branch guard checks presence, and the handler's
 reachability check covers only what the box server's protocols,
@@ -711,10 +711,10 @@ the box's own X25519 key and to readers — the signers' SSH keys, or an
 age key of a person's own. The bundle carries the ciphertext; the
 handler and root prove it against the signed commit as they prove the
 Caddyfile; root alone decrypts it, after every signature on the chain
-has verified, and writes `/etc/hotserve/secrets/<app>.env`. What
+has verified, and writes `/etc/motel/secrets/<app>.env`. What
 changes:
 
-- **Nothing new for the hotserve uid or root.** T5 reads every env file
+- **Nothing new for the motel uid or root.** T5 reads every env file
   now, as it reads every hand-made one, and cannot read the box's key
   (root 0600, in a 0700 root directory). It can answer the workflow's
   `GET /` with any key; the workflow only compares that answer with
@@ -724,7 +724,7 @@ changes:
   Root decrypts nothing a listed signer did not commit, so a T5 bundle
   dropped into `in/` cannot have root open hostile age input.
 - **Nothing new for a signer**, either: a signed commit could already
-  add a site that serves any file the hotserve uid reads, env files
+  add a site that serves any file the motel uid reads, env files
   included (examples/box/README.md, "Secrets").
 - **New: the values leave the box, encrypted.** GitHub, every clone and
   every fork hold them for ever. A reader's private key with read
@@ -753,7 +753,7 @@ changes:
 
 ### Backups — `backups/`
 
-`hotserve-backup` copies what each app's `backup` block declares — its
+`motel-backup` copies what each app's `backup` block declares — its
 SQLite databases and the files under its `shared/` — into one restic
 repository off the box every hour, and drills a restore of every app
 each week. [backups/README.md](backups/README.md) is authoritative for
@@ -762,7 +762,7 @@ the operator's part; this section places them. Status: built on the
 `backup` branch, released when it merges into `main`, which this
 section gates (#172). It adds no entry point: it is a program of its
 own, run by root's timers and root's hand, and the server's one use of
-it is the box handler's `hotserve-backup validate`. What it adds is
+it is the box handler's `motel-backup validate`. What it adds is
 asset 2, a root service that handles every app's data, and a bucket
 whose rules the provider enforces.
 
@@ -770,23 +770,23 @@ whose rules the provider enforces.
 table). The run is root, with `CAP_SYS_ADMIN`, `CAP_DAC_READ_SEARCH`,
 `CAP_CHOWN` and `CAP_FOWNER` of root's and nothing else, in the host's
 mount and PID namespaces, since the manager has to see its mounts. It
-plans from `/etc/hotserve/Caddyfile` — the file, not the running
+plans from `/etc/motel/Caddyfile` — the file, not the running
 server — and does every step as a transient unit with a
 deny-by-default view:
 
 - what parses an app's bytes — `sqlite3`'s copy and check, a restore's
-  check and install — runs as `hotserve`, in user and PID namespaces of
+  check and install — runs as `motel`, in user and PID namespaces of
   its own, with no network and no credential, seeing one app;
 - what holds the credential — restic, in every unit that runs it — runs
-  as `hotserve-backup` and sees nothing of an app, or that app's
+  as `motel-backup` and sees nothing of an app, or that app's
   declared paths read-only (the upload, with `CAP_DAC_READ_SEARCH`), or
   one empty directory (the fetch);
 - the plan unit, which runs the adapter on the file, runs as
-  `hotserve-backup` in namespaces of its own, with no network and no
-  credential, and sees `/etc/hotserve` read-only;
+  `motel-backup` in namespaces of its own, with no network and no
+  credential, and sees `/etc/motel` read-only;
 - root itself opens an app's paths as `O_PATH` only, refusing a link
   anywhere on the way, binds what it opened, chowns a fetch to
-  `hotserve` by name in a view of nothing else, and starts units. It
+  `motel` by name in a view of nothing else, and starts units. It
   reads the credential file only for which repository it names; the
   manager reads it, as root, for each restic unit.
 
@@ -819,9 +819,9 @@ box at least once every 90.
   root's is root. `setup` is a person's: it shows the repository
   password on its terminal.
 - **A signer of the box repository** chooses what is backed up. A
-  `backup` block reaches `/etc/hotserve/Caddyfile` by a signed push, as
+  `backup` block reaches `/etc/motel/Caddyfile` by a signed push, as
   the rest of the file does ("Config webhook"): the handler, as the
-  hotserve uid, runs `hotserve-backup validate` on it after `hotserve
+  motel uid, runs `motel-backup validate` on it after `motel
   validate` (box/validate.go), and the applier proves it and runs
   neither. On a box with no box repository, root edits the file by
   hand. Either way the run leans on no earlier check: the plan unit
@@ -831,16 +831,16 @@ box at least once every 90.
   operator ("A signer's laptop is the operator").
 - **The administrator** (optional; docs/hardening.md, step 3) is in
   `adm` alone, with no `sudo`. They read the journal — restic's stderr
-  among it, which names an app's files — and run `hotserve-backup
+  among it, which names an app's files — and run `motel-backup
   status` and `validate`, which need no privilege: the record,
-  `/var/lib/hotserve-backup/status.json`, is world-readable and holds
+  `/var/lib/motel-backup/status.json`, is world-readable and holds
   no secret (backups/README.md, "Status"). They choose nothing and
   cannot read the credential. An agent fits here, never in root's role.
-- **The `hotserve-backup` uid** runs every restic unit, with the
+- **The `motel-backup` uid** runs every restic unit, with the
   credential in its environment while the unit runs: whoever is that
   uid reads it there. It is a system account with no shell and no home,
   made by the package or by `setup` with the comment
-  `made-by-hotserve`; any other account of that name is refused before
+  `made-by-motel`; any other account of that name is refused before
   any unit (backups/README.md, "What it refuses"). The server and the
   apps can neither read restic's environment nor signal it.
 - **The storage provider** holds the repository, encrypted under its
@@ -863,7 +863,7 @@ box at least once every 90.
   path is the app's to replace with a link while it runs, so the run
   opens each one itself, refusing a link anywhere on the way, binds
   what it opened (`mount(2)` from `/proc/self/fd/<n>`), and refuses a
-  `shared/` that is not the `hotserve` user's. Its bytes are parsed
+  `shared/` that is not the `motel` user's. Its bytes are parsed
   only by units that hold nothing: a FIFO in a database's place holds
   `sqlite3` five minutes at most (backups/README.md, "Databases"), and
   a restore puts a link back as a link, never followed, and no setuid
@@ -884,10 +884,10 @@ box at least once every 90.
   residuals). What is in the repository stays: the box cannot remove
   it, and the look sees the snapshots stop. A declaration stays inside
   its app's `shared/`, whoever signed it: the run refuses an absolute,
-  unclean or escaping path, as `hotserve validate` does
+  unclean or escaping path, as `motel validate` does
   (liveswap/README.md, "Declaring backups"). The credential does not
   ride the channel: `setup` writes it at a terminal into
-  `/etc/hotserve-backup`, outside the channel's `/etc/hotserve`
+  `/etc/motel-backup`, outside the channel's `/etc/motel`
   (backups/README.md, "Setup"). A signer's software key is the box all
   the same ("Config webhook").
 - **The administrator** gains what the journal and the record show —
@@ -936,17 +936,17 @@ account, never the running server's word — "what gets backed up is not
 for the process the internet talks to to say" (backups/README.md, "The
 Caddyfile is read without the server's environment"); root opens app
 data as `O_PATH`, a descriptor that cannot read; and what a unit under
-the hotserve uid reports — a dump's result, a check's — is decoded
+the motel uid reports — a dump's result, a check's — is decoded
 strictly against what was asked. The credential is never under its uid:
-the file is root's, restic runs as `hotserve-backup`, and the staging
+the file is root's, restic runs as `motel-backup`, and the staging
 and restore directories are root's, 0700 (`open`,
 backups/engine/engine.go), reached by a unit only through a bind the
-manager makes. The hotserve uid holds every app's data already, so a
+manager makes. The motel uid holds every app's data already, so a
 dump or a restore under it shows it nothing new; it can change what the
 next snapshot holds, as T1 can of its own app, and no earlier one.
-Skipping the handler's `hotserve-backup validate` installs a signed
+Skipping the handler's `motel-backup validate` installs a signed
 file that the next run refuses, red and named ("Config webhook").
-hotserve validates a declaration and does nothing else with it; the
+motel validates a declaration and does nothing else with it; the
 supervisor still holds no grant.
 
 **Measured on a real provider.** `v0.5.0-rc1` ran the release-candidate
@@ -958,7 +958,7 @@ was `AccessDenied` (check 3); restic left no lock, a lock held 30
 minutes included (check 3), and `prune` only hid (check 5); the attack
 and the recovery above (check 4); a read-only key was refused by
 `setup` at once (check 6); and a rebuilt box with another uid and gid
-for `hotserve` restored every file under the new ids (check 7). Not yet
+for `motel` restored every file under the new ids (check 7). Not yet
 read: whether B2's rule removes a marker hidden through the S3
 endpoint, as it removed one hidden through its own API within two days
 of a one-day rule
@@ -980,12 +980,12 @@ enforcement, a directory the box is joined to, and the account's name.
 
 ### Install-time — `packaging/postinstall.sh`
 
-Runs as root at install; creates the `hotserve` user, chowns
-`/var/lib/{hotserve,liveswap}`, enables linger so the hotserve user
+Runs as root at install; creates the `motel` user, chowns
+`/var/lib/{motel,liveswap}`, enables linger so the motel user
 manager runs without a session, and installs or replaces the starter
-config at `/etc/hotserve/Caddyfile` only as asset 6 says: where nothing
+config at `/etc/motel/Caddyfile` only as asset 6 says: where nothing
 stands, or while the file is byte-identical to the starter recorded in
-root's own `/var/lib/hotserve-package`. Supply-chain attacks on hotserve's own
+root's own `/var/lib/motel-package`. Supply-chain attacks on motel's own
 build land here, but they run in CI, not from a deployed app — out of
 scope for the runtime model, in scope for release signing (roadmap).
 
@@ -994,7 +994,7 @@ scope for the runtime model, in scope for release signing (roadmap).
 - **T1 — Poisoned dependency running *inside* a deployed app.** The
   primary threat, per the npm 2025 wave: a transitive dependency's
   runtime payload sweeps the filesystem for `.env`/tokens and
-  exfiltrates. Already has code execution as `hotserve`. This is the
+  exfiltrates. Already has code execution as `motel`. This is the
   attacker per-app isolation exists to stop.
 - **T2 — Stolen deploy token / compromised CI identity.** A short-lived,
   claim-scoped token (or control of the CI identity that mints one). Can
@@ -1021,7 +1021,7 @@ scope for the runtime model, in scope for release signing (roadmap).
   on every request — the budgets bound the journal, not the work),
   and any pre-auth proxy/Caddy surface.
 - **T5 — RCE in the supervisor itself** (a Caddy or liveswap bug). Low
-  probability, catastrophic: it *is* the `hotserve` user, so it already
+  probability, catastrophic: it *is* the `motel` user, so it already
   holds every asset short of root. No app-isolation design prevents
   this; the design question is only how much *worse* it can get (does it
   reach root?) — which is why the supervisor holds no grant (see "The
@@ -1070,7 +1070,7 @@ in the repository — every value encrypted to it, offline.
 
 ## The shared-UID rule
 
-Everything liveswap touches runs as one UID: hotserve, the hotserve
+Everything liveswap touches runs as one UID: motel, the motel
 user's `systemd --user` manager, and every app. The kernel gates
 `/proc/<pid>/{environ,root,cwd,mem,fd,maps}` on
 `ptrace_may_access(PTRACE_MODE_READ)`, which any same-UID caller passes
@@ -1105,7 +1105,7 @@ the mechanism:
    Every app unit gets both. There is no lesser configuration and no
    opt-out: a host that cannot deliver both namespaces fails the start
    rather than running any app bare (`unitFor` refuses a spec without
-   a sandbox). A unit hotserve did not start with them — a stale one
+   a sandbox). A unit motel did not start with them — a stale one
    from a development build, or another same-uid process's — is
    refused at reattach and replaced by a sandboxed relaunch, so "every
    unit" holds for adopted units too. That check is for an honest
@@ -1115,12 +1115,12 @@ the mechanism:
 
    **Corollary: an opt-out is impossible on a shared uid.** A per-app
    "sandbox off" reads as per-app; it is not — a bare app reads every
-   sibling's data and hotserve's keys. The rule that makes the user
+   sibling's data and motel's keys. The rule that makes the user
    namespace load-bearing is the rule that makes any app outside a
    namespace every app's problem.
 
 2. **A non-dumpable supervisor is the floor.**
-   `prctl(PR_SET_DUMPABLE, 0)` makes hotserve's `/proc` entries require
+   `prctl(PR_SET_DUMPABLE, 0)` makes motel's `/proc` entries require
    `CAP_SYS_PTRACE`, which apps never hold — the unit's
    `CapabilityBoundingSet=` is empty and `NoNewPrivileges=` stops an
    `execve` from acquiring any — with or without user namespaces.
@@ -1129,9 +1129,9 @@ the mechanism:
    Caddy and every package depending on them; only
    `syscall`-closure-only leaves that sort earlier can precede it, and
    those cannot touch `/proc` (measured with `GODEBUG=inittrace=1`:
-   the 17th of 460 initializers on hotserve, two such leaves ahead of
+   the 17th of 460 initializers on motel, two such leaves ahead of
    it; `TestInitRunsBeforeOS` pins `syscall < harden < os` in any
-   binary that runs it) — so any binary importing liveswap (hotserve or
+   binary that runs it) — so any binary importing liveswap (motel or
    an xcaddy build) is non-dumpable before `main`; a failure is fatal.
    Pinned by a unit test and by the real-systemd e2e suite (scenario
    11). It closes the `/proc/<supervisor>/environ` and
@@ -1157,9 +1157,9 @@ the mechanism:
    transient unit, bounded at 30 s, so any process holding that uid can
    interfere with it. A failed probe fails the whole server start, so
    this is an availability attack on the supervisor, not a way to
-   weaken an app: interference cannot produce a running hotserve with
+   weaken an app: interference cannot produce a running motel with
    a lesser sandbox. A probe made to fail, or to time out twice, keeps
-   hotserve down until an operator starts it — a refused start exits 1,
+   motel down until an operator starts it — a refused start exits 1,
    which the unit never retries; a start stretched past the unit's
    `TimeoutStartSec` is restarted by systemd, which repeats the
    exposure rather than ending it. Either way the bound is the same
@@ -1169,12 +1169,12 @@ the mechanism:
    verdict is deliberately NOT cached, so interference costs the next
    start rather than pinning a verdict until the manager
    restarts. The remedy is to remove the interfering process, which
-   runs as the hotserve uid and is therefore either hotserve's own app
+   runs as the motel uid and is therefore either motel's own app
    or something already in the trust domain.
 
 3. **Resource caps need a read-only cgroupfs inside the sandbox.** The
    cgroup subtree under `user@<uid>.service` is delegated to — owned
-   by — the hotserve UID, so `MemoryMax=`/`TasksMax=` on a user-manager
+   by — the motel UID, so `MemoryMax=`/`TasksMax=` on a user-manager
    unit is a limit the app can rewrite in `/sys/fs/cgroup` (or escape
    by migrating its PIDs) unless that tree is read-only in its view.
    Runtimes only ever *read* it. `ProtectControlGroups=` is set on
@@ -1192,7 +1192,7 @@ transient-unit properties by a supervisor that holds no grant.
 unit *properties*, so a `StartTransientUnit` grant on the *system*
 manager that the supervisor can shape is root-equivalent (a unit can
 name `User=root`, any `ExecStart=`) — a naive systemd runner would
-make T5 *worse*. hotserve instead talks to the hotserve user's own
+make T5 *worse*. motel instead talks to the motel user's own
 manager over its private socket (`/run/user/<uid>/systemd/private`):
 no session bus, no polkit, no grant of any kind. It can create units
 only as itself, under `NoNewPrivileges`, so a supervisor RCE gains
@@ -1253,14 +1253,14 @@ beside its `ExecStartEx`: the manager spawns one process per unit
   on the first `socket()` naming it, so `sctp`, `l2tp_ip`, `l2tp_ip6`
   and `smc` are an app's to open unless the operator took that step,
   which makes them unavailable to every program on the box (with
-  `dccp`, `tipc` and `rds` against a root-loaded module); hotserve
+  `dccp`, `tipc` and `rds` against a root-loaded module); motel
   ships no host policy. Open by default; the modules a netlink socket
   or a `socketpair()` loads are in Residual risks (#315).
 - Lifecycle: `Restart=no` (the liveswap watchdog is the sole
-  restarter of apps; hotserve.service itself is restarted by systemd
+  restarter of apps; motel.service itself is restarted by systemd
   after a crash, never after a refused start), `KillMode=control-group`,
   `TimeoutStopSec=` (the app's `grace`), no `ExecStopPost=` (the
-  instance's socket goes with its run dir when hotserve retires it,
+  instance's socket goes with its run dir when motel retires it,
   `socketRef.retire`; on a user manager a second process of a unit
   cannot join its IPC namespace, #311),
   `LimitCORE=0` on both limits (no core dump of an app; "Where
@@ -1270,18 +1270,18 @@ beside its `ExecStartEx`: the manager spawns one process per unit
   `UnsetEnvironment=XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS`.
 - What it runs: `Type=simple` (`oneshot` for a `pre_start`),
   `ExecStart=`, `WorkingDirectory=` (the release dir), `Environment=`,
-  `Description=`, `SyslogIdentifier=hotserve-<app>`,
+  `Description=`, `SyslogIdentifier=motel-<app>`,
   `StandardOutput=journal`, `StandardError=journal`.
 
 **The probe stays.** At `App.Start` — every config activation —
-hotserve starts a real transient unit with this property set and reads
+motel starts a real transient unit with this property set and reads
 back from inside it that both namespaces engaged and that the unit's
 own seccomp set is in force (`Seccomp: 2`, and a user namespace
 `RestrictNamespaces=` refuses it). The verdict is
 cached against the manager connection's generation
 (`userManagerClient.cachedSandboxCapability`): later activations on
 the same connection read the cache, and a redial (a manager restart,
-or hotserve's own) starts a new generation that the next `Start`
+or motel's own) starts a new generation that the next `Start`
 measures afresh. A unit launched between a redial and that next
 `Start` — a watchdog relaunch after the manager came back — is not
 preceded by a probe; if the host can no longer deliver the namespaces
@@ -1307,7 +1307,7 @@ The two mitigation axes are orthogonal: *isolate the runtime* (above)
 and *shrink the prize*. A symmetric, long-lived deploy secret would be
 bad on two counts: the verifier would store the same value it checks
 (so the prize physically sits in the supervisor's env), and theft would
-be permanent. hotserve uses asymmetric verification — the box holds
+be permanent. motel uses asymmetric verification — the box holds
 only public material:
 
 - **OIDC (CI, primary):** the box verifies a per-run token against the
@@ -1328,7 +1328,7 @@ only public material:
   otherwise do.
 - **Local key (no OIDC: a laptop, or a runner without it):** the box
   trusts a public key (`deploy_trust local`); the operator mints tokens with the private
-  half (`hotserve deploy-token`). The signing key never touches the
+  half (`motel deploy-token`). The signing key never touches the
   box. The block's `audience` names the box a token is for; without
   one — warned about at load — a token minted for any box that trusts
   the same key is accepted.
@@ -1359,7 +1359,7 @@ the model:
   one its issuer set; for a local one, at most its block's
   `max_token_ttl` after its `iat` (24h unless the block sets one). The
   box refuses a local token minted to live longer, or without an `iat`,
-  and `hotserve deploy-token` warns above an hour.
+  and `motel deploy-token` warns above an hour.
 
 What it does **not** do: ACME tokens and TLS keys still live on the box,
 so the sandbox is still required. Auth design shrinks the prize; it
@@ -1369,7 +1369,7 @@ does not isolate the runtime.
 
 - **An app's own secrets and its own database are reachable by
   definition** — not a bug, stated so operators do not expect otherwise.
-- **Install-time supply chain** (hotserve's own build) is a CI concern;
+- **Install-time supply chain** (motel's own build) is a CI concern;
   release signing is the roadmap answer, not a runtime control.
 - **T5 is contained, not prevented** — a supervisor RCE holds every
   asset short of root. It does not reach root because the supervisor
@@ -1379,13 +1379,13 @@ does not isolate the runtime.
   re-verifies from scratch, and the exit status of `systemctl reload`.
   The backup run is another root service, under the same rule: it
   reads nothing the serving process writes, and what its units under
-  the hotserve uid report is decoded strictly against what was asked
+  the motel uid report is decoded strictly against what was asked
   ("Backups").
-- **The reload's exit status is the hotserve uid's word.** The `box`
+- **The reload's exit status is the motel uid's word.** The `box`
   applier marks a push `applied` on it. A compromised supervisor can
   say "loaded" and keep serving the old configuration until a restart;
   the file on disk is root's regardless, and `systemctl restart
-  hotserve` is the remedy. Reading the admin API from root to check
+  motel` is the remedy. Reading the admin API from root to check
   would be the same trust in another form, and was rejected.
 - **Root's never-cut-the-branch guard is presence; reachability is the
   handler's.** A pushed Caddyfile that keeps a `box` block, a signer,
@@ -1398,9 +1398,9 @@ does not isolate the runtime.
   limit — the `servers` option's or a `timeouts` directive's — past
   what a push can meet, a floor or the rate's ceiling (box/DESIGN-box.md, step
   6) — a check a
-  supervisor RCE skips with the rest of the handler, and one `hotserve
+  supervisor RCE skips with the rest of the handler, and one `motel
   init` does not run. Neither catches a mistyped `claim`, a host
-  without a certificate, or a key no laptop holds, any of which strands the box. The remedy is root on the box: `hotserve init`
+  without a certificate, or a key no laptop holds, any of which strands the box. The remedy is root on the box: `motel init`
   again, or a hand edit the next signed push overwrites.
 - **A signer's software-held key is the box.** Nothing on the box
   distinguishes a signature made by the operator from one made by
@@ -1456,10 +1456,10 @@ does not isolate the runtime.
   administrator can give any account of its own the backup account's
   uid, and whoever holds that uid is the restic process and reads the
   credential from its environment. No check on the box stops that.
-- **The `hotserve-backup` account is trusted by name and mark.** Every
+- **The `motel-backup` account is trusted by name and mark.** Every
   `setup`, run, restore and drill asks that the account of that name be
-  the one in `/etc/passwd`, resolved line for line, with hotserve's
-  comment `made-by-hotserve`, and refuses any other, a directory's
+  the one in `/etc/passwd`, resolved line for line, with motel's
+  comment `made-by-motel`, and refuses any other, a directory's
   included (backups/README.md, "What it refuses"). Past that it is
   trusted: what root does to it afterwards — a shell, a password, a
   group — is root's, and whoever then logs in as it reads a running
@@ -1467,7 +1467,7 @@ does not isolate the runtime.
   well was deferred by the owner (2026-09-26,
   backups/design/plan.md).
 - **Sibling localhost ports** — closed for the contract: nothing
-  hotserve runs listens on a port. Each instance binds a unix socket
+  motel runs listens on a port. Each instance binds a unix socket
   in a directory of its own (`<root>/<app>/run/<nonce>/app.sock`, the
   only `run/` entry in that instance's view), and a sibling's socket is
   outside the view like the rest of the sibling.
@@ -1480,7 +1480,7 @@ does not isolate the runtime.
   with protocol 132, 115 or 256 loads `sctp`, `l2tp_ip`/`l2tp_ip6` or
   `smc` and gives the app a live socket into it: the step is the
   operator's, because a modprobe.d file is the whole box's setting and
-  hotserve's package carries no host policy. On every box, the modules
+  motel's package carries no host policy. On every box, the modules
   an app loads through the families it has. `AF_NETLINK`
   is admitted for `getifaddrs()`, and a `socket(AF_NETLINK, SOCK_RAW,
   n)` loads the module for protocol `n` as any user and hands the app
@@ -1508,10 +1508,10 @@ does not isolate the runtime.
 - **The socket name is app-writable, and `connect(2)` follows
   symlinks.** The instance's `run/<nonce>/` is bound writable, so an
   app can replace its socket with a symlink to a socket outside its
-  view — hotserve's admin socket, a sibling's — and a proxy that
+  view — motel's admin socket, a sibling's — and a proxy that
   dialled the *name*
-  would connect through it in hotserve's namespace: a confused deputy
-  handing the admin API to the world. hotserve therefore never dials
+  would connect through it in motel's namespace: a confused deputy
+  handing the admin API to the world. motel therefore never dials
   the name. The first successful connect opens the file
   `O_PATH|O_NOFOLLOW` (a symlink comes back as the symlink and is
   refused; only `S_IFSOCK` passes) and hard-links that inode, via the
@@ -1546,11 +1546,11 @@ does not isolate the runtime.
   when an app that wants no network exists (it would also cut the app
   off from any database): #57.
 - **Resource exhaustion** — a runaway app stalls its *siblings*: under
-  a fork bomb a second app's requests ran to 10 s while hotserve, in
+  a fork bomb a second app's requests ran to 10 s while motel, in
   `system.slice`, kept a 5–9 ms median (the root splits CPU evenly
   between the two slices), a leak is taken by the global OOM killer
   (the app first: user-manager units run at `oom_score_adj` 200 and
-  hotserve.service at 0 — systemd's defaults, which hotserve does not
+  motel.service at 0 — systemd's defaults, which motel does not
   set and no test holds) and forks
   are bounded by the user manager's default `TasksMax=` (measured;
   DESIGN-liveswap.md "Resource caps"). Per-app `memory_max`,
@@ -1626,7 +1626,7 @@ Dated one-liners; the full text of each is in git.
   `X-Liveswap-Secret` header) replaced by `deploy_trust` (OIDC + local
   key). The former top asset left the box.
 - 2026-08-29 (#34, `17f1a04`) — Apps run as transient units on the
-  hotserve user's own manager: neither B nor C. Restart-survival
+  motel user's own manager: neither B nor C. Restart-survival
   (`Reattach`) shipped with it.
 - 2026-08-30 (#38, `6a080d0`) — Non-dumpable supervisor; the shared-UID
   rule recorded, corrected by the spike measurement that a user
@@ -1649,7 +1649,7 @@ Dated one-liners; the full text of each is in git.
   status field removed; the runner refuses a spec without a sandbox;
   reattach verifies the live unit's namespaces. Closed by construction:
   the bind-source TOCTOU race (no attacker-controlled app runs outside
-  a sandbox; hotserve and the user manager still share the uid, and
+  a sandbox; motel and the user manager still share the uid, and
   are the trust domain), the app-writable recorded tier (no record), and
   "what a bare app leaves behind in `shared/`" (nothing runs bare). The
   pre-#40 "reachable today" attack-path table described bare apps and
@@ -1668,18 +1668,18 @@ Dated one-liners; the full text of each is in git.
   pull. Actor and attribution claims in `deployed_by` (#111) landed
   the day before.
 - 2026-10-09 — `box` designed (box/DESIGN-box.md): the config
-  repository becomes the only writer of `/etc/hotserve/Caddyfile`,
+  repository becomes the only writer of `/etc/motel/Caddyfile`,
   through an OIDC-authenticated webhook and a root applier that
   verifies an SSH commit signature, the file's membership in the
   commit, and descent from the commit the box runs. The configuration
   at rest joins the asset list (5); T6, the compromised config-repo
-  identity, joins the profiles; the `HOTSERVE_CONFIG` sudoers grant
+  identity, joins the profiles; the `MOTEL_CONFIG` sudoers grant
   leaves the model when the applier ships, the secrets grant when
   secrets ride the same channel.
 - 2026-10-11 — `box` built: the handler (step 6 reachability
-  included), the root applier, `hotserve init` and the template that
+  included), the root applier, `motel init` and the template that
   applies by signed push (box/DESIGN-box.md, History). `bin/push` and the
-  `HOTSERVE_CONFIG` grant are gone from the template; the tutorial sets
+  `MOTEL_CONFIG` grant are gone from the template; the tutorial sets
   up the config repository on day 0, an administrator is optional and
   holds only the secrets grant, and root keeps key-only SSH as the way
   back.

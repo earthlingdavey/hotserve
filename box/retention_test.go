@@ -197,7 +197,7 @@ func TestStrandedRespectsWorkInFlight(t *testing.T) {
 	}
 }
 
-// What the hotserve uid can put in stage/: root reads only `<id>.auth`,
+// What the motel uid can put in stage/: root reads only `<id>.auth`,
 // never follows a symlink there, never blocks on a FIFO, removes what it
 // sweeps whole, and leaves every other name alone.
 func TestRetentionHostileStage(t *testing.T) {

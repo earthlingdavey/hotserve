@@ -568,7 +568,7 @@ func (ma *managedApp) handleFailure(ctx context.Context, c collaborators, inst *
 		}
 	}
 
-	// A pre_start a hotserve restart left running holds every launch
+	// A pre_start a motel restart left running holds every launch
 	// until it ends (Sweep): stopping this instance first would turn
 	// an unhealthy app into a down one for that long. It is left
 	// serving, as while a deploy runs, and the restart is tried again

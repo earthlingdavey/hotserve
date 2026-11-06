@@ -8,7 +8,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 )
 
 // defaultedApp mirrors what Provision produces for an app with only a

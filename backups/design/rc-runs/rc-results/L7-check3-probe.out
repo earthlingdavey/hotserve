@@ -1,4 +1,4 @@
-bob@box1:~$ sudo systemctl stop hotserve-backup.timer hotserve-backup-drill.timer
+bob@box1:~$ sudo systemctl stop motel-backup.timer motel-backup-drill.timer
 ^@[exit 0, 0.0603693s, 2026-10-05T18:06:04Z]
 ## as written in #168 (no RESTIC_PASSWORD; a 3 s sleep):
 Fatal: cannot read both password and data from stdin

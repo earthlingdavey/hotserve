@@ -1,8 +1,8 @@
 # e2e only: mints the local deploy keypair + token into /shared before
-# hotserve starts (see e2e/mint-token.sh).
+# motel starts (see e2e/mint-token.sh).
 [Unit]
 Description=e2e: mint the local deploy token
-Before=hotserve.service
+Before=motel.service
 
 [Service]
 Type=oneshot

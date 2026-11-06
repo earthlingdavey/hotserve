@@ -12,7 +12,7 @@
 # Caddyfile is baked at image build and the manager's pid is a runtime
 # value — so the two /proc checks report "skipped" here, and the
 # systemd suite asserts exactly that. Those routes are covered from
-# outside the unit instead (denied_to_hotserve, systemd.sh).
+# outside the unit instead (denied_to_motel, systemd.sh).
 PROBE_DNS_NAME=e2e-artifacts
 export PROBE_DNS_NAME
 . ./sandbox-view.sh

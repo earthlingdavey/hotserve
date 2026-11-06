@@ -40,7 +40,7 @@ func TestApplyHappy(t *testing.T) {
 }
 
 // A replay of the applied file in a new commit: no_change advances the
-// baseline and writes nothing to /etc/hotserve.
+// baseline and writes nothing to /etc/motel.
 func TestApplyNoChange(t *testing.T) {
 	b := newTestBox(t)
 	c1 := b.repo.commit(b.v1, &b.alice, b.base)

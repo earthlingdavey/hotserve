@@ -44,7 +44,7 @@ func TestFailureDetailPreStartExit(t *testing.T) {
 	rig := newTestRig(t)
 	rig.spec.preStart = []string{"./migrate"}
 	rig.spec.deployLogLines = 40
-	rig.runner.runOnceErr = runOnceExit("exit status 3", "hotserve-demo.v1.x.prestart.service", "failed", 731)
+	rig.runner.runOnceErr = runOnceExit("exit status 3", "motel-demo.v1.x.prestart.service", "failed", 731)
 	j := &fakeJournal{lines: []string{"migrate: schema v1 -> v2", "migrate: cannot open app.db"}}
 	rig.ma.journal = j
 
@@ -71,8 +71,8 @@ func TestFailureDetailPreStartExit(t *testing.T) {
 	// And by the pre_start's main process, the pid the manager recorded,
 	// under the app's identifier: journald keeps no unit on a line it
 	// reads after its writer has gone.
-	if j.of.pid != 731 || j.of.ident != "hotserve-demo" {
-		t.Fatalf("journal asked by pid %d under %q, want 731 under hotserve-demo", j.of.pid, j.of.ident)
+	if j.of.pid != 731 || j.of.ident != "motel-demo" {
+		t.Fatalf("journal asked by pid %d under %q, want 731 under motel-demo", j.of.pid, j.of.ident)
 	}
 	var names []string
 	for _, p := range ld.Phases {
@@ -186,7 +186,7 @@ func TestFailureDetailProbe(t *testing.T) {
 		t.Fatalf("detail = %+v", ld.Detail)
 	}
 	if ld.Detail.Exit != "" {
-		t.Fatalf("a stopped-by-hotserve instance must not report an exit as the cause: %q", ld.Detail.Exit)
+		t.Fatalf("a stopped-by-motel instance must not report an exit as the cause: %q", ld.Detail.Exit)
 	}
 	if ld.Detail.LogTail != nil || ld.Detail.LogTailError != "" {
 		t.Fatalf("an empty journal is no tail and no error: %+v", ld.Detail)
@@ -245,12 +245,12 @@ func TestJournalArgs(t *testing.T) {
 	since := time.Unix(1790000000, 0)
 	window := "--user --no-pager --quiet -n 41 --since @1789999999"
 	units := "_SYSTEMD_USER_UNIT=a.prestart.service _SYSTEMD_USER_UNIT=a.service"
-	of := tailOf{units: []string{"a.prestart.service", "a.service"}, pid: 731, ident: "hotserve-demo"}
+	of := tailOf{units: []string{"a.prestart.service", "a.service"}, pid: 731, ident: "motel-demo"}
 	for _, c := range []struct {
 		name      string
 		got, want []string
 	}{
-		{"streams, by unit or by pid", streamArgs(of, since, 40), strings.Fields(window + " -o cat --output-fields=_STREAM_ID " + units + " + _PID=731 SYSLOG_IDENTIFIER=hotserve-demo")},
+		{"streams, by unit or by pid", streamArgs(of, since, 40), strings.Fields(window + " -o cat --output-fields=_STREAM_ID " + units + " + _PID=731 SYSLOG_IDENTIFIER=motel-demo")},
 		{"streams, no pid recorded", streamArgs(tailOf{units: of.units, ident: of.ident}, since, 40), strings.Fields(window + " -o cat --output-fields=_STREAM_ID " + units)},
 		{"streams, no identifier to go with the pid", streamArgs(tailOf{units: of.units, pid: 731}, since, 40), strings.Fields(window + " -o cat --output-fields=_STREAM_ID " + units)},
 		{"tail, the units or their streams", tailArgs(of.units, []string{"0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210"}, since, 40), strings.Fields(window + " -o cat " + units + " + _STREAM_ID=0123456789abcdef0123456789abcdef _STREAM_ID=fedcba9876543210fedcba9876543210")},

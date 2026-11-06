@@ -244,7 +244,7 @@ func TestIntegrationSystemdUnitIPCAndShmArePrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canary := "/dev/shm/hotserve-itest-" + n
+	canary := "/dev/shm/motel-itest-" + n
 	t.Cleanup(func() { _ = os.Remove(canary) })
 	spec := scriptApp(t, "readlink /proc/self/ns/ipc > ns.txt\necho x > "+canary+"\n")
 	if err := r.RunOnce(context.Background(), spec); err != nil {
@@ -330,7 +330,7 @@ func TestIntegrationSystemdRunOnce(t *testing.T) {
 	// unit list is the host-side fact to check).
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		units := strings.TrimSpace(run(t, "systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "hotserve-itest.runonce.*"))
+		units := strings.TrimSpace(run(t, "systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "motel-itest.runonce.*"))
 		if units == "" {
 			break
 		}
@@ -494,7 +494,7 @@ func TestIntegrationSystemdReattachAdoptsLiveUnit(t *testing.T) {
 	if len(st.Command) == 0 || !filepath.IsAbs(st.Command[0]) || filepath.Base(st.Command[0]) != "server" {
 		t.Fatalf("the manager's ExecStart must decode to the resolved argv, got %v", st.Command)
 	}
-	// A "new hotserve": its own runner, same manager.
+	// A "new motel": its own runner, same manager.
 	r2 := newSystemdRunner(userManager, zap.NewNop())
 	r2.poll = 50 * time.Millisecond
 	t.Cleanup(r2.close)
@@ -507,7 +507,7 @@ func TestIntegrationSystemdReattachAdoptsLiveUnit(t *testing.T) {
 	}
 	// Reattach has no launch of its own to remember, so an adopted
 	// handle can only report the command by reading it back — and must,
-	// or status would go blank for every app across a hotserve restart.
+	// or status would go blank for every app across a motel restart.
 	if !slices.Equal(h2.state().Command, st.Command) {
 		t.Fatalf("adopted handle reports command %v, want the running unit's %v", h2.state().Command, st.Command)
 	}
@@ -534,7 +534,7 @@ func TestIntegrationSystemdReattachResetsFailedUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Silence r1's watcher before it can reset the failure, standing in
-	// for "hotserve was down when the app died".
+	// for "motel was down when the app died".
 	r1.close()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -600,8 +600,8 @@ func TestIntegrationSystemdSweepStopsStrays(t *testing.T) {
 	}
 }
 
-// A hotserve that stops during a deploy leaves the deploy's pre_start
-// running under the manager (#317). The next hotserve's sweep must
+// A motel that stops during a deploy leaves the deploy's pre_start
+// running under the manager (#317). The next motel's sweep must
 // leave it to finish — reporting itself unconfirmed, naming it — and
 // confirm once it has ended: the migration runs to its end.
 func TestIntegrationSystemdSweepLeavesARunningPreStart(t *testing.T) {
@@ -625,7 +625,7 @@ func TestIntegrationSystemdSweepLeavesARunningPreStart(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	r1.close() // the hotserve that started it is gone; the manager runs it on
+	r1.close() // the motel that started it is gone; the manager runs it on
 
 	r2 := newSystemdRunner(userManager, zap.NewNop())
 	t.Cleanup(r2.close)
@@ -650,7 +650,7 @@ func TestIntegrationSystemdSweepLeavesARunningPreStart(t *testing.T) {
 	}
 }
 
-// With no hotserve watching it, a pre_start's own TimeoutStartSec= is
+// With no motel watching it, a pre_start's own TimeoutStartSec= is
 // what ends it: RunOnce here waits on no deadline of its own.
 func TestIntegrationSystemdPreStartEndsOnItsOwnDeadline(t *testing.T) {
 	r := integrationRunner(t)
@@ -871,19 +871,19 @@ func writeSandboxView(t *testing.T, release string) {
 }
 
 // seedRuntimeDirFixture creates the runtime dir and admin socket that a
-// real hotserve has, because this container runs none. Without it
-// run_hotserve=closed and admin_socket=closed pass on paths that never
+// real motel has, because this container runs none. Without it
+// run_motel=closed and admin_socket=closed pass on paths that never
 // existed on the host, proving nothing about the view — the same
 // vacuity the manager-socket and /proc checks guard against by pinning
-// the uid and the pid. The packaged unit creates /run/hotserve through
+// the uid and the pid. The packaged unit creates /run/motel through
 // RuntimeDirectory=; the socket is a real one, so [ -e ] sees what it
 // would see in production.
 func seedRuntimeDirFixture(t *testing.T) {
 	t.Helper()
-	if err := os.MkdirAll("/run/hotserve", 0o750); err != nil {
-		t.Fatalf("seeding /run/hotserve: %v", err)
+	if err := os.MkdirAll("/run/motel", 0o750); err != nil {
+		t.Fatalf("seeding /run/motel: %v", err)
 	}
-	sock := "/run/hotserve/admin.sock"
+	sock := "/run/motel/admin.sock"
 	_ = os.Remove(sock)
 	l, err := net.Listen("unix", sock)
 	if err != nil {
@@ -939,7 +939,7 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 		command: []string{"./server"},
 		dir:     release,
 		env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + shared,
-			"MGR_PID=" + mgrPID, "HOTSERVE_UID=" + strconv.Itoa(os.Getuid())},
+			"MGR_PID=" + mgrPID, "MOTEL_UID=" + strconv.Itoa(os.Getuid())},
 		grace: 2 * time.Second,
 		sandbox: &sandboxSpec{root: root, appDir: filepath.Join(root, "itest"), appName: "itest",
 			writable: []bindPath{{dest: release, source: release}, {dest: shared, source: shared}}},
@@ -966,7 +966,7 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 		// writable, while still naming nothing but this app. Under the
 		// real /var/lib layout it is read-only, which e2e and the
 		// packaging smoke both assert.
-		"hotserve_lib": "closed", "run_hotserve": "closed", "etc_hotserve": "closed",
+		"motel_lib": "closed", "run_motel": "closed", "etc_motel": "closed",
 		"admin_socket": "closed", "mgr_socket": "closed",
 		"cgroup": "readonly", "tmp": "writable", "home": shared, "xdg_runtime": "unset",
 		// No core dump of a crashed app, and no way to raise the soft
@@ -983,7 +983,7 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 		// The trust store is named, not the tree holding it: /etc/ssl
 		// also holds /etc/ssl/private. This lane used to check only
 		// that /etc/ssl existed, which a bind of the whole tree — every
-		// app handed hotserve's TLS keys — would have satisfied.
+		// app handed motel's TLS keys — would have satisfied.
 		"sslprivate": "absent",
 		// No name to resolve was supplied, and the probe says so rather
 		// than omitting the key: e2e is where DNS from inside is proved.
@@ -1012,7 +1012,7 @@ func TestIntegrationSystemdSandboxedUnit(t *testing.T) {
 	}
 	// /etc is named entry by entry, never bound whole: an app that could
 	// list all of /etc would see every other app's env_file.
-	for _, unwanted := range []string{"hotserve", "liveswap", "shadow", "sudoers"} {
+	for _, unwanted := range []string{"motel", "liveswap", "shadow", "sudoers"} {
 		if strings.Contains(" "+got["etc_listing"], " "+unwanted+" ") {
 			t.Errorf("/etc inside the unit contains %s: %q", unwanted, got["etc_listing"])
 		}
@@ -1339,9 +1339,9 @@ func lostMainPIDRace(t *testing.T, unit string) bool {
 // may read the parent first), and then follows SIGTERM with SIGKILL at
 // once when nothing else is in the cgroup; the sibling every unit
 // carries (withSibling) is that something else (#380). Half the stops
-// are hotserve's (Stop), half the manager's alone (`systemctl --user
+// are motel's (Stop), half the manager's alone (`systemctl --user
 // stop`: an operator's, or the shape of a reboot), which no code of
-// hotserve's could reach. Before the sibling, 22 of 36 such stops lost
+// motel's could reach. Before the sibling, 22 of 36 such stops lost
 // their handler, every one of them a lost race; the run logs how many
 // starts lost it, so the lane shows the race was exercised.
 func TestIntegrationSystemdOneProcessAppKeepsItsGrace(t *testing.T) {
@@ -1498,7 +1498,7 @@ func TestIntegrationSystemdUnitOutlivesItsFile(t *testing.T) {
 	if r.Alive(hs) {
 		t.Fatal("stopped handle still alive")
 	}
-	// A second runner (a restarted hotserve) sees the other as a stray.
+	// A second runner (a restarted motel) sees the other as a stray.
 	r2 := integrationRunner(t)
 	if err := r2.Sweep("itest", nil); err != nil {
 		t.Fatalf("Sweep: %v", err)

@@ -68,7 +68,7 @@ func TestPreflightChecksCommandThenPreStart(t *testing.T) {
 }
 
 // A pre-flight that could not be made — a bind source that would not
-// resolve, a file that would not read — is hotserve's failure, not the
+// resolve, a file that would not read — is motel's failure, not the
 // deployer's: no 422.
 func TestPreflightFailureIsNotTheDeployers(t *testing.T) {
 	rig := newTestRig(t)

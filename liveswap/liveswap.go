@@ -3,7 +3,7 @@
 // URL and version; Caddy downloads it, runs an optional pre-start
 // command (migrations), starts the new version as a systemd unit on its
 // own unix socket, health-gates it, atomically cuts traffic over,
-// then gracefully stops the old version. Part of hotserve, from
+// then gracefully stops the old version. Part of motel, from
 // smallhours.
 //
 // Three cooperating modules:
@@ -18,7 +18,7 @@ import (
 	// Blank import: harden's init makes this process non-dumpable before
 	// main — before os, fmt and every initializer that depends on them
 	// (see liveswap/harden for the exact guarantee).
-	_ "github.com/smallhoursorg/hotserve/liveswap/harden"
+	_ "github.com/smallhoursorg/motel/liveswap/harden"
 
 	"context"
 	"fmt"
@@ -33,8 +33,8 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/dustin/go-humanize"
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 	"go.uber.org/zap"
 )
 
@@ -256,7 +256,7 @@ type AppConfig struct {
 
 	// Backup declares which paths under the app's shared dir are worth
 	// backing up, and which of them are SQLite databases. It is a
-	// declaration only: hotserve validates it and does nothing else
+	// declaration only: motel validates it and does nothing else
 	// with it. Its paths take no placeholders. Optional.
 	Backup *backupdecl.Config `json:"backup,omitempty"`
 	// MemoryMax bounds the RAM every unit of the app may use (the
@@ -501,7 +501,7 @@ func backupNeedsLiteralRoot(root string, apps map[string]*AppConfig) error {
 	}
 	for _, name := range slices.Sorted(maps.Keys(apps)) {
 		if cfg := apps[name]; cfg != nil && cfg.Backup != nil {
-			return fmt.Errorf("app %s declares a backup, but root %q is written with a placeholder ({ or }), which only hotserve's own environment can resolve and a backup does not have; write the root as a literal path", name, root)
+			return fmt.Errorf("app %s declares a backup, but root %q is written with a placeholder ({ or }), which only motel's own environment can resolve and a backup does not have; write the root as a literal path", name, root)
 		}
 	}
 	return nil
@@ -709,7 +709,7 @@ func (a *App) Start() error {
 	// Apps run as transient units under this user's systemd manager.
 	// Prove it answers before anything runs, with an error that says
 	// what to fix; there is deliberately no fallback runner. Checked
-	// here rather than in Provision so `hotserve validate` — which
+	// here rather than in Provision so `motel validate` — which
 	// provisions and cleans up without starting — works as any user.
 	if len(a.managed) > 0 {
 		if err := a.probeManager(); err != nil {
@@ -743,7 +743,7 @@ func (a *App) Start() error {
 	names := slices.Sorted(maps.Keys(a.managed))
 	a.logger.Info("liveswap started", zap.Int("apps", len(names)), zap.Strings("app_names", names))
 	// Units of apps no loaded config names have no managedApp to sweep
-	// them (removed or renamed while hotserve was down): settle them
+	// them (removed or renamed while motel was down): settle them
 	// against the manager's own listing. Background, like recovery;
 	// the sweep judges each app against the pool right before acting,
 	// so neither a reload racing it nor a candidate config that later
@@ -816,7 +816,7 @@ func (a *App) sharedManager() managerClient {
 
 // probeManager fails loudly when the manager is unreachable, so Start
 // reports what to fix rather than every deploy failing later. Called
-// from Start rather than Provision so `hotserve validate` — which
+// from Start rather than Provision so `motel validate` — which
 // provisions and cleans up without starting — works as any user.
 func (a *App) probeManager() error {
 	if a.managerProbe != nil {

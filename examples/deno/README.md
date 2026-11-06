@@ -1,14 +1,14 @@
-# A Deno app on hotserve
+# A Deno app on motel
 
 A small app to copy as the start of your own. It serves on the unix
-socket hotserve hands it, answers a health check, runs a migration
+socket motel hands it, answers a health check, runs a migration
 before each new version starts, finishes its requests on shutdown, and
 deploys from GitHub Actions with no stored secret.
-[hotserve](https://github.com/smallhoursorg/hotserve)'s e2e suite
+[motel](https://github.com/smallhoursorg/motel)'s e2e suite
 builds and deploys these files, from its `examples/deno`, on every
-change to hotserve, so what is here works. Each stable release
+change to motel, so what is here works. Each stable release
 publishes them as the template repository
-[hotserve-example-deno](https://github.com/smallhoursorg/hotserve-example-deno): **Use this template** there makes a
+[motel-example-deno](https://github.com/smallhoursorg/motel-example-deno): **Use this template** there makes a
 repository of your own, which deploys with no file edited.
 
 | File | What it is |
@@ -18,8 +18,8 @@ repository of your own, which deploys with no file edited.
 | `deno.json` | Dependencies and the `dev`, `bundle` and `deploy` tasks |
 | `scripts/bundle.sh` | Builds `app.tar.gz`, with the module cache inside it |
 | `scripts/deploy.sh` | Tells the box to deploy a release URL (or pushes a local tarball), or to roll back |
-| `.github/workflows/deploy.yml` | Build, publish a release, deploy — on every push to `main`; `Run workflow` rolls back. The box's address is the repository variable `HOTSERVE_URL` |
-| `hotserve.caddy` | What the app needs from the box: the lines for its `app` block |
+| `.github/workflows/deploy.yml` | Build, publish a release, deploy — on every push to `main`; `Run workflow` rolls back. The box's address is the repository variable `MOTEL_URL` |
+| `motel.caddy` | What the app needs from the box: the lines for its `app` block |
 | `AGENTS.md` | The rules the box enforces, for you and your coding agent |
 
 ## Run it locally
@@ -30,8 +30,8 @@ deno task dev          # http://127.0.0.1:8000
 
 ## Put it on a box
 
-You need a Debian 13 server with hotserve installed and a DNS name
-pointing at it. [Your first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/first-deploy.md) is the
+You need a Debian 13 server with motel installed and a DNS name
+pointing at it. [Your first deploy](https://github.com/smallhoursorg/motel/blob/main/docs/first-deploy.md) is the
 whole path from a fresh server, with this app as its one fork; the
 three steps below are its second half.
 
@@ -51,28 +51,28 @@ sha256sum -c "$f.sha256sum" &&
 ```
 
 **2. Add the app to the box's Caddyfile**, with the lines from
-`hotserve.caddy` inside its `app` block. In the box's
-[repo](https://github.com/smallhoursorg/hotserve/tree/main/examples/box#change-the-config)
+`motel.caddy` inside its `app` block. In the box's
+[repo](https://github.com/smallhoursorg/motel/tree/main/examples/box#change-the-config)
 that is `<host>/Caddyfile`, committed signed and pushed to `main`; the
 box template ships the Node app's block, and this app's `command`,
 `pre_start` and `env` lines replace those. On a box without one, it is
-`/etc/hotserve/Caddyfile`, as root: edit, `hotserve validate --config`
-it, `systemctl reload hotserve`. Either way the app's part is the
+`/etc/motel/Caddyfile`, as root: edit, `motel validate --config`
+it, `systemctl reload motel`. Either way the app's part is the
 same, and a box repo's file keeps its `box` block and the deploy
 host's `box_webhook` line as they are. Without those two, the file is:
 
 ```caddyfile
 {
-	admin unix//run/hotserve/admin.sock
+	admin unix//run/motel/admin.sock
 
 	liveswap {
 		artifact_allowlist api.github.com/repos/your-org/
 
 		app example {
-			# the lines from hotserve.caddy go here
+			# the lines from motel.caddy go here
 
 			deploy_trust github {
-				audience hotserve
+				audience motel
 				claim repository your-org/example
 				claim ref        refs/heads/main
 			}
@@ -91,20 +91,20 @@ deploy.example.com {
 }
 ```
 
-The copy on the box is the one that counts: hotserve never reads
-`hotserve.caddy` from a deploy. (hotserve's e2e suite instead saves
-the file on its box as `/etc/hotserve/<app>.caddy` and writes `import`
+The copy on the box is the one that counts: motel never reads
+`motel.caddy` from a deploy. (motel's e2e suite instead saves
+the file on its box as `/etc/motel/<app>.caddy` and writes `import`
 of that path in the block.)
 
 **3. Point the workflow at the box.** No file needs editing: in your
-copy's GitHub repository, add the repository variable `HOTSERVE_URL`,
+copy's GitHub repository, add the repository variable `MOTEL_URL`,
 set to `https://deploy.example.com/example` (Settings → Secrets and
 variables → Actions → Variables, or
-`gh variable set HOTSERVE_URL -R your-org/example --body https://deploy.example.com/example`).
-Then push to `main`. A run without `HOTSERVE_URL` stops at its first
+`gh variable set MOTEL_URL -R your-org/example --body https://deploy.example.com/example`).
+Then push to `main`. A run without `MOTEL_URL` stops at its first
 step, saying so, and publishes nothing. The URL must be `https://`:
 the request carries the run's token, so `scripts/deploy.sh` refuses
-any other scheme before it mints one (`HOTSERVE_ALLOW_HTTP=1` lifts
+any other scheme before it mints one (`MOTEL_ALLOW_HTTP=1` lifts
 that, for a local test box only). The workflow publishes the
 tarball as a GitHub release and the box fetches it — so every deployed
 version stays on GitHub. The box fetches the asset by its API URL with
@@ -118,12 +118,12 @@ or why it was refused; a refused deploy leaves the old version
 serving. A 401 means the box's `deploy_trust` for this app does not
 accept the run — most often `claim repository` or `claim ref` names
 another repository or branch, or its `audience` is not what the job
-asks for (`hotserve`, unless the job's `env:` sets `HOTSERVE_AUDIENCE`
-beside `HOTSERVE_URL`, where the rollback step gets it too) — or that
-`HOTSERVE_URL` names an app
+asks for (`motel`, unless the job's `env:` sets `MOTEL_AUDIENCE`
+beside `MOTEL_URL`, where the rollback step gets it too) — or that
+`MOTEL_URL` names an app
 the box does not know, which answers the same 401. The step prints
 the values this run minted its token with; the box's journal
-(`journalctl -u hotserve`) names the app asked for and the check that
+(`journalctl -u motel`) names the app asked for and the check that
 refused it, within the box's budget for failed authentications: ten a
 minute from one address and a hundred a minute in all; past either,
 a failure is not written until the minute passes, and the answer
@@ -142,10 +142,10 @@ What a first deploy that worked looks like, from the laptop:
   `"current_version":"<the commit's first 12 characters>"`.
 - `curl https://example.com/` answers `hello from <that version>
   (schema v1)`; the 503 from before the deploy is gone.
-- `ssh alice@box.example.com journalctl -t hotserve-example` shows the
+- `ssh alice@box.example.com journalctl -t motel-example` shows the
   app's own output — the migration's line, then whatever `main.ts`
   prints. `alice` is the administrator from
-  [Hardening](https://github.com/smallhoursorg/hotserve/blob/main/docs/hardening.md#3-an-administrator-if-you-want-one),
+  [Hardening](https://github.com/smallhoursorg/motel/blob/main/docs/hardening.md#3-an-administrator-if-you-want-one),
   whose `adm` group is what reads it; root reads it too.
 
 A re-run of the same workflow run rebuilds the tarball, and the box
@@ -163,7 +163,7 @@ flags live on the box, so that a compromised build cannot grant itself
 more. Change them on the box *before* you deploy code that needs them:
 the running version does not mind an extra permission, and the new
 one will not start without it. Remove a flag after the code that
-needed it is gone. Keep `hotserve.caddy` here in step, so the repo
+needed it is gone. Keep `motel.caddy` here in step, so the repo
 says what the code expects.
 
 A reload never restarts the running app; the new flags apply at its
@@ -188,17 +188,17 @@ above). Roll forward the same way you deploy: push a commit.
 
 Given a local tarball instead of a URL, `scripts/deploy.sh` pushes it
 in the request body, so a laptop build needs no release. The token
-comes from `hotserve deploy-token`, and hotserve's release binaries
+comes from `motel deploy-token`, and motel's release binaries
 are Linux only, so this is a path for a Linux machine that is not the
 box (the signing key must stay off the box). With a `deploy_trust local` block
 on the box whose `audience` is the box's deploy host,
 `deploy.example.com` here (see
-[Deploy authentication](https://github.com/smallhoursorg/hotserve/blob/main/liveswap/README.md#deploy-authentication-deploy_trust)):
+[Deploy authentication](https://github.com/smallhoursorg/motel/blob/main/liveswap/README.md#deploy-authentication-deploy_trust)):
 
 ```sh
 deno task bundle
-HOTSERVE_URL=https://deploy.example.com/example \
-HOTSERVE_TOKEN=$(hotserve deploy-token --key deploy.key --audience deploy.example.com) \
+MOTEL_URL=https://deploy.example.com/example \
+MOTEL_TOKEN=$(motel deploy-token --key deploy.key --audience deploy.example.com) \
 deno task deploy
 ```
 

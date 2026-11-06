@@ -1,7 +1,7 @@
-# Backups for hotserve — briefing
+# Backups for motel — briefing
 
 **What this is:** the facts, the owner's decisions, and the pitfalls that bear on
-adding backups to hotserve. **What this is not:** a design. It names no units, no
+adding backups to motel. **What this is not:** a design. It names no units, no
 commands, no files, no data model and no architecture. Where a fact forces a
 choice, only the fact is given. The design is yours.
 
@@ -14,7 +14,7 @@ before it is relied on.
 
 ## 1. The goal, as the owner states it
 
-- A solo developer running hotserve on one box keeps SQLite databases and uploaded
+- A solo developer running motel on one box keeps SQLite databases and uploaded
   files under each app's `shared/` dir. Nothing backs them up. A live SQLite file
   cannot be copied safely with `cp`, which is the part people get wrong.
 - The bar for DX: **two/few config lines per app and the operator never thinks about
@@ -29,14 +29,14 @@ before it is relied on.
 - restic and sqlite3 are **Debian's packages** (restic 0.18.0 — 0.19 is in
   forky/sid only). kopia, rustic and bupstash are not in Debian.
 - **polkit is not installed** on a minimal Debian 13 (systemd only Suggests it).
-- hotserve runs as the `hotserve` user; every app runs as that same uid, each in
-  its own sandboxed transient unit under that user's systemd manager. hotserve's
+- motel runs as the `motel` user; every app runs as that same uid, each in
+  its own sandboxed transient unit under that user's systemd manager. motel's
   admin API is a unix socket that Caddy makes writable by its owner alone.
 - What an app declares is config in the Caddyfile, and the admin API serves config
   **as loaded, not as provisioned** (liveswap's default `root` and `{env.*}`
   placeholders are not resolved in what the API returns). The process answering
   that API is the first thing an attacker on the internet reaches.
-- The package does not start hotserve on install (`try-restart` only).
+- The package does not start motel on install (`try-restart` only).
 - The project's rules for any PR: doc claims are traced to code before they are
   written; comments are present tense (history lives in git); new limits that could
   fail a legitimate operation are discussed first; one PR per feature; no
@@ -129,7 +129,7 @@ before it is relied on.
   only root and one user, `lchown` to an unmapped uid fails with **EINVAL**, which
   restic does not overlook the way it overlooks EPERM: it exits 1 over files it
   did restore. That is every file, on a box rebuilt with a different uid for the
-  `hotserve` user. restic also reports a file it **never wrote** as an `lchown`
+  `motel` user. restic also reports a file it **never wrote** as an `lchown`
   error (another errno), and its closing summary counts that file as restored
   *(measured)*. restic 0.19 has `--ownership-by-name`.
 - **restic is not lock-free**, so bucket-wide S3 Object Lock breaks it (it must be
@@ -146,8 +146,8 @@ before it is relied on.
   rather than run with a weaker sandbox *(measured)*.
 - `PrivateUsers=yes` alone denies a same-uid process outside the unit access to the
   unit's `/proc/<pid>/environ` and `/proc/<pid>/root`. **Without it, the
-  `hotserve` uid can read the environment — and any credentials in it — of any
-  unit running as `hotserve`** *(measured both ways)*.
+  `motel` uid can read the environment — and any credentials in it — of any
+  unit running as `motel`** *(measured both ways)*.
 - `PrivateUsers=identity` does not parse on 257.13.
 - **`systemd-run` expands `$VAR` / `${VAR}` in the command's arguments from the
   unit's environment** by default — including values from `EnvironmentFile=`.
@@ -190,11 +190,11 @@ before it is relied on.
   process with an empty capability set, `ProtectSystem=strict` and
   `PrivateNetwork=yes` can still start a uid-0 unit that reads `/etc/shadow`
   *(measured)*. A root process with no capabilities can still talk to systemd.
-- The `hotserve` uid gets "Access denied" starting or stopping system units.
+- The `motel` uid gets "Access denied" starting or stopping system units.
 - A unit with `ProtectHome=yes` and `CAP_DAC_OVERRIDE` sees a directory under
   `/home` as **"No such file or directory"**, not as inaccessible *(measured)*.
-- Connecting to hotserve's admin socket as root needs `CAP_DAC_OVERRIDE` (the
-  socket is owner-write-only, in a directory that is `hotserve`'s) *(measured)*.
+- Connecting to motel's admin socket as root needs `CAP_DAC_OVERRIDE` (the
+  socket is owner-write-only, in a directory that is `motel`'s) *(measured)*.
 - A file masked by `InaccessiblePaths=` still exists to `stat` (regular, mode 0,
   empty), reads as nothing even with `CAP_DAC_OVERRIDE`, and a unit started *from
   inside* such a unit still receives the real `EnvironmentFile=` values
@@ -325,7 +325,7 @@ before it is relied on.
   interrupted after the secret has taken effect.
 - A unit left running, retrying, after the command that started it was cancelled.
 - Records of different apps sharing one retention group.
-- A process holding credentials in its environment, running as the `hotserve` uid
+- A process holding credentials in its environment, running as the `motel` uid
   without a user namespace.
 - "The data directory is missing" treated as "never deployed" for an app that has
   been backed up before (deleted data, a volume that did not mount).

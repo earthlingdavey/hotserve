@@ -51,7 +51,7 @@ export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
 
 Nothing here prints a storage key or secret: keys are read with
 `read`, never typed on a command line, and the credential file is shown
-by its keys alone (`sed 's/=.*/=…/' /etc/hotserve-backup/repository.env`).
+by its keys alone (`sed 's/=.*/=…/' /etc/motel-backup/repository.env`).
 One secret is shown: `setup` on a new repository shows its password
 once, on the terminal (`Repository password (new): …`). Before you
 share a transcript of a check, put `<N characters>` in its place.
@@ -66,9 +66,9 @@ says, so set the box up afresh for check 2). A key made as Backups
 says should not be able to make a bucket at all:
 
 ```sh
-time hotserve-backup setup b2:<bucket>:rc-check1    # refused before any prompt
-time hotserve-backup setup <url of a bucket nobody has made>
-time hotserve-backup setup <url>    # the right key id, a wrong secret, three times
+time motel-backup setup b2:<bucket>:rc-check1    # refused before any prompt
+time motel-backup setup <url of a bucket nobody has made>
+time motel-backup setup <url>    # the right key id, a wrong secret, three times
 ```
 
 The first is refused before it asks anything, exit 1, nothing written,
@@ -76,7 +76,7 @@ naming the same bucket and path at B2's S3-compatible endpoint, the
 region left for you to read from the bucket's page:
 
 ```
-hotserve-backup: b2: is not supported: B2 is reached at its S3-compatible endpoint, s3:https://s3.<region>.backblazeb2.com/<bucket>/rc-check1, with an application key, not the master key; restic's own B2 backend retries a failed upload without end
+motel-backup: b2: is not supported: B2 is reached at its S3-compatible endpoint, s3:https://s3.<region>.backblazeb2.com/<bucket>/rc-check1, with an application key, not the master key; restic's own B2 backend retries a failed upload without end
 ```
 
 What the other two say, and how long each takes: on the e2e server,
@@ -95,7 +95,7 @@ and the third ended after 31 s, nothing written:
 restic could not make or open the repository (exit 1): Fatal: create repository at s3:https://…/box2 failed: Fatal: unable to open repository at s3:https://…/box2: client.BucketExists: The request signature we calculated does not match the signature you provided. Check your key and signing method.
 the storage refused the key, or could not be reached: the key id and secret again (the password shown above still applies)
 …
-hotserve-backup: restic could not make or open the repository (exit 1): …; the password shown above was never used: discard it
+motel-backup: restic could not make or open the repository (exit 1): …; the password shown above was never used: discard it
 ```
 
 Through B2's native API a wrong key was refused at once (measured,
@@ -127,13 +127,13 @@ with nothing written:
   and names the bucket, **unverified** on B2 until the next candidate:
 
   ```
-  hotserve-backup: restic could not make or open the repository (exit 1): …: client.MakeBucket: not entitled; the storage has no bucket by that name for this key, and the key may not make one: check the bucket's name in the URL, or make the bucket first (the guide, "Before you start"); then run setup again; the password shown above was never used: discard it
+  motel-backup: restic could not make or open the repository (exit 1): …: client.MakeBucket: not entitled; the storage has no bucket by that name for this key, and the key may not make one: check the bucket's name in the URL, or make the bucket first (the guide, "Before you start"); then run setup again; the password shown above was never used: discard it
   ```
 
 ## 2. Set up, a first backup, status and the drill, over real TLS
 
 [Set it up](../docs/backups.md#set-it-up) as written, then
-`hotserve-backup drill`, `hotserve-backup status`, and the
+`motel-backup drill`, `motel-backup status`, and the
 [look from your own machine](../docs/backups.md#look-from-your-own-machine),
 both its lines. Each as [Backups](../docs/backups.md) shows it: **unverified**
 over S3's and Hetzner's TLS; the e2e server over TLS from a private CA gave
@@ -210,8 +210,8 @@ AWS S3 and Hetzner, **unverified**.
 
 Then a locking command past restic's 22-minute mark: with the box's
 timers stopped, so that no run of its own holds a lock meanwhile
-(`systemctl stop hotserve-backup.timer
-hotserve-backup-drill.timer`, and `start` after), from the off-box
+(`systemctl stop motel-backup.timer
+motel-backup-drill.timer`, and `start` after), from the off-box
 machine, with the *box's* key and the repository's password in
 `RESTIC_PASSWORD` (restic cannot read both it and the data from stdin),
 a backup that holds its lock for half an hour, and what it leaves:
@@ -231,8 +231,8 @@ with `AWS_DEFAULT_REGION` beside them, as in the look. The password in the envir
 restic cannot ask for it, `Fatal: cannot read both password and data
 from stdin`.)
 
-Then on the box, `systemctl start hotserve-backup.service` twice,
-`hotserve-backup drill` and `hotserve-backup status`. That the
+Then on the box, `systemctl start motel-backup.service` twice,
+`motel-backup drill` and `motel-backup status`. That the
 probe ends `snapshot … saved` after 30 minutes with no lock left, each
 lock it removed a delete marker over a version that stays, the runs end
 `ok`, and the drill proves and its check is `clean`: **unverified**
@@ -316,8 +316,8 @@ On another S3 provider, the `s3store:` lines alone, with its endpoint.
 write itself, and B2 is never asked. On AWS the box's key may not list
 versions, so the S3 line stops before it tries — #171.)
 
-Then on the box, `systemctl start hotserve-backup.service` and
-`hotserve-backup status`, and [After an attack](../docs/backups.md#after-an-attack)
+Then on the box, `systemctl start motel-backup.service` and
+`motel-backup status`, and [After an attack](../docs/backups.md#after-an-attack)
 as written, with the account's key, from `status`'s minute and from the
 bucket's history, to compare; the copy is read with a new key of its
 own. That destroying is refused through both APIs for every file, that
@@ -376,8 +376,8 @@ up at the bucket's root and run once:
 
 [Retention, off the box](../docs/backups.md#retention-off-the-box) as written,
 with the off-box machine's key; then on the box
-`systemctl start hotserve-backup.service` and
-`hotserve-backup status`. Each line as [Backups](../docs/backups.md) shows it:
+`systemctl start motel-backup.service` and
+`motel-backup status`. Each line as [Backups](../docs/backups.md) shows it:
 on the e2e server and on B2's S3 endpoint (below), as shown there; on
 AWS S3 and Hetzner, **unverified**.
 
@@ -415,7 +415,7 @@ A key that may read and not write, on a box that is not your real one,
 and a repository made beforehand with a key that may write:
 
 ```sh
-time hotserve-backup setup <url>
+time motel-backup setup <url>
 ```
 
 `setup` opens a repository that is there already taking its lock —
@@ -427,14 +427,14 @@ the lines as the e2e asserts them, with the clock a release's binary
 has (the e2e's is 30 s); a run's lock ids and timings are its own:
 
 ```
-hotserve-backup: restic could not open the repository with its lock (exit 1): Save(<lock/…>) failed: client.PutObject: Access Denied. unable to create lock in backend: client.PutObject: Access Denied.
+motel-backup: restic could not open the repository with its lock (exit 1): Save(<lock/…>) failed: client.PutObject: Access Denied. unable to create lock in backend: client.PutObject: Access Denied.
 ```
 
 at once, and at the clock:
 
 ```
 still waiting for s3:http://…/box1 (Ctrl-C is safe: nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it)
-hotserve-backup: restic had not finished opening the repository with its lock within 2m0s (restic said: Save(<lock/…>) returned error, retrying after …: …); nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it, with a key that may delete: from this box at once, once setup has ended, given that key's credentials, if no other machine with this hostname runs restic against the repository; otherwise from another machine that holds it once the lock is half an hour old; or with restic unlock --remove-all sooner, when nothing else holds the repository
+motel-backup: restic had not finished opening the repository with its lock within 2m0s (restic said: Save(<lock/…>) returned error, retrying after …: …); nothing of setup's has been written; a lock file restic was writing may stay, and hold off a prune, or a check from elsewhere, until restic unlock removes it, with a key that may delete: from this box at once, once setup has ended, given that key's credentials, if no other machine with this hostname runs restic against the repository; otherwise from another machine that holds it once the lock is half an hour old; or with restic unlock --remove-all sooner, when nothing else holds the repository
 ```
 
 each exit 1, with nothing of setup's written: `status` after either is
@@ -450,7 +450,7 @@ the lock (on the e2e server, behind a proxy that refuses DELETE
 alone):
 
 ```
-hotserve-backup: restic opened the repository and could not remove the lock file it wrote (restic said: Remove(<lock/…>) failed: client.RemoveObject: Access Denied.): a key that may not delete, or a storage that refuses or does not answer deletes, ends here; the lock stays until restic unlock removes it, with a key that may delete — not this one: from this box at once, once setup has ended, given that key's credentials, if no other machine with this hostname runs restic against the repository; otherwise from another machine that holds it once the lock is half an hour old; or with restic unlock --remove-all sooner, when nothing else holds the repository
+motel-backup: restic opened the repository and could not remove the lock file it wrote (restic said: Remove(<lock/…>) failed: client.RemoveObject: Access Denied.): a key that may not delete, or a storage that refuses or does not answer deletes, ends here; the lock stays until restic unlock removes it, with a key that may delete — not this one: from this box at once, once setup has ended, given that key's credentials, if no other machine with this hostname runs restic against the repository; otherwise from another machine that holds it once the lock is half an hour old; or with restic unlock --remove-all sooner, when nothing else holds the repository
 ```
 
 `restic unlock` with the key that may delete clears it: from the box
@@ -479,7 +479,7 @@ repository exists; its password is needed`, then, 2.7 s from the
 start, exit 1:
 
 ```
-hotserve-backup: restic could not open the repository with its lock (exit 1): Save(<lock/…>) failed: client.PutObject: not entitled unable to create lock in backend: client.PutObject: not entitled
+motel-backup: restic could not open the repository with its lock (exit 1): Save(<lock/…>) failed: client.PutObject: not entitled unable to create lock in backend: client.PutObject: not entitled
 ```
 
 The credential file stayed byte for byte as before, and `status`
@@ -487,11 +487,11 @@ unchanged.
 Where a `setup` does take such a key, `setup` again with the box's own
 afterwards.
 
-## 7. Restore onto a second box, with another uid for `hotserve`
+## 7. Restore onto a second box, with another uid for `motel`
 
 [A rebuilt box](../docs/backups.md#a-rebuilt-box) on a second fresh box — its
-Caddyfile from the box repo with `hotserve init`, as step 1 says —
-with `id -u hotserve` and `id -g hotserve` there both not the first
+Caddyfile from the box repo with `motel init`, as step 1 says —
+with `id -u motel` and `id -g motel` there both not the first
 box's. Before installing the package, make a system user and a system
 group (`useradd --system rc-uidshift`, `groupadd --system rc-gidshift`).
 Users alone move the uid and may leave the gid where the first box had
@@ -509,8 +509,8 @@ channel), uids 996 and 993, the restore 10 s.
 **On B2's S3 endpoint**, `v0.5.0-rc1`, the first box wiped and installed again
 ([how](design/rc-runs/v0.5.0-rc1.md#where-the-run-left-the-guide)):
 
-- **The ids:** `hotserve` 986:986, where the first box had 988:989.
-- **`hotserve init`:** run on the box repo's file at the commit the
+- **The ids:** `motel` 986:986, where the first box had 988:989.
+- **`motel init`:** run on the box repo's file at the commit the
   first box ran, it installed the file and said the box applies
   commits descending from that one. The repository is private, so the
   file was copied from the first box, its checksum matched. The
@@ -520,12 +520,12 @@ channel), uids 996 and 993, the restore 10 s.
   10 s clock and a password was shown: the case #388 adds a line for.
 - **The restore,** before the first deploy: 501 MiB in 17 s. Every one
   of 43 entries was 986:986, where the snapshot holds 988:989; the
-  database passed `integrity_check` and took a write as `hotserve`.
+  database passed `integrity_check` and took a write as `motel`.
 - **After the deploy:** the first run (42 s, its restore proof
   included) and the drill (8.6 s) were `ok` and proven, `status`
   exited 0, and no lock was left.
 
-The guide's way back — the box repo and `hotserve init` — works.
+The guide's way back — the box repo and `motel init` — works.
 
 ## 8. One drill, timed, and its egress
 
@@ -533,7 +533,7 @@ On the box set up in check 2, with apps of a realistic size:
 
 ```sh
 du -sh /var/lib/liveswap/*/shared
-time hotserve-backup drill
+time motel-backup drill
 ```
 
 then the provider's egress for that hour, from its console or bill.
@@ -558,27 +558,27 @@ the candidate installed. A release before the box channel refuses a
 Caddyfile with a `box` block or `box_webhook` (`v0.3.0-rc1`:
 `unrecognized global option: box`, `unrecognized directive:
 box_webhook`), so give it the file without them, and the candidate the
-file with them. Then `systemctl start hotserve-backup.service`,
-then `hotserve-backup status` as root. The run refuses at once, before
+file with them. Then `systemctl start motel-backup.service`,
+then `motel-backup status` as root. The run refuses at once, before
 any unit starts, in these words (in its journal,
-`journalctl -u hotserve-backup.service`, after the date and host):
+`journalctl -u motel-backup.service`, after the date and host):
 
 ```
-hotserve-backup[<pid>]: hotserve-backup: the repository is b2:, which is not supported: as root, hotserve-backup setup 's3:https://s3.<region>.backblazeb2.com/<bucket>/<path>' moves it to B2's S3-compatible endpoint, with an application key; restic's own B2 backend retries a failed upload without end
+motel-backup[<pid>]: motel-backup: the repository is b2:, which is not supported: as root, motel-backup setup 's3:https://s3.<region>.backblazeb2.com/<bucket>/<path>' moves it to B2's S3-compatible endpoint, with an application key; restic's own B2 backend retries a failed upload without end
 ```
 
 and `status` says `the last run ended early: the repository is b2:,
 which is not supported: …`, and as root warns of the file in setup's
-words: `warning: /etc/hotserve-backup/repository.env:
+words: `warning: /etc/motel-backup/repository.env:
 RESTIC_REPOSITORY: b2: is not supported: …`.
 
 A restore and a drill refuse the same way. Then, with the same bucket
 and path, the same key id and secret, and the repository's password:
 
 ```sh
-cat /var/lib/hotserve-backup/repository-id
-hotserve-backup setup 's3:https://s3.<region>.backblazeb2.com/<bucket>/<path>'
-cat /var/lib/hotserve-backup/repository-id
+cat /var/lib/motel-backup/repository-id
+motel-backup setup 's3:https://s3.<region>.backblazeb2.com/<bucket>/<path>'
+cat /var/lib/motel-backup/repository-id
 ```
 
 then, from the off-box machine, `restic list locks --no-lock | wc -l`

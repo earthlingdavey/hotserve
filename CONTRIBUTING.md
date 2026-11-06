@@ -1,15 +1,15 @@
 # Contributing
 
-Thank you for using hotserve, and for wanting to help. Bug reports,
+Thank you for using motel, and for wanting to help. Bug reports,
 questions and ideas are all welcome. They start in
-[Discussions](https://github.com/smallhoursorg/hotserve/discussions),
+[Discussions](https://github.com/smallhoursorg/motel/discussions),
 not in issues or pull requests:
 
 - **Something broke, or you are stuck** — post in
-  [Q&A](https://github.com/smallhoursorg/hotserve/discussions/new?category=q-a).
+  [Q&A](https://github.com/smallhoursorg/motel/discussions/new?category=q-a).
   The form asks for your version, host and journal.
 - **An idea** — post in
-  [Ideas](https://github.com/smallhoursorg/hotserve/discussions/new?category=ideas).
+  [Ideas](https://github.com/smallhoursorg/motel/discussions/new?category=ideas).
 - **A security problem** — never in public. Follow
   [SECURITY.md](SECURITY.md).
 
@@ -22,7 +22,7 @@ links it.
 
 ## Pull requests
 
-hotserve is maintained by one person, and it runs as a system service
+motel is maintained by one person, and it runs as a system service
 in front of every site on the box, so even a one-line change needs
 careful testing. Pull requests are therefore limited to collaborators,
 and the maintainer writes the code. If you have a fix, describe it in

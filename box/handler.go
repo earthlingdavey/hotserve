@@ -16,9 +16,9 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 )
 
 func init() {
@@ -49,7 +49,7 @@ type Handler struct {
 	secrets   string
 	agePub    string
 
-	// A push's seams: the proof's verifier (ssh-keygen as the hotserve
+	// A push's seams: the proof's verifier (ssh-keygen as the motel
 	// uid, step 5), step 6's children, the clock step 8 waits on, and
 	// the drop's test hooks.
 	verifier  *proof.Verifier
@@ -82,7 +82,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.app = app.(*App)
 	h.limiter = deploytrust.Shared()
 	h.installed, h.dir, h.secrets, h.agePub = installedFile, exchangeDir, secretsDir, agePubFile
-	h.verifier = &proof.Verifier{} // RunAs 0: as the hotserve uid, in the service's PrivateTmp
+	h.verifier = &proof.Verifier{} // RunAs 0: as the motel uid, in the service's PrivateTmp
 	h.validator = newChildValidator(h.x("stage"))
 	h.clock = realClock{}
 	h.slot = pushSlot
@@ -92,7 +92,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // The handler's own messages (DESIGN-box.md, "Message catalogue").
 const (
 	msgMethod     = "method not allowed"
-	msgNoBaseline = "this box has no baseline; hotserve init <sha>, as root inside the box's directory, sets one"
+	msgNoBaseline = "this box has no baseline; motel init <sha>, as root inside the box's directory, sets one"
 )
 
 // ServeHTTP answers on `/` and passes every other path on.
@@ -177,11 +177,11 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) error {
 const readingKey = "the box's key for secrets (age.pub)"
 
 // recipient is age.pub's one line, held to an X25519 recipient, or ""
-// when there is none: a box that has not run `hotserve box key`. One
+// when there is none: a box that has not run `motel box key`. One
 // that cannot be read, or is not exactly one X25519 recipient, is
 // journaled and omitted all the same, so a damaged key file never
 // blocks `GET /` and with it a push of the Caddyfile; the workflow
-// reads the omission as "this box has no key", whose remedy, `hotserve
+// reads the omission as "this box has no key", whose remedy, `motel
 // box key`, rewrites age.pub from the identity.
 func (h *Handler) recipient() string {
 	b, err := readFile(h.agePub, maxAgePub, false)
@@ -221,7 +221,7 @@ func (h *Handler) readState() (base *applied, installed []byte, what string, err
 
 // envDigest is an installed env file's digest as the fast path compares
 // it (step 4): read as root reads it — no link followed, held to a
-// regular file, to maxEnvRead — by the hotserve group, whose files these
+// regular file, to maxEnvRead — by the motel group, whose files these
 // are; and only for a file that is still as root wrote it, 0640 and
 // owned as the exchange tree is, so that a file whose mode or owner
 // drifted goes to root, which writes it again ("Values and the env

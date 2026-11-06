@@ -20,10 +20,10 @@ import (
 )
 
 // systemdRunner runs app instances as transient systemd service units
-// under the hotserve user's own service manager (user@<uid>.service,
-// kept alive by lingering). That manager, not hotserve, is the parent
+// under the motel user's own service manager (user@<uid>.service,
+// kept alive by lingering). That manager, not motel, is the parent
 // of every app: cgroups make "stop" mean the whole process tree, the
-// journal captures stdout/stderr, and units keep running while hotserve
+// journal captures stdout/stderr, and units keep running while motel
 // itself restarts or upgrades — Reattach adopts them afterwards.
 //
 // Invariants (the contract app.go and watchdog.go rely on):
@@ -51,7 +51,7 @@ import (
 //     recorded, so the manager never accumulates dead units.
 //  7. The manager is the ledger of what runs. Sweep(app, keep) returns
 //     nil only when keep is the only loaded unit of app; recovery and
-//     GC both sweep first, so nothing hotserve forgot (a unit whose
+//     GC both sweep first, so nothing motel forgot (a unit whose
 //     state.json write failed, a stop that could not be confirmed)
 //     survives the next start or the next deploy — and nothing is ever
 //     launched beside one: every Start is preceded by a sweep that
@@ -59,11 +59,11 @@ import (
 //     and every start sweeps the units of apps the config no longer
 //     names (sweepUnknownApps), so a unit cannot outlive its app
 //     definition either. (Removing the whole liveswap block and then
-//     restarting hotserve is the one path that leaves units running:
+//     restarting motel is the one path that leaves units running:
 //     on exit they are kept for reattach by design, and no liveswap
 //     code runs afterwards to judge them — documented for operators.)
 //  8. A unit's environment is exactly the env the caller built
-//     (Environment=) on top of the manager's defaults; hotserve's own
+//     (Environment=) on top of the manager's defaults; motel's own
 //     environment is never inherited.
 //
 // The logger lives behind an atomic pointer because config reloads
@@ -154,7 +154,7 @@ type unitStatus struct {
 	StopTimeout time.Duration
 	// Sandboxed reports the unit carrying the namespaces every app unit
 	// gets (PrivateUsers= and PrivatePIDs=). Reattach refuses to adopt a
-	// running unit without them: nothing hotserve starts lacks them, so
+	// running unit without them: nothing motel starts lacks them, so
 	// such a unit was started by something else, and adopting it would
 	// serve an app with no sandbox and no signal.
 	Sandboxed bool
@@ -436,14 +436,14 @@ func (h *systemdHandle) setArgv(argv []string) {
 	}
 }
 
-// Unit naming: hotserve-<app>.<version>.<nonce>[.prestart].service.
+// Unit naming: motel-<app>.<version>.<nonce>[.prestart].service.
 // App names are [a-z0-9-] and version tags [A-Za-z0-9._-] (validated
 // in liveswap.go), all legal unit-name characters, so nothing is ever
 // escaped. The "." after the app is the one character an app name
 // cannot contain, which is what lets Sweep match "blog" without also
 // matching "blog-api"; the nonce makes every Start unique, and is the
 // same one that names the instance's socket (newNonce).
-const unitPrefix = "hotserve-"
+const unitPrefix = "motel-"
 
 // unitNameRe is derived from the app-name and version alphabets in
 // liveswap.go so the three can never drift apart.
@@ -619,7 +619,7 @@ func (r *systemdRunner) Preflight(spec startSpec) error {
 }
 
 // unitLineMax is the longest line a unit file may hold (systemd's
-// LONG_LINE_MAX, 1 MiB). unitLineBudget is the room hotserve allows a
+// LONG_LINE_MAX, 1 MiB). unitLineBudget is the room motel allows a
 // unit's Environment= and ExecStart=, each written as one line of the
 // transient unit's file: half the limit, since unitLineLength is an
 // estimate of the manager's escaping and not its letter.
@@ -712,7 +712,7 @@ func (r *systemdRunner) unitFor(spec startSpec, oneshot bool) (unitSpec, error) 
 			zap.String("effect", "any runtime that touches $HOME (npm, corepack, pip) will fail with ENOENT naming no cause"),
 			zap.String("fix", "leave HOME unset to get the app's shared dir, the one writable persistent path in the view"))
 	}
-	desc := "hotserve app " + spec.app + " " + spec.version
+	desc := "motel app " + spec.app + " " + spec.version
 	if oneshot {
 		desc += " (pre_start)"
 	}
@@ -741,8 +741,8 @@ func (r *systemdRunner) unitFor(spec startSpec, oneshot bool) (unitSpec, error) 
 
 // syslogIdentifier is what every unit of an app writes its output
 // under, the pre_start's and every instance's alike: what `journalctl
-// -t hotserve-<app>` finds it by.
-func syslogIdentifier(app string) string { return "hotserve-" + app }
+// -t motel-<app>` finds it by.
+func syslogIdentifier(app string) string { return "motel-" + app }
 
 // Start creates the unit; the start job of a simple service completes
 // once the manager has forked it, so this returns promptly. A unit
@@ -1135,8 +1135,8 @@ func (r *systemdRunner) Stop(h handle, grace time.Duration) error {
 
 // Reattach adopts the unit recorded in state.json if the manager still
 // runs it — and runs it sandboxed: a running unit without the
-// namespaces is refused, since nothing this hotserve starts lacks them.
-// Whatever happened to it while hotserve was away is logged; a failed
+// namespaces is refused, since nothing this motel starts lacks them.
+// Whatever happened to it while motel was away is logged; a failed
 // unit is reset so it cannot linger, and the caller relaunches.
 // A unit whose state cannot be read is an error: the caller must not
 // launch beside a unit that may be running (invariant 3).
@@ -1152,8 +1152,8 @@ func (r *systemdRunner) Reattach(st handleState) (handle, bool, error) {
 	}
 	if us.running() {
 		if !us.Sandboxed {
-			// Every unit hotserve starts is sandboxed, so this one was
-			// not started by this hotserve: a development build that
+			// Every unit motel starts is sandboxed, so this one was
+			// not started by this motel: a development build that
 			// still had `sandbox off`, say. It is running an app with
 			// no sandbox, which nothing else would ever report. Not
 			// adopted: the caller's relaunch sweeps this app's units
@@ -1161,7 +1161,7 @@ func (r *systemdRunner) Reattach(st handleState) (handle, bool, error) {
 			// sandboxed. This catches an honest stale unit; it is not a
 			// defence against a same-uid process that starts units on
 			// purpose — such a process can start one with any property
-			// set, including hotserve's own, and is already inside the
+			// set, including motel's own, and is already inside the
 			// trust domain (DESIGN-threat-model.md, the shared-UID
 			// rule), so no comparison here would keep it out.
 			//
@@ -1197,7 +1197,7 @@ func (r *systemdRunner) Reattach(st handleState) (handle, bool, error) {
 		h.pid.Store(int64(us.MainPID))
 		h.setArgv(us.ExecStart)
 		// The caps the unit was started with, which a config changed
-		// while hotserve was down may no longer be: syncCaps (app.go)
+		// while motel was down may no longer be: syncCaps (app.go)
 		// compares them with the spec's once the instance is current.
 		caps := r.unitCaps(ctx, us)
 		r.setCapsState(h, &caps, &us.ControlGroup, nil)
@@ -1205,7 +1205,7 @@ func (r *systemdRunner) Reattach(st handleState) (handle, bool, error) {
 		return h, true, nil
 	}
 	if us.ActiveState == "failed" {
-		r.log().Warn("recorded instance died while hotserve was down", zap.String("unit", st.Unit), zap.String("exit", us.exitString()), zap.String("result", us.Result))
+		r.log().Warn("recorded instance died while motel was down", zap.String("unit", st.Unit), zap.String("exit", us.exitString()), zap.String("result", us.Result))
 		_ = r.resetFailed(ctx, st.Unit) // Sweep reports it if it stays loaded
 	} else {
 		r.log().Info("recorded unit is no longer running", zap.String("unit", st.Unit), zap.String("load_state", us.LoadState), zap.String("active_state", us.ActiveState))

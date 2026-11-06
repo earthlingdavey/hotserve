@@ -1,9 +1,9 @@
 # The box the backup suite runs on: Debian 13 with systemd as PID 1, the
-# hotserve binary (the engine's plan unit runs `hotserve adapt`),
-# hotserve-backup, and Debian's own restic and sqlite3 — the two
+# motel binary (the engine's plan unit runs `motel adapt`),
+# motel-backup, and Debian's own restic and sqlite3 — the two
 # programs whose behaviour the suite is about — and curl, with which the
 # check suite deletes a pack through the storage's own API, as someone
-# holding a key that may delete would, off the box. hotserve itself is
+# holding a key that may delete would, off the box. motel itself is
 # not started: nothing in a backup talks to it. The two binaries come
 # built, from build/e2e-backup (the bin context, docker-compose.yml),
 # which `make e2e-backup` fills first. Build this image through that
@@ -23,26 +23,26 @@ RUN systemctl mask \
 	getty.target \
 	console-getty.service \
 	|| true
-COPY --from=bin hotserve hotserve-backup /usr/bin/
+COPY --from=bin motel motel-backup /usr/bin/
 # The package's unit files, where the .deb puts them: the units suite
 # starts the services from them, and the timers' schedule is read off
 # them.
-COPY packaging/hotserve-backup.service packaging/hotserve-backup.timer \
-	packaging/hotserve-backup-drill.service packaging/hotserve-backup-drill.timer /lib/systemd/system/
+COPY packaging/motel-backup.service packaging/motel-backup.timer \
+	packaging/motel-backup-drill.service packaging/motel-backup-drill.timer /lib/systemd/system/
 # The production layout from the package's own postinstall, as in
 # e2e/Dockerfile. Two things it does are undone here: the account
 # restic runs as, which the setup suite, on a box of its own, shows
-# `hotserve-backup setup` making; and the two timers' enable state,
+# `motel-backup setup` making; and the two timers' enable state,
 # since a timer firing into a scenario would take the run lock from
 # under it — the units suite starts the services itself, and the smoke
 # test (make install-test) is where the package's enabling is asserted.
 COPY packaging/postinstall.sh /tmp/postinstall.sh
-RUN mkdir -p /var/lib/hotserve /var/lib/liveswap /etc/hotserve \
-	&& chmod 750 /var/lib/hotserve /var/lib/liveswap \
+RUN mkdir -p /var/lib/motel /var/lib/liveswap /etc/motel \
+	&& chmod 750 /var/lib/motel /var/lib/liveswap \
 	&& sh /tmp/postinstall.sh && rm /tmp/postinstall.sh \
-	&& userdel hotserve-backup \
-	&& rm -f /etc/systemd/system/timers.target.wants/hotserve-backup.timer /etc/systemd/system/timers.target.wants/hotserve-backup-drill.timer \
+	&& userdel motel-backup \
+	&& rm -f /etc/systemd/system/timers.target.wants/motel-backup.timer /etc/systemd/system/timers.target.wants/motel-backup-drill.timer \
 	&& rm -rf /var/lib/systemd/deb-systemd-helper-enabled
-COPY e2e/backup/Caddyfile /etc/hotserve/Caddyfile
+COPY e2e/backup/Caddyfile /etc/motel/Caddyfile
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// What a hostile hotserve uid can put in in/ (DESIGN-box.md, step 9 and
+// What a hostile motel uid can put in in/ (DESIGN-box.md, step 9 and
 // the Paths notes): every entry leaves in/ in the run that lists it
 // (I2); what is not a regular file named `<id>.tar` is removed with an
 // error-level line and no result (I3); nothing is followed, waited on or

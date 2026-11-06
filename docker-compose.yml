@@ -23,7 +23,7 @@ services:
   dev-systemd:
     build:
       context: test/systemd
-    image: hotserve-dev-systemd
+    image: motel-dev-systemd
     working_dir: /src
     environment:
       GOFLAGS: -buildvcs=false
@@ -87,25 +87,25 @@ services:
   # GitHub or GitLab release asset URL.
   e2e-artifacts:
     build:
-      # The repo root, like e2e-hotserve and e2e-upstream below: the
+      # The repo root, like e2e-motel and e2e-upstream below: the
       # probe release carries liveswap/testdata/sandbox-view.sh, the
       # one view probe, which is embedded by liveswap's own test and so
       # has to live inside that module.
       context: .
       dockerfile: e2e/liveswap/artifacts.Dockerfile
 
-  # The hotserve product binary under test (built from cmd/hotserve).
+  # The motel product binary under test (built from cmd/motel).
   # This container plays the production VPS: systemd as PID 1 running
-  # the packaged hotserve.service as the hotserve user; it terminates
+  # the packaged motel.service as the motel user; it terminates
   # HTTP, receives deploy webhooks, runs the deployed demo app as a
-  # transient unit under the hotserve user's systemd manager,
+  # transient unit under the motel user's systemd manager,
   # rate-limits and caches. Privileged + host cgroup namespace + the
   # cgroup mount is the systemd-in-docker recipe (cgroup-v2 hosts).
   # No `image:`, as for e2e-artifacts: compose names the build
-  # `<project>-e2e-hotserve`, so two checkouts running `make e2e` at
+  # `<project>-e2e-motel`, so two checkouts running `make e2e` at
   # once each run the binary they built (one shared tag let either's
   # build replace the other's).
-  e2e-hotserve:
+  e2e-motel:
     build:
       context: .
       dockerfile: e2e/Dockerfile
@@ -116,7 +116,7 @@ services:
       - /run
       - /run/lock
     # e2e-token.service mints a local deploy keypair + token into the
-    # shared volume before hotserve starts (no OIDC provider on the
+    # shared volume before motel starts (no OIDC provider on the
     # offline compose network); the runner reads the token as its
     # deploy bearer. lib.sh + the systemd suite are for `make e2e`'s
     # in-container step.
@@ -136,20 +136,20 @@ services:
 
   # Stub origin for the penaltybox scenarios: echoes the requested hint
   # level back as the response header. The product image with a
-  # different config: the same build as e2e-hotserve's, from the cache.
+  # different config: the same build as e2e-motel's, from the cache.
   e2e-upstream:
     build:
       context: .
       dockerfile: e2e/Dockerfile
-    command: ["/usr/bin/hotserve", "run", "--config", "/etc/hotserve/Caddyfile"]
-    # Plain `hotserve run`, not systemd: the image's SIGRTMIN+3 stop
+    command: ["/usr/bin/motel", "run", "--config", "/etc/motel/Caddyfile"]
+    # Plain `motel run`, not systemd: the image's SIGRTMIN+3 stop
     # signal would be ignored and cost a 10s SIGKILL wait on teardown.
     stop_signal: SIGTERM
     volumes:
-      - ./e2e/penaltybox/upstream.Caddyfile:/etc/hotserve/Caddyfile:ro
+      - ./e2e/penaltybox/upstream.Caddyfile:/etc/motel/Caddyfile:ro
 
   # The backup suite's storage and its box (`make e2e-backup`), apart
-  # from the e2e stack above: a backup talks to neither hotserve nor the
+  # from the e2e stack above: a backup talks to neither motel nor the
   # apps, and the suite runs as its own CI job. The key is the
   # fixture's, fixed and public; it guards a tmpfs.
   e2e-s3:
@@ -168,7 +168,7 @@ services:
       # build the box through that target, or it gets the last run's.
       additional_contexts:
         bin: ./build/e2e-backup
-    # No `image:`, as for e2e-hotserve: compose names the build per
+    # No `image:`, as for e2e-motel: compose names the build per
     # project.
     privileged: true
     cgroup: host
@@ -196,7 +196,7 @@ services:
   e2e-runner:
     image: curlimages/curl:8.22.0
     depends_on:
-      - e2e-hotserve
+      - e2e-motel
     volumes:
       - ./e2e/run.sh:/run.sh:ro
       - ./e2e/lib.sh:/lib.sh:ro

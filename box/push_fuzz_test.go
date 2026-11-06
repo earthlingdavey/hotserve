@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // FuzzPushAdmission drives an authenticated `POST /` with any request

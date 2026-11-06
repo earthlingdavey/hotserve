@@ -20,8 +20,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // sha is a commit id the entropy layer masks unless it is listed (the
@@ -49,7 +49,7 @@ func newRig(t testing.TB) *rig {
 	}
 	tmp := t.TempDir()
 	core, logs := observer.New(zap.InfoLevel)
-	r := &rig{clock: trusttest.NewClock(), priv: priv, logs: logs, dir: filepath.Join(tmp, "hotserve-box"), installed: filepath.Join(tmp, "Caddyfile")}
+	r := &rig{clock: trusttest.NewClock(), priv: priv, logs: logs, dir: filepath.Join(tmp, "motel-box"), installed: filepath.Join(tmp, "Caddyfile")}
 	r.h = &Handler{
 		app:       &App{verifiers: vs},
 		logger:    zap.New(core),
@@ -316,7 +316,7 @@ func TestHandlerStatusRunsARefusedFile(t *testing.T) {
 			"the Caddyfile this box runs imports /root/backup.caddy; inline the snippet"},
 		"not a box's": {"{\n}\nx.com {\n}\n", "the Caddyfile this box runs has no box block"},
 		"no signer": {strings.Replace(good, "\t\tsigner alice@example.com ssh-ed25519 K1\n\t\tsigner bob ssh-ed25519 K2\n", "", 1),
-			"the Caddyfile this box runs lists no signer; hotserve init is the way back"},
+			"the Caddyfile this box runs lists no signer; motel init is the way back"},
 		"with input": {strings.Replace(good, "deploy.example.com {", strings.Repeat("a", 2000)+".com {", 1),
 			"has a box_webhook site whose address is not one bare hostname"},
 		"the address filtered": {strings.Replace(good, "deploy.example.com {", "https://"+jwt+" {", 1), "[redacted:jwt]"},

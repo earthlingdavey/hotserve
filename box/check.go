@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // refusal is a verdict on the push, the whole catalogue text: the result
@@ -61,7 +61,7 @@ type verdict struct {
 // check is steps 10 to 15 of the trust chain (DESIGN-box.md), from
 // bytes: the bundle as read once, the installed file as read once, the
 // baseline. It is what the applier runs as root and what the handler's
-// pre-verification runs as hotserve (step 5), so the two cannot
+// pre-verification runs as motel (step 5), so the two cannot
 // disagree about a verdict or its words.
 //
 // The checks run cheapest first — the two readings of the files and the
@@ -105,7 +105,7 @@ func check(ctx context.Context, v *proof.Verifier, b *proof.Bundle, installed []
 		// layout's path, once the file is there.
 		fix := "move it there"
 		if base.Path != cur.Host+"/Caddyfile" {
-			fix = "hotserve init, run again from that directory, records it"
+			fix = "motel init, run again from that directory, records it"
 		}
 		return nil, refused("this box's file is %s; the bundle is %s — a box's file is %s/Caddyfile at the top of the repository: %s", proof.Bound(base.Path), proof.Bound(b.Path), cur.Host, fix)
 	}

@@ -54,7 +54,7 @@ import (
 // That makes the sandbox an availability dependency, which is the
 // deliberate trade: a supervisor that ran an app with no isolation —
 // because the kernel changed its mind, or because one app was let out
-// — hands that app every sibling's data and hotserve's own keys,
+// — hands that app every sibling's data and motel's own keys,
 // since they all share one uid. There is no lesser tier and no
 // escape, so nothing has to be recorded per instance either: a
 // relaunch is sandboxed exactly like a deploy.
@@ -81,7 +81,7 @@ type bindPath struct {
 // named here is absent, not merely unreadable.
 //
 // /etc is named entry by entry rather than bound whole. Binding /etc
-// would hand every app every other app's env_file and hotserve's own
+// would hand every app every other app's env_file and motel's own
 // configuration, which is precisely the derived, ageing hidden set
 // this model exists to delete; naming the dozen entries a runtime
 // actually needs keeps the guarantee free of exceptions.
@@ -130,15 +130,15 @@ var sandboxBaseView = []string{
 // kernel interfaces the unit gets its own.
 var sandboxNeverReachable = []string{"/run/user", "/dev", "/sys", "/proc"}
 
-// sandboxHotservePaths is the supervisor's own state on a packaged
+// sandboxMotelPaths is the supervisor's own state on a packaged
 // install: TLS keys and certificates, the admin socket's directory,
 // the documented env-file directories, the box applier's exchange tree
 // (box/DESIGN-box.md, "Paths, owners, and who may touch what"): a
 // mistake to put the liveswap *root* inside of, and never reachable as
 // a bind source.
-var sandboxHotservePaths = []string{
-	"/var/lib/hotserve", "/run/hotserve", "/etc/hotserve", "/etc/liveswap",
-	"/var/lib/hotserve-box",
+var sandboxMotelPaths = []string{
+	"/var/lib/motel", "/run/motel", "/etc/motel", "/etc/liveswap",
+	"/var/lib/motel-box",
 }
 
 // sandboxSpec is what the runner needs to render the sandbox
@@ -172,7 +172,7 @@ type sandboxSpec struct {
 // sees what they point at *now*.
 //
 // The mandatory binds need this, and are the easier target: `shared`
-// and the release dirs live under the shared hotserve UID, and
+// and the release dirs live under the shared motel UID, and
 // appDirs.ensure's MkdirAll succeeds on a symlink. A `shared` that is
 // a link to /run/user/<uid> would have BindPaths= mount the user
 // manager's private socket inside the app's sandbox on the next
@@ -200,12 +200,12 @@ type sandboxSpec struct {
 // the same checks lexically at config load.
 //
 // This is a check on a pathname, and between it and the manager
-// following that pathname a process sharing the hotserve UID could
+// following that pathname a process sharing the motel UID could
 // swap what it points at. No such process exists: every app is
 // sandboxed, and inside its view the app directory is a tmpfs holding
 // mount points it cannot unlink — the symlink would have to be
-// planted from outside every sandbox, by hotserve itself or by root.
-// That holds only while nothing else runs as the hotserve uid outside
+// planted from outside every sandbox, by motel itself or by root.
+// That holds only while nothing else runs as the motel uid outside
 // a sandbox. The check is for root's links: an operator's symlink,
 // made to move a directory or by mistake, is what it refuses (above).
 func (s *sandboxSpec) resolveBindSources() error {
@@ -288,7 +288,7 @@ func refusedAsBindSource(p string) error {
 	}
 	for _, c := range supervisorPaths() {
 		if overlaps(p, c) {
-			return fmt.Errorf("%q overlaps %s, which holds hotserve's own keys, sockets or config", p, c)
+			return fmt.Errorf("%q overlaps %s, which holds motel's own keys, sockets or config", p, c)
 		}
 	}
 	for _, c := range sandboxNeverReachable {
@@ -311,7 +311,7 @@ func refusedAsBindSource(p string) error {
 	return nil
 }
 
-// supervisorPaths is hotserve's own state, each entry in both its
+// supervisorPaths is motel's own state, each entry in both its
 // configured and its canonical spelling.
 //
 // The static list is not sufficient here, and this is the one place the
@@ -319,8 +319,8 @@ func refusedAsBindSource(p string) error {
 // every unit — nothing binds it — so for the VIEW the list is advisory.
 // But a mandatory bind that resolves onto such a path *names* it, and
 // naming is exactly what puts something in the view. Two ways that bit:
-// `/var/lib/hotserve -> /srv/hotserve` made the lexical entry miss a
-// planted `shared -> /srv/hotserve`, and a hotserve pointed at a
+// `/var/lib/motel -> /srv/motel` made the lexical entry miss a
+// planted `shared -> /srv/motel`, and a motel pointed at a
 // non-default XDG data dir has its keys somewhere no literal mentions
 // at all. Both would hand the supervisor's TLS keys to an app on the
 // strength of one planted symlink.
@@ -330,7 +330,7 @@ func refusedAsBindSource(p string) error {
 // what the filesystem says now, not what it said at config load — the
 // same reason resolveBindSources exists at all.
 func supervisorPaths() []string {
-	out := make([]string, 0, len(sandboxHotservePaths)+8)
+	out := make([]string, 0, len(sandboxMotelPaths)+8)
 	add := func(p string) {
 		if p == "" {
 			return
@@ -348,7 +348,7 @@ func supervisorPaths() []string {
 			out = append(out, c)
 		}
 	}
-	for _, p := range sandboxHotservePaths {
+	for _, p := range sandboxMotelPaths {
 		add(p)
 	}
 	// Caddy's data and config dirs follow XDG_DATA_HOME/XDG_CONFIG_HOME,
@@ -374,7 +374,7 @@ func overlaps(a, b string) bool { return pathWithin(a, b) || pathWithin(b, a) }
 // release being started, its shared dir and its own run/<nonce> dir
 // (where it binds its socket) writable, plus the base view. Everything
 // else on the host — every other app, every other release, every other
-// instance's run dir, hotserve's own state, the proxy/ dir holding the
+// instance's run dir, motel's own state, the proxy/ dir holding the
 // pinned socket names — is absent because nothing names it.
 func (s *appSpec) sandboxSpecFor(releaseDir, nonce string) *sandboxSpec {
 	run := s.dirs.runDir(nonce)
@@ -436,19 +436,19 @@ func probeSandboxSpec() *sandboxSpec {
 // shared, and when it succeeds its root inode belongs to the mounter.
 // The probe checks both: /dev/mqueue is owned by its own uid (the
 // host's, bound in, reads as root or nobody), and its
-// /proc/self/ns/ipc is not the one hotserve passes in
-// (HOTSERVE_IPC_NS: hotserve's own, which is the manager's while
-// neither hotserve.service nor the user manager sets PrivateIPC=).
+// /proc/self/ns/ipc is not the one motel passes in
+// (MOTEL_IPC_NS: motel's own, which is the manager's while
+// neither motel.service nor the user manager sets PrivateIPC=).
 // Two signals, since each alone can be made vacuous — the first by a
-// hotserve running as uid 0, the second by a drop-in on
-// hotserve.service. And /dev/shm must be the unit's own tmpfs: the
+// motel running as uid 0, the second by a drop-in on
+// motel.service. And /dev/shm must be the unit's own tmpfs: the
 // probe writes probeShmCanary there, which must then not be in
-// hotserve's /dev/shm, the host's (checkShmCanary) — a write that
+// motel's /dev/shm, the host's (checkShmCanary) — a write that
 // fails is a failure of its own, named on the line.
 func sandboxProbeCommand(nonce string) []string {
 	// The echo lands in the journal under the probe unit's identifier
-	// (hotserve-sandbox-probe), so a refused host can be diagnosed
-	// from `journalctl -t hotserve-sandbox-probe`. The argv reaches the
+	// (motel-sandbox-probe), so a refused host can be diagnosed
+	// from `journalctl -t motel-sandbox-probe`. The argv reaches the
 	// shell byte for byte, as every unit's command does (no-env-expand,
 	// see unitProperties), so the script is spelled as a shell reads it.
 	// /proc/self/status is read by the shell itself, so the mode is the
@@ -458,35 +458,35 @@ func sandboxProbeCommand(nonce string) []string {
 	// (probeStartSpec) keeps in English: a missing binary or a namespace
 	// limit (ENOSPC) is a failure of its own, named on the journal line,
 	// not a pass.
-	return []string{"/bin/sh", "-c", `read _ _ n < /proc/self/uid_map; s=absent; while read -r k v; do [ "$k" = Seccomp: ] && s=$v; done < /proc/self/status; e=$(unshare -U true 2>&1); case $?:$e in 0:*) u=allowed ;; *"Operation not permitted"*) u=refused ;; *) u="failed: $e" ;; esac; i=$(readlink /proc/self/ns/ipc); m=$(stat -c %u /dev/mqueue 2>&1); if echo probe > ` + probeShmCanary(nonce) + `; then w=ok; else w=failed; fi; echo "sandbox probe: uid_map range $n, pid $$, seccomp $s, unshare $u, ipc $i (manager $HOTSERVE_IPC_NS), mqueue owner $m (self $(id -u)), shm write $w"; [ "$n" != 4294967295 ] && [ "$$" = 1 ] && [ "$s" = 2 ] && [ "$u" = refused ] && [ -n "$i" ] && [ "$i" != "$HOTSERVE_IPC_NS" ] && [ "$m" = "$(id -u)" ] && [ "$w" = ok ]`}
+	return []string{"/bin/sh", "-c", `read _ _ n < /proc/self/uid_map; s=absent; while read -r k v; do [ "$k" = Seccomp: ] && s=$v; done < /proc/self/status; e=$(unshare -U true 2>&1); case $?:$e in 0:*) u=allowed ;; *"Operation not permitted"*) u=refused ;; *) u="failed: $e" ;; esac; i=$(readlink /proc/self/ns/ipc); m=$(stat -c %u /dev/mqueue 2>&1); if echo probe > ` + probeShmCanary(nonce) + `; then w=ok; else w=failed; fi; echo "sandbox probe: uid_map range $n, pid $$, seccomp $s, unshare $u, ipc $i (manager $MOTEL_IPC_NS), mqueue owner $m (self $(id -u)), shm write $w"; [ "$n" != 4294967295 ] && [ "$$" = 1 ] && [ "$s" = 2 ] && [ "$u" = refused ] && [ -n "$i" ] && [ "$i" != "$MOTEL_IPC_NS" ] && [ "$m" = "$(id -u)" ] && [ "$w" = ok ]`}
 }
 
 // probeShmCanary is the file the probe unit writes into its /dev/shm:
 // unique per probe, so a leftover of one run cannot answer for the
 // next.
-func probeShmCanary(nonce string) string { return "/dev/shm/hotserve-sandbox-probe-" + nonce }
+func probeShmCanary(nonce string) string { return "/dev/shm/motel-sandbox-probe-" + nonce }
 
-// ownIPCNamespace is the IPC namespace hotserve runs in, as the probe
-// compares it: the manager's, since hotserve.service and the hotserve
+// ownIPCNamespace is the IPC namespace motel runs in, as the probe
+// compares it: the manager's, since motel.service and the motel
 // user's manager both sit in the initial one.
 func ownIPCNamespace() (string, error) {
 	ns, err := os.Readlink("/proc/self/ns/ipc")
 	if err != nil {
-		return "", fmt.Errorf("reading hotserve's own IPC namespace: %w", err)
+		return "", fmt.Errorf("reading motel's own IPC namespace: %w", err)
 	}
 	return ns, nil
 }
 
 // checkShmCanary is the half of the /dev/shm check the probe cannot
 // make from inside its unit: the canary it wrote must not be in
-// hotserve's /dev/shm, which is the host's (hotserve.service sets no
+// motel's /dev/shm, which is the host's (motel.service sets no
 // PrivateDevices=, and PrivateDevices= binds the host's anyway).
 // Found, every app's /dev/shm is one directory. Removed either way.
-// A hotserve that cannot see /dev/shm at all (a drop-in hiding it)
+// A motel that cannot see /dev/shm at all (a drop-in hiding it)
 // cannot make the check, and says so rather than passing it.
 func checkShmCanary(nonce string) error {
 	if st, err := os.Stat("/dev/shm"); err != nil || !st.IsDir() {
-		return fmt.Errorf("hotserve cannot see /dev/shm, so it cannot check that the probe unit's is its own: %w", err)
+		return fmt.Errorf("motel cannot see /dev/shm, so it cannot check that the probe unit's is its own: %w", err)
 	}
 	p := probeShmCanary(nonce)
 	_, err := os.Lstat(p)
@@ -505,7 +505,7 @@ func checkShmCanary(nonce string) error {
 // manager's defaults under the one given here (runner_systemd.go,
 // invariant 8): a host whose locale translates strerror would
 // otherwise turn a refusal into a failure, on a capable box. ipcNS is
-// hotserve's own IPC namespace (ownIPCNamespace), which the probe's
+// motel's own IPC namespace (ownIPCNamespace), which the probe's
 // must differ from.
 func probeStartSpec(nonce, ipcNS string) startSpec {
 	return startSpec{
@@ -514,7 +514,7 @@ func probeStartSpec(nonce, ipcNS string) startSpec {
 		nonce:   nonce,
 		command: sandboxProbeCommand(nonce),
 		dir:     "/",
-		env:     []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "HOTSERVE_IPC_NS=" + ipcNS},
+		env:     []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "MOTEL_IPC_NS=" + ipcNS},
 		grace:   5 * time.Second,
 		sandbox: probeSandboxSpec(),
 		probe:   true,
@@ -528,8 +528,8 @@ func probeStartSpec(nonce, ipcNS string) startSpec {
 // each to connect and again to authenticate: NewConnection opens two
 // sockets) and the two manager probes App.Start makes (probeTimeout
 // each), are what a start spends before Caddy reports ready — 40 + 20
-// + 130 = 190 s bounded, which hotserve.service's TimeoutStartSec
-// (packaging/hotserve.service, 240 s) is sized above with room for
+// + 130 = 190 s bounded, which motel.service's TimeoutStartSec
+// (packaging/motel.service, 240 s) is sized above with room for
 // Caddy's own start. Change one, re-derive the other.
 const sandboxProbeTimeout = 30 * time.Second
 
@@ -575,8 +575,8 @@ func probeSandboxCapability(r runner) error {
 		// One retry, for a timeout only. A probe that fails is a
 		// measurement; one that times out is the absence of one — the
 		// shape a capable host under boot load produces — and this
-		// verdict decides whether hotserve starts at all. A refused
-		// start exits 1, which hotserve.service deliberately never
+		// verdict decides whether motel starts at all. A refused
+		// start exits 1, which motel.service deliberately never
 		// retries (RestartPreventExitStatus=1: a refusal is final
 		// until an operator acts), so at boot there is no next start
 		// to re-measure on: without the retry, one slow attempt keeps
@@ -590,12 +590,12 @@ func probeSandboxCapability(r runner) error {
 		err = attempt()
 	}
 	if err != nil {
-		return fmt.Errorf("sandbox probe unit: %w — check `journalctl -t hotserve-sandbox-probe` for the probe's own output, if it got as far as running; the supported host is Debian 13: PrivatePIDs= needs systemd 257, both namespaces need a kernel that permits them, and the syscall filter needs seccomp the user manager can apply to the unit (the probe's line says which check failed: \"seccomp 0\" or \"unshare allowed\" means the manager skipped the unit's seccomp settings; an ipc equal to the manager's, or a mqueue owner other than self, means the unit has no IPC namespace of its own, and \"shm write failed\" that its /dev/shm is not writable)", err)
+		return fmt.Errorf("sandbox probe unit: %w — check `journalctl -t motel-sandbox-probe` for the probe's own output, if it got as far as running; the supported host is Debian 13: PrivatePIDs= needs systemd 257, both namespaces need a kernel that permits them, and the syscall filter needs seccomp the user manager can apply to the unit (the probe's line says which check failed: \"seccomp 0\" or \"unshare allowed\" means the manager skipped the unit's seccomp settings; an ipc equal to the manager's, or a mqueue owner other than self, means the unit has no IPC namespace of its own, and \"shm write failed\" that its /dev/shm is not writable)", err)
 	}
 	return nil
 }
 
-// validateSandboxRoot rejects a liveswap root inside hotserve's own
+// validateSandboxRoot rejects a liveswap root inside motel's own
 // state: the root holds the apps' own data, and putting it inside the
 // supervisor's TLS keys or env files is a configuration mistake worth
 // failing on, sandbox or no sandbox.
@@ -610,7 +610,7 @@ func probeSandboxCapability(r runner) error {
 // setup into a server that will not start.
 func validateSandboxRoot(root string) error {
 	// Both spellings: the check is lexical, so `/srv/liveswap ->
-	// /var/lib/hotserve/apps` would otherwise walk straight past it.
+	// /var/lib/motel/apps` would otherwise walk straight past it.
 	// An unresolvable root (not created yet, which is the normal case
 	// at first config load) falls back to the lexical value.
 	roots := []string{root}
@@ -627,7 +627,7 @@ func validateSandboxRoot(root string) error {
 		// '\' and both quotes — come back as a different bind list (a
 		// space, a colon), as a unit the manager can no longer load (a
 		// backslash: bad-setting), or not at all (a tab, a quote): the
-		// unit then runs on, unknown to hotserve (#380, measured).
+		// unit then runs on, unknown to motel (#380, measured).
 		if c, ok := unitSyntaxChar(r); ok {
 			where := fmt.Sprintf("root %q", root)
 			if r != root {
@@ -637,7 +637,7 @@ func validateSandboxRoot(root string) error {
 		}
 		for _, h := range supervisor {
 			if pathWithin(r, h) {
-				return fmt.Errorf("root %q is inside %s, which holds hotserve's own keys, sockets and env files; use a root outside it (the default is /var/lib/liveswap)", root, h)
+				return fmt.Errorf("root %q is inside %s, which holds motel's own keys, sockets and env files; use a root outside it (the default is /var/lib/liveswap)", root, h)
 			}
 		}
 		// A root inside the base view would put EVERY app's state and
@@ -792,11 +792,11 @@ func warnEnvFileInView(logger *zap.Logger, specs map[string]*appSpec) {
 		case within(spec.dirs.shared):
 			logger.Warn("env_file is inside the app's shared dir, which the app can read and rewrite inside its sandbox",
 				zap.String("app", name), zap.String("env_file", f),
-				zap.String("fix", "move it outside the liveswap root (the documented location is /etc/hotserve), where no app can see it"))
+				zap.String("fix", "move it outside the liveswap root (the documented location is /etc/motel), where no app can see it"))
 		case within(spec.dirs.releases):
 			logger.Warn("env_file is inside the app's release dir, which the app can read and rewrite inside its sandbox, as well as receive its variables",
 				zap.String("app", name), zap.String("env_file", f),
-				zap.String("fix", "move it outside the liveswap root (the documented location is /etc/hotserve), where no app can see it"))
+				zap.String("fix", "move it outside the liveswap root (the documented location is /etc/motel), where no app can see it"))
 		}
 	}
 }
@@ -882,7 +882,7 @@ func validateEnvFileIsolation(a *App) error {
 		for _, f := range absAndCanonical(cfg.EnvFile) {
 			for _, b := range sandboxBaseView {
 				if pathWithin(f, b) {
-					return fmt.Errorf("app %s: env_file %q is inside %s, which is bound read-only into EVERY app's sandbox — every other app on this box could read it; keep env files outside the base view (the documented location is /etc/hotserve, which no app may name)", name, cfg.EnvFile, b)
+					return fmt.Errorf("app %s: env_file %q is inside %s, which is bound read-only into EVERY app's sandbox — every other app on this box could read it; keep env files outside the base view (the documented location is /etc/motel, which no app may name)", name, cfg.EnvFile, b)
 				}
 			}
 			for other, ocfg := range a.Apps {
@@ -905,7 +905,7 @@ func validateEnvFileIsolation(a *App) error {
 					// file configured as /mnt/liveswap/blog/shared/...).
 					for _, dp := range absAndCanonical(d.path) {
 						if pathWithin(f, dp) {
-							return fmt.Errorf("app %s: env_file %q is inside app %s's %s %q, which is bound into %s's own sandbox — %s could %s it; move the env file outside the liveswap root (the documented location is /etc/hotserve)", name, cfg.EnvFile, other, d.what, d.path, other, other, d.rw)
+							return fmt.Errorf("app %s: env_file %q is inside app %s's %s %q, which is bound into %s's own sandbox — %s could %s it; move the env file outside the liveswap root (the documented location is /etc/motel)", name, cfg.EnvFile, other, d.what, d.path, other, other, d.rw)
 						}
 					}
 				}

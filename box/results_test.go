@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/zap/zapcore"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // The worst result the caps allow fits the handler's read cap with

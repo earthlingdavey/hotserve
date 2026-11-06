@@ -10,10 +10,10 @@ import (
 // linkSocket hard-links the socket file at src to dst without ever
 // following a symlink at src. The app owns run/, so src is an
 // app-controlled name and connect(2) would follow whatever it points
-// at — a symlink to hotserve's admin socket, or to a sibling's — in
-// hotserve's own namespace. An O_PATH|O_NOFOLLOW open hands back a
+// at — a symlink to motel's admin socket, or to a sibling's — in
+// motel's own namespace. An O_PATH|O_NOFOLLOW open hands back a
 // symlink as itself, which the S_IFSOCK check refuses; a real socket
-// is then linked by inode into a directory only hotserve writes, and
+// is then linked by inode into a directory only motel writes, and
 // what the app does to its own name afterwards changes nothing about
 // what dst reaches.
 func linkSocket(src, dst string) error {

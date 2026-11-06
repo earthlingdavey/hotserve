@@ -1,12 +1,12 @@
-bob@box1:~$ sudo hotserve-backup setup s3:https://s3.docs.test/box1
-^@hotserve-backup: restic is not installed at /usr/bin/restic: apt install restic
+bob@box1:~$ sudo motel-backup setup s3:https://s3.docs.test/box1
+^@motel-backup: restic is not installed at /usr/bin/restic: apt install restic
 [exit 1, 0.0575538s, 2026-10-05T18:00:37Z]
-bob@box1:~$ hotserve-backup status
-hotserve-backup: backups are not set up: /etc/hotserve-backup/repository.env is not there
+bob@box1:~$ motel-backup status
+motel-backup: backups are not set up: /etc/motel-backup/repository.env is not there
 [exit 3, 0.0248978s, 2026-10-05T18:00:37Z]
-bob@box1:~$ sudo systemctl start hotserve-backup.service
+bob@box1:~$ sudo systemctl start motel-backup.service
 [exit 0, 0.0318158s, 2026-10-05T18:00:37Z]
-bob@box1:~$ systemctl is-active hotserve-backup.timer hotserve-backup-drill.timer; systemctl show -p ConditionResult,Result hotserve-backup.service
+bob@box1:~$ systemctl is-active motel-backup.timer motel-backup-drill.timer; systemctl show -p ConditionResult,Result motel-backup.service
 active
 active
 Result=success

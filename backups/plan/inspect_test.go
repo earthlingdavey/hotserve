@@ -11,7 +11,7 @@ import (
 // What validate says beyond the plan: the apps that declare no backup —
 // a new app's block with the two lines forgotten is otherwise silent.
 func TestInspectNamesTheAppsThatDeclareNoBackup(t *testing.T) {
-	fakeHotserve(t)
+	fakeMotel(t)
 	file := filepath.Join(t.TempDir(), "Caddyfile")
 	write(t, file, "app blog\napp shop\n")
 	got, err := Inspect(context.Background(), file, filepath.Dir(file))
@@ -31,7 +31,7 @@ func TestInspectNamesTheAppsThatDeclareNoBackup(t *testing.T) {
 }
 
 func TestInspectWithEveryAppDeclared(t *testing.T) {
-	fakeHotserve(t)
+	fakeMotel(t)
 	file := filepath.Join(t.TempDir(), "Caddyfile")
 	write(t, file, "app blog\n")
 	got, err := Inspect(context.Background(), file, filepath.Dir(file))
@@ -47,7 +47,7 @@ func TestInspectWithEveryAppDeclared(t *testing.T) {
 // comes after its own snippets, heredocs and {$NAME} [measured with the
 // real one; the stand-in here warns for the file's own lines].
 func TestAnImportGlobThatMatchesNothingIsRefused(t *testing.T) {
-	fakeHotserve(t)
+	fakeMotel(t)
 	dir := t.TempDir()
 	file := filepath.Join(dir, "Caddyfile")
 	for _, line := range []string{"import /srv/apps/*.caddy", "import sites/*.caddy"} {
@@ -70,7 +70,7 @@ func TestAnImportGlobThatMatchesNothingIsRefused(t *testing.T) {
 // An empty glob with no variable in it is not the variables' doing: it
 // is said as it is, and no made-up value is tried in its place.
 func TestAnEmptyGlobIsNotBlamedOnAVariable(t *testing.T) {
-	fakeHotserve(t)
+	fakeMotel(t)
 	file := filepath.Join(t.TempDir(), "Caddyfile")
 	write(t, file, "email {$ACME_EMAIL}\nimport /srv/none/*.caddy\napp blog\n")
 	_, err := Make(context.Background(), file)
@@ -82,7 +82,7 @@ func TestAnEmptyGlobIsNotBlamedOnAVariable(t *testing.T) {
 // The adapter's warning is read as the adapter writes it, a JSON line
 // among others on stderr, and never taken from anything else there.
 func TestEmptyGlobsAreReadFromTheAdaptersOwnWarning(t *testing.T) {
-	stderr := []byte(`{"level":"info","msg":"using config from file","file":"/etc/hotserve/Caddyfile"}
+	stderr := []byte(`{"level":"info","msg":"using config from file","file":"/etc/motel/Caddyfile"}
 {"level":"warn","ts":1790355132.8,"msg":"No files matching import glob pattern","pattern":"/srv/apps/*.caddy"}
 No files matching import glob pattern: not JSON, not the adapter's
 {"level":"warn","msg":"Caddyfile input is not formatted"}
@@ -97,7 +97,7 @@ No files matching import glob pattern: not JSON, not the adapter's
 // environment is named as the server names it only by luck: it is said
 // as that, not under the name a default gives it here.
 func TestAnUndeclaredAppNamedThroughTheEnvironment(t *testing.T) {
-	fakeHotserve(t)
+	fakeMotel(t)
 	file := filepath.Join(t.TempDir(), "Caddyfile")
 	write(t, file, "app {$SHOP_NAME:shop}\n")
 	got, err := Inspect(context.Background(), file, filepath.Dir(file))
@@ -131,7 +131,7 @@ func second[T any](_ T, err error) error { return err }
 // import through a variable, a glob that matches nothing — is refused
 // as before, backup or no backup.
 func TestAPlaceholderRootIsRefusedOnlyWhereABackupIsDeclared(t *testing.T) {
-	fakeHotserve(t)
+	fakeMotel(t)
 	for _, tc := range []struct {
 		name, caddyfile string
 		refused         string // in the error; empty means the plan is made

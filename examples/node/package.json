@@ -1,5 +1,5 @@
 {
-  "name": "hotserve-node-example",
+  "name": "motel-node-example",
   "private": true,
   "engines": { "node": ">=26" },
   "scripts": {

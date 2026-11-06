@@ -12,8 +12,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // optionJSON parses one `box` option the way the adapter does and
@@ -34,15 +34,15 @@ func optionJSON(t *testing.T, in string) (string, error) {
 func TestBoxOptionParses(t *testing.T) {
 	for name, c := range map[string]struct{ in, want string }{
 		"one source, two signers": {
-			"box {\n\tdeploy_trust github {\n\t\taudience hotserve\n\t\tclaim repository your-org/boxes\n\t\tclaim ref refs/heads/main\n\t}\n\tsigner alice@example.com ssh-ed25519 K1\n\tsigner bob ssh-ed25519 K2\n}",
-			`{"deploy_trust":[{"kind":"github","audience":"hotserve","claims":{"ref":"refs/heads/main","repository":"your-org/boxes"}}],"signers":[{"principal":"alice@example.com","type":"ssh-ed25519","key":"K1"},{"principal":"bob","type":"ssh-ed25519","key":"K2"}]}`,
+			"box {\n\tdeploy_trust github {\n\t\taudience motel\n\t\tclaim repository your-org/boxes\n\t\tclaim ref refs/heads/main\n\t}\n\tsigner alice@example.com ssh-ed25519 K1\n\tsigner bob ssh-ed25519 K2\n}",
+			`{"deploy_trust":[{"kind":"github","audience":"motel","claims":{"ref":"refs/heads/main","repository":"your-org/boxes"}}],"signers":[{"principal":"alice@example.com","type":"ssh-ed25519","key":"K1"},{"principal":"bob","type":"ssh-ed25519","key":"K2"}]}`,
 		},
 		"two sources in order, subject folded": {
-			"box {\n\tdeploy_trust local {\n\t\tpublic_key /etc/hotserve/deploy.pub\n\t\taudience box1\n\t}\n\tsigner a ssh-ed25519 K1\n\tdeploy_trust gitlab {\n\t\taudience hotserve\n\t\tsubject project_path:g/p:ref_type:branch:ref:main\n\t}\n}",
-			`{"deploy_trust":[{"kind":"local","audience":"box1","public_key":"/etc/hotserve/deploy.pub"},{"kind":"gitlab","audience":"hotserve","claims":{"sub":"project_path:g/p:ref_type:branch:ref:main"}}],"signers":[{"principal":"a","type":"ssh-ed25519","key":"K1"}]}`,
+			"box {\n\tdeploy_trust local {\n\t\tpublic_key /etc/motel/deploy.pub\n\t\taudience box1\n\t}\n\tsigner a ssh-ed25519 K1\n\tdeploy_trust gitlab {\n\t\taudience motel\n\t\tsubject project_path:g/p:ref_type:branch:ref:main\n\t}\n}",
+			`{"deploy_trust":[{"kind":"local","audience":"box1","public_key":"/etc/motel/deploy.pub"},{"kind":"gitlab","audience":"motel","claims":{"sub":"project_path:g/p:ref_type:branch:ref:main"}}],"signers":[{"principal":"a","type":"ssh-ed25519","key":"K1"}]}`,
 		},
 		// An empty block parses; Provision refuses it (no signer, no
-		// source), so `hotserve validate` does.
+		// source), so `motel validate` does.
 		"empty": {"box {\n}", `{}`},
 		"bare":  {"box", `{}`},
 	} {
@@ -84,7 +84,7 @@ func TestBoxOptionRefuses(t *testing.T) {
 	if _, err := parseGlobalOption(caddyfile.NewTestDispenser("box {\n}"), httpcaddyfile.App{Name: "box"}); err == nil || !strings.Contains(err.Error(), "more than once") {
 		t.Errorf("a second box option: %v", err)
 	}
-	// Through the adapter, as `hotserve validate` meets it.
+	// Through the adapter, as `motel validate` meets it.
 	twice := strings.Replace(good, "\tbox {\n", "\tbox {\n\t}\n\tbox {\n", 1)
 	if _, _, err := adapt(t, twice); err == nil || !strings.Contains(err.Error(), "the box option is given more than once") {
 		t.Errorf("two box blocks adapted: %v", err)
@@ -121,7 +121,7 @@ func TestWebhookDirective(t *testing.T) {
 }
 
 // adapt runs the Caddyfile adapter on a template (file's K1/K2), as
-// `hotserve validate` does before it provisions.
+// `motel validate` does before it provisions.
 func adapt(t testing.TB, in string) ([]byte, []caddyconfig.Warning, error) {
 	t.Helper()
 	return caddyconfig.GetAdapter("caddyfile").Adapt(file(in), map[string]any{"filename": "Caddyfile"})
@@ -252,7 +252,7 @@ func TestAppProvision(t *testing.T) {
 	t.Setenv("BOX_REPO", "your-org/boxes")
 	wide := App{Signers: []SignerConfig{signer}, DeployTrust: []deploytrust.TrustConfig{
 		tc,
-		{Kind: "github", Audience: "hotserve", Claims: map[string]string{"repository": "{env.BOX_REPO}"}},
+		{Kind: "github", Audience: "motel", Claims: map[string]string{"repository": "{env.BOX_REPO}"}},
 	}}
 	if err := wide.provision(zap.New(core)); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestAppProvision(t *testing.T) {
 	}
 }
 
-// TestValidate is `hotserve validate` on a box file: the adapter, then
+// TestValidate is `motel validate` on a box file: the adapter, then
 // Provision of every app — so a box_webhook without the box option is
 // a config error, not a webhook that refuses every request.
 func TestValidate(t *testing.T) {

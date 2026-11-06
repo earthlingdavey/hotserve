@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/smallhoursorg/hotserve/backups/envfile"
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/envfile"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // The invariants of setup, each a table: every way a thing can happen
@@ -39,10 +39,10 @@ func TestWhateverLeavesInitRunningLeavesItWhatItNeeds(t *testing.T) {
 			}
 		}},
 		{"a runner that lost sight of it", func(b *box, _ func()) {
-			b.err["init"] = errors.New("hotserve_backup_init: its state could not be read 10 times running")
+			b.err["init"] = errors.New("motel_backup_init: its state could not be read 10 times running")
 		}},
 		{"a stop it could not confirm", func(b *box, _ func()) {
-			b.err["init"] = fmt.Errorf("%w: hotserve_backup_init: (stopping it: timeout)", unit.ErrNotConfirmedGone)
+			b.err["init"] = fmt.Errorf("%w: motel_backup_init: (stopping it: timeout)", unit.ErrNotConfirmedGone)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -192,7 +192,7 @@ func TestAKeyThatCannotWriteAnExistingRepositoryIsRefusedBeforeAnythingIsWritten
 		}, clock, ""},
 		{"the unit could not be set up", func(b *box) { b.outcome["open"] = unit.Outcome{Result: "exit-code", ExitStatus: 217} },
 			"systemd could not set the unit up (status 217)", ""},
-		{"the unit could not be started", func(b *box) { b.err["open"] = errors.New("starting hotserve_backup_open: no such user") },
+		{"the unit could not be started", func(b *box) { b.err["open"] = errors.New("starting motel_backup_open: no such user") },
 			"no such user", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -385,7 +385,7 @@ func TestAnInterruptDuringTheOpeningNamesTheLockItMayLeave(t *testing.T) {
 // credential file and on one with none but the staged file — a first
 // setup interrupted mid-init leaves exactly that.
 func TestEveryLockHolderWaitsForAnInitLeftRunningThenSweeps(t *testing.T) {
-	const left = "hotserve_backup_init_0123456789ab.service"
+	const left = "motel_backup_init_0123456789ab.service"
 	holders := []struct {
 		name string
 		hold func(b *box) error

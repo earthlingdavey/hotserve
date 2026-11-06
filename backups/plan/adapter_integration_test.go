@@ -50,7 +50,7 @@ func TestIntegrationTheAdapterWarnsOfAnEmptyGlobAsTheRefusalReadsIt(t *testing.T
 	}
 }
 
-// The adapter, hotserve built from this repository: once, by the first
+// The adapter, motel built from this repository: once, by the first
 // test that asks, and removed after the last (TestMain).
 var (
 	adapterOnce sync.Once
@@ -71,7 +71,7 @@ func TestMain(m *testing.M) {
 func realAdapter(t *testing.T) {
 	t.Helper()
 	adapterOnce.Do(func() {
-		root, err := filepath.Abs("../..") // the workspace: the hotserve module is its root
+		root, err := filepath.Abs("../..") // the workspace: the motel module is its root
 		if err != nil {
 			adapterErr = err
 			return
@@ -79,18 +79,18 @@ func realAdapter(t *testing.T) {
 		if adapterDir, adapterErr = os.MkdirTemp("", "plan-adapter-"); adapterErr != nil {
 			return
 		}
-		build := exec.Command("go", "build", "-o", filepath.Join(adapterDir, "hotserve"), "./cmd/hotserve")
+		build := exec.Command("go", "build", "-o", filepath.Join(adapterDir, "motel"), "./cmd/motel")
 		build.Dir = root
 		if out, err := build.CombinedOutput(); err != nil {
-			adapterErr = fmt.Errorf("building hotserve: %w\n%s", err, out)
+			adapterErr = fmt.Errorf("building motel: %w\n%s", err, out)
 		}
 	})
 	if adapterErr != nil {
 		t.Fatal(adapterErr)
 	}
-	old := hotserve
-	hotserve = filepath.Join(adapterDir, "hotserve")
-	t.Cleanup(func() { hotserve = old })
+	old := motel
+	motel = filepath.Join(adapterDir, "motel")
+	t.Cleanup(func() { motel = old })
 }
 
 // A run adapts the Caddyfile without the server's environment, and what
@@ -108,7 +108,7 @@ func TestIntegrationTheAdapterSubstitutesVariablesAsMakeReadsThem(t *testing.T) 
 		root %s
 		artifact_allowlist example.com/
 		deploy_trust github {
-			audience hotserve
+			audience motel
 			claim repository your-org/app
 		}
 		app blog {
@@ -131,7 +131,7 @@ func TestIntegrationTheAdapterSubstitutesVariablesAsMakeReadsThem(t *testing.T) 
 
 	// An ordinary production Caddyfile: variables with no default.
 	file := write("\temail {$ACME_EMAIL}\n", "/var/lib/liveswap", ":{$METRICS_PORT} {\n\trespond metrics\n}\n\n{$SITE_DOMAIN} {\n\trespond ok\n}\n")
-	adapt := exec.Command(hotserve, "adapt", "--adapter", "caddyfile", "--config", file)
+	adapt := exec.Command(motel, "adapt", "--adapter", "caddyfile", "--config", file)
 	adapt.Env = []string{}
 	if out, err := adapt.CombinedOutput(); err == nil {
 		t.Fatalf("fixture: with an empty environment this Caddyfile adapts, so the test proves nothing: %s", out)

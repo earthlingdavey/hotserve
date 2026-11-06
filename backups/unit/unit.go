@@ -117,7 +117,7 @@ const (
 // nameRe is the shape of every unit name here. The underscores are the
 // point: liveswap's app-name alphabet is [a-z0-9-], so no app, whatever
 // it is called, has a unit of this shape.
-var nameRe = regexp.MustCompile(`^hotserve_backup_[a-z0-9_-]{1,200}\.service$`)
+var nameRe = regexp.MustCompile(`^motel_backup_[a-z0-9_-]{1,200}\.service$`)
 
 // baseView is the part of the OS a command needs in order to run at
 // all; every entry is optional. It is liveswap's list (sandbox.go)

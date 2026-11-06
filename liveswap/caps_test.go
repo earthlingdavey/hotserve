@@ -94,7 +94,7 @@ func TestSetCapsLiftsTasksToTheManagersDefault(t *testing.T) {
 	f.defaultTasksMax = 2273
 	r := newSystemdRunner(f, zap.NewNop())
 	t.Cleanup(r.close)
-	h := &systemdHandle{unit: "hotserve-demo.v1.0a1b2c3d0a1b2c3d.service", done: make(chan struct{})}
+	h := &systemdHandle{unit: "motel-demo.v1.0a1b2c3d0a1b2c3d.service", done: make(chan struct{})}
 	h.caps.Store(&resourceCaps{memoryMax: 64 << 20, tasksMax: 40})
 	must(t, r.SetCaps(h, resourceCaps{memoryMax: 128 << 20}))
 	sent := map[string]any{}
@@ -175,7 +175,7 @@ func TestParseManagerLimitKeepsInfinity(t *testing.T) {
 func TestReattachReadsTheDefaultTasksMaxAsUnset(t *testing.T) {
 	f := newFakeSystemdConn()
 	f.defaultTasksMax = 2273
-	unit := "hotserve-demo.v1.0a1b2c3d0a1b2c3d.service"
+	unit := "motel-demo.v1.0a1b2c3d0a1b2c3d.service"
 	setStatus := func(caps resourceCaps) { // under the fake's lock: a reattached handle's watcher reads it
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -288,7 +288,7 @@ func TestSetCapsFailureReadsTheUnitBack(t *testing.T) {
 	f.defaultTasksMax = 2273
 	r := newSystemdRunner(f, zap.NewNop())
 	t.Cleanup(r.close)
-	unit := "hotserve-demo.v1.0a1b2c3d0a1b2c3d.service"
+	unit := "motel-demo.v1.0a1b2c3d0a1b2c3d.service"
 	h := &systemdHandle{unit: unit, done: make(chan struct{})}
 	h.caps.Store(&resourceCaps{cpuQuota: 50})
 	// Applied, then the transport failed: the manager holds 200%.
@@ -349,7 +349,7 @@ func TestWatcherAndReadBackRefreshEnforcement(t *testing.T) {
 
 	f := newFakeSystemdConn()
 	f.defaultTasksMax = 2273
-	unit := "hotserve-demo.v1.0a1b2c3d0a1b2c3d.service"
+	unit := "motel-demo.v1.0a1b2c3d0a1b2c3d.service"
 	running := unitStatus{Name: unit, LoadState: "loaded", ActiveState: "active", MainPID: 4242, Sandboxed: true, ControlGroup: cg}
 	f.mu.Lock()
 	f.status[unit] = running
@@ -434,7 +434,7 @@ func TestStateReadsCapsAndEnforcementTogether(t *testing.T) {
 	t.Cleanup(func() { cgroupRoot = old })
 	r := newSystemdRunner(newFakeSystemdConn(), zap.NewNop())
 	t.Cleanup(r.close)
-	h := &systemdHandle{unit: "hotserve-demo.v1.0a1b2c3d0a1b2c3d.service", done: make(chan struct{})}
+	h := &systemdHandle{unit: "motel-demo.v1.0a1b2c3d0a1b2c3d.service", done: make(chan struct{})}
 	r.setCapsState(h, &resourceCaps{cpuQuota: 50}, &cg, nil)
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -513,7 +513,7 @@ func TestUnenforcedCapsNamesTheMissingControllers(t *testing.T) {
 	t.Cleanup(func() { cgroupRoot = old })
 	r := newSystemdRunner(newFakeSystemdConn(), zap.NewNop())
 	t.Cleanup(r.close)
-	h := &systemdHandle{unit: "hotserve-demo.v1.0a1b2c3d0a1b2c3d.service", done: make(chan struct{})}
+	h := &systemdHandle{unit: "motel-demo.v1.0a1b2c3d0a1b2c3d.service", done: make(chan struct{})}
 	r.setCapsState(h, &all, &cg, nil)
 	if got := h.state().CapsUnenforced; strings.Join(got, ",") != "memory_max,cpu_quota" {
 		t.Fatalf("handle lists %v, want memory_max and cpu_quota", got)
@@ -541,7 +541,7 @@ func TestUnenforcedCapsNamesTheMissingControllers(t *testing.T) {
 		t.Fatalf("a good reading must replace the kept one: %v", got)
 	}
 	// A handle that never had a reading claims nothing either way.
-	bare := &systemdHandle{unit: "hotserve-demo.v2.0a1b2c3d0a1b2c3d.service", done: make(chan struct{})}
+	bare := &systemdHandle{unit: "motel-demo.v2.0a1b2c3d0a1b2c3d.service", done: make(chan struct{})}
 	none := "/user.slice/user-1000.slice/user@1000.service/app.slice/nowhere.service"
 	r.setCapsState(bare, &all, &none, nil)
 	if got := bare.state().CapsUnenforced; got != nil || bare.controllers.Load() != nil {
@@ -646,14 +646,14 @@ func TestOverlappingSyncsApplyTheLatestSpecLast(t *testing.T) {
 	}
 }
 
-// A unit reattached after a hotserve restart carries the caps it was
+// A unit reattached after a motel restart carries the caps it was
 // started with; a config changed in between reaches it on recovery.
 func TestEnsureRunningSyncsCapsOfAReattachedUnit(t *testing.T) {
 	rig := newTestRig(t)
 	rig.runner.reattachOK = true
 	rig.spec.caps = resourceCaps{memoryMax: 128 << 20}
 	bindSocket(t, rig.spec.dirs.socket(recordedNonce))
-	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "hotserve-demo.v7.0a1b2c3d0a1b2c3d.service"}}
+	rig.store.state = appState{CurrentVersion: "v7", Nonce: recordedNonce, Handle: handleState{Unit: "motel-demo.v7.0a1b2c3d0a1b2c3d.service"}}
 	rig.store.ok = true
 	if err := os.MkdirAll(rig.spec.dirs.release("v7"), 0o755); err != nil {
 		t.Fatal(err)

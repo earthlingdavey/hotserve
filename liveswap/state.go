@@ -40,7 +40,7 @@ type stateStore interface {
 // followed, whoever made it. The app dir itself is not
 // checked here (ownfile.go says why). A state.json that is a
 // link, a FIFO or anything but a regular file, or larger than any
-// state hotserve writes, is an error like a corrupt one, which
+// state motel writes, is an error like a corrupt one, which
 // recovery never silently resets (ensureRunning).
 type fileStateStore struct {
 	path string
@@ -48,9 +48,9 @@ type fileStateStore struct {
 
 // stateMaxBytes bounds a state read with the margin a record's bound
 // has over a record (deployRecordMaxBytes: 1 MiB over an 8 KiB tail):
-// the largest state hotserve writes — a version, a nonce, a unit name
+// the largest state motel writes — a version, a nonce, a unit name
 // built from the two and the app's name, two timestamps — is under
-// 512 bytes, so the bound refuses nothing hotserve wrote.
+// 512 bytes, so the bound refuses nothing motel wrote.
 const stateMaxBytes = 64 << 10
 
 // stateTempPattern names save's temp file (writeOwnFile).
@@ -111,7 +111,7 @@ var _ stateStore = (*fileStateStore)(nil)
 // modification time is not such a key: the release being started is
 // bound read-write into its sandbox (sandbox.go), so its pre_start and
 // its instance can set that dir's mtime to anything, future included.
-// The key is the release's deploy record's write time — when hotserve
+// The key is the release's deploy record's write time — when motel
 // last deployed or rolled back to that version — read off the open
 // record (readOwnFile) in a directory no app's view holds, and only
 // from a record that proves itself one. Three refinements:

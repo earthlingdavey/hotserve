@@ -7,7 +7,7 @@ Amendments are for decisions still fresh or contested and get folded
 into the body once they settle.
 
 Every app unit runs under systemd's own per-unit sandboxing on the
-hotserve user's manager: a user namespace, a PID namespace and a
+motel user's manager: a user namespace, a PID namespace and a
 deny-by-default filesystem view. There is one sandbox, every unit gets
 it, and no configuration turns it off or widens it. The supported host
 is Debian 13 (systemd 257). The implementation is `liveswap/sandbox.go`
@@ -18,8 +18,8 @@ that chose the mechanism is [DESIGN-threat-model.md](../DESIGN-threat-model.md),
 
 ## Why this feature exists
 
-hotserve's trust model is one box, one trust domain: every app runs as
-the `hotserve` user. Without a sandbox any app can read every other
+motel's trust model is one box, one trust domain: every app runs as
+the `motel` user. Without a sandbox any app can read every other
 app's files, env files, the TLS private keys and
 `/proc/<sibling>/environ`, and can connect to the admin unix socket
 (same UID). The realistic attacker is not a malicious tenant — it is a
@@ -29,7 +29,7 @@ exfiltrating).
 
 Containers are the industry answer and the product explicitly rejects
 them. The sandbox is the container *primitives* without the container
-*product*: apps stay files in directories, supervised by hotserve — but
+*product*: apps stay files in directories, supervised by motel — but
 each app's filesystem view contains only its own world, and siblings
 are not merely unreadable, they do not exist.
 
@@ -98,7 +98,7 @@ below as a contract the sandbox path must keep.
   MUST fail the start with the probe's reason — a weaker sandbox
   accepted silently is the "looks configured, quietly weaker" trap, and
   no sandbox at all, on a shared uid, hands one app every sibling's
-  data and hotserve's own keys. The runner MUST refuse a start spec with no sandbox
+  data and motel's own keys. The runner MUST refuse a start spec with no sandbox
   (`TestUnitRefusesToRunWithoutASandbox`).
 - The sandboxed filesystem view MUST be **deny-by-default**: an empty
   read-only tmpfs replaces the whole filesystem
@@ -114,7 +114,7 @@ below as a contract the sandbox path must keep.
   real paths):
   - the app's release dir being started (rw), its shared dir (rw) and
     its own `run/<nonce>/` dir (rw — where it binds its socket; no
-    other instance's run dir is in the view, and hotserve pins the
+    other instance's run dir is in the view, and motel pins the
     socket by inode and never dials the app-writable name, see
     DESIGN-threat-model.md "The socket name is app-writable"), and
     nothing else of the liveswap root. Its `state.json`, its
@@ -149,15 +149,15 @@ below as a contract the sandbox path must keep.
     interpreter's own ld path resolves to the spelling it was written
     with.
 - `/etc` MUST NOT be bound whole. Binding it would hand every app
-  every other app's `env_file` and hotserve's own configuration —
+  every other app's `env_file` and motel's own configuration —
   precisely the derived, ageing hidden set this model exists to
   delete. Naming the dozen entries a runtime actually needs is what
   keeps the guarantee free of exceptions.
 - The view therefore MUST NOT contain, without anything having to
   enumerate them: other apps' directories, `/var/lib` outside the
-  liveswap root's path to this app's own dirs (hotserve's TLS keys
-  and the box applier's exchange tree live there), `/run/hotserve`
-  (admin socket), `/etc/hotserve` and
+  liveswap root's path to this app's own dirs (motel's TLS keys
+  and the box applier's exchange tree live there), `/run/motel`
+  (admin socket), `/etc/motel` and
   `/etc/liveswap` (env files), `/home`, `/root`, `/opt`, `/srv`, or
   any operator `env_file` wherever it lives. `/run/user` MUST NOT be
   reachable by any route, read-only included: with `PrivateUsers=`
@@ -201,7 +201,7 @@ below as a contract the sandbox path must keep.
   Pinned by `TestEveryLaunchIsSandboxed`.
 - A reattach MUST verify rather than trust: a recorded unit that is
   running without `PrivateUsers=`/`PrivatePIDs=` was not started by
-  this hotserve (a development build, or another same-uid process) and
+  this motel (a development build, or another same-uid process) and
   is refused, logged at ERROR, and replaced by a sandboxed relaunch
   through the ordinary sweep (`TestSystemdRunnerReattach`). That
   catches an honest stale unit, not a same-uid process starting units
@@ -238,7 +238,7 @@ below as a contract the sandbox path must keep.
   `/run/user` that is not in the view.
 - Nothing in the app's environment may name a path outside its view.
   `HOME` MUST DEFAULT to a writable in-sandbox path (the app's shared
-  dir): inherited it points at `/var/lib/hotserve`, and every runtime
+  dir): inherited it points at `/var/lib/motel`, and every runtime
   that touches `$HOME` (npm, corepack, pip) would ENOENT. It is applied
   before `env_file` and inline `env`, so an operator can still point it
   elsewhere — deliberately, since an app may want its cache on another
@@ -345,7 +345,7 @@ below as a contract the sandbox path must keep.
   `dccp-disable-auto-loading-as-mitigation-against-local-exploits`
   patch; sibling patches strip `rds`'s, `af_802154`'s and the
   ham-radio families'), so it loads only by root's hand, as `tipc`
-  does. hotserve closes none of this. systemd filters no
+  does. motel closes none of this. systemd filters no
   protocol argument, and the package carries no host policy: a
   modprobe.d file is the box's setting, for every program on it, so it
   is the operator's step, not the `.deb`'s (owner's decision,
@@ -390,8 +390,8 @@ below as a contract the sandbox path must keep.
 - The network namespace MUST be shared: apps make outbound calls and
   reach a same-box database over loopback. The app itself listens on
   a per-instance unix socket in its own `run/<nonce>/` (`SOCKET`); nothing
-  hotserve runs listens on a port, and a sibling's socket is outside
-  the view. hotserve MUST NOT dial that app-writable name: it verifies
+  motel runs listens on a port, and a sibling's socket is outside
+  the view. motel MUST NOT dial that app-writable name: it verifies
   the inode and hard-links it to `<app>/proxy/<nonce>.sock`, a
   directory no view contains, and dials that (DESIGN-threat-model.md,
   "The socket name is app-writable"). `AF_UNIX` MUST stay in
@@ -459,7 +459,7 @@ the rest do ("What this does NOT stop").
 
 One attempt, one retry on timeout only (the shape a
 capable host under boot load produces; a refused start exits 1, which
-hotserve.service deliberately never retries, so without it one slow
+motel.service deliberately never retries, so without it one slow
 attempt keeps a capable box down until someone starts it by hand),
 30 s each, and a hung attempt is then stopped with its grace and the
 runner's stop slack: 190 s bounded with the manager connection's two
@@ -469,12 +469,12 @@ makes first, which the unit's `TimeoutStartSec=240s` is sized above — the
 retry must reach its own verdict, not be cut off by a start timeout
 whose restart would begin the sequence again. The probe also proves
 the base view: `/bin/sh` has to exist inside the unit for the script
-to run at all. Its output lands in `journalctl -t hotserve-sandbox-probe`,
+to run at all. Its output lands in `journalctl -t motel-sandbox-probe`,
 which the refusal message names. The verdict is cached against the
 manager connection's generation
 (`userManagerClient.cachedSandboxCapability`): later activations on
 the same connection read the cache; a redial — a manager restart, or
-hotserve's own — starts a new generation that the next `Start`
+motel's own — starts a new generation that the next `Start`
 measures afresh. A failed verdict is never cached. A unit launched
 between a redial and that next `Start` (a watchdog relaunch after the
 manager came back) is not preceded by a probe: if the host can no
@@ -500,7 +500,7 @@ watcher, where no synchronous hook can see it.
 `TestIntegrationSystemdSandboxedUnitFailsAfterItsStartJobSucceeds` pins
 the systemd semantics so the invalidation is not reinvented.
 
-**Packaging.** `postinstall.sh` enables linger for the hotserve user so
+**Packaging.** `postinstall.sh` enables linger for the motel user so
 its manager runs without a session. The `.deb` depends on
 `systemd (>= 257)`, the release that added `PrivatePIDs=`, so apt
 refuses an older release at install rather than letting it fail when
@@ -511,16 +511,16 @@ still decides. There is no profile to install.
 
 The sandbox is an availability dependency of the whole server: on a
 host that cannot sandbox, a config that defines an app does not load,
-so hotserve does not come up on one at all — admin socket and proxy
+so motel does not come up on one at all — admin socket and proxy
 included — and a reload to one is refused. Only a config with no app,
 such as the starter, skips the probe and serves. There is no graceful
 degrade for host incapability (a container, an LXC VPS, a locked-down
 kernel), because
 the setting that would run apps without one hands a bare app every
-sibling's data and hotserve's keys on the shared uid. The refusal
+sibling's data and motel's keys on the shared uid. The refusal
 message names where the probe's output is and says that no setting
 runs without one. The accepted cost: unprivileged LXC containers from
-budget providers cannot run hotserve, and a workload the sandbox
+budget providers cannot run motel, and a workload the sandbox
 cannot host has nowhere to run.
 
 The governing asymmetry an operator should know:
@@ -528,7 +528,7 @@ The governing asymmetry an operator should know:
 - On a **deploy**, a failed health gate is safe — the new instance is
   discarded and the previous one keeps serving. A view mistake (a DNS
   break, a scrubbed env var an app leaned on) fails here, harmlessly.
-- On a **relaunch** — boot recovery, a unit stopped behind hotserve's
+- On a **relaunch** — boot recovery, a unit stopped behind motel's
   back, every watchdog restart — there is no previous instance to fall
   back to. The view is the same fixed one every launch of that app
   gets, so a mistake surfaces on the next deploy or relaunch alike;
@@ -537,10 +537,10 @@ The governing asymmetry an operator should know:
 Before restarting into a new box or binary, establish that the host
 can deliver the sandbox. A reload is the safe place to find out — a
 config that cannot activate leaves the running one serving, where a
-restart does not. `hotserve validate` does not measure the host (it
+restart does not. `motel validate` does not measure the host (it
 never starts a unit). The verdict is cached per manager connection, so
-a reload measures the host only the first time after hotserve dialled
-the manager; a namespace policy changed underneath a running hotserve
+a reload measures the host only the first time after motel dialled
+the manager; a namespace policy changed underneath a running motel
 (a sysctl, an LSM policy load) is not seen until the next restart.
 There is deliberately no uncached preflight: the cache is what keeps a
 throwaway unit off Caddy's reload path.
@@ -548,7 +548,7 @@ throwaway unit off Caddy's reload path.
 Nothing here is destructive: the release, `shared/` and the
 instance's `run/<nonce>/` are bind-mounted at their real paths and everything else is simply absent
 from the unit's view — `state.json` included, which the supervisor
-still reads and writes as itself. hotserve itself is never sandboxed.
+still reads and writes as itself. motel itself is never sandboxed.
 
 ## Testing acceptance criteria
 
@@ -597,7 +597,7 @@ testing that `/etc/ssl/private` stays out of the view.
 - e2e: ALL scenarios pass sandboxed (the zero-downtime suite doubles as
   sandbox-compat proof); one scenario deploys a probe app whose view
   must name only its own release, shared and run dirs — the liveswap
-  root lists this app and no sibling — with hotserve's state dir, its
+  root lists this app and no sibling — with motel's state dir, its
   runtime dir and the user manager's private socket all absent, and
   `/proc` listing only in-namespace PIDs. It does not assert the admin
   socket: this config puts the admin API on TCP so the runner can drive
@@ -610,11 +610,11 @@ testing that `/etc/ssl/private` stays out of the view.
   `MGR_PID` — its Caddyfile is baked at image build and the manager's
   pid is a runtime value — so the two `/proc/<manager-pid>` checks
   report `skipped` here and are asserted as such; they are covered from
-  *outside* the unit by `denied_to_hotserve`, and from inside by the
+  *outside* the unit by `denied_to_motel`, and from inside by the
   integration and install-test lanes.
 - install-test: the smoke asserts the sandbox from inside the unit on
   Debian 13, against the packaged .deb's real layout: pid 1 and a
-  single-id `uid_map` (both namespaces), hotserve's state, sockets and
+  single-id `uid_map` (both namespaces), motel's state, sockets and
   a sibling's files absent, `/etc` only the base-view entries, and a
   runnable OS present so "absent" cannot mean "empty unit". It is the
   lane that proves the manager's `/proc` and the admin socket are
@@ -628,7 +628,7 @@ testing that `/etc/ssl/private` stays out of the view.
   carry the app's sandbox, and `TestUnitRefusesToRunWithoutASandbox`
   that the runner refuses a spec without one.
 - Negative test once during development: widen the view (add a bind
-  for `/etc/hotserve`, or for all of `/etc/ssl` rather than
+  for `/etc/motel`, or for all of `/etc/ssl` rather than
   `/etc/ssl/certs`) and confirm the isolation assertions fail — in all
   three of the lanes that read the view from inside, which is the point
   of their sharing one probe. Under a deny-by-default view the mutation
@@ -732,7 +732,7 @@ Dated one-liners; the full text of each is in git.
   status field and the rollout ladder removed; the runner refuses a
   spec without a sandbox; reattach verifies the live unit's
   namespaces. `off` was per-app in syntax only: on a shared uid a bare
-  app read every sibling's data and hotserve's keys.
+  app read every sibling's data and motel's keys.
 - 2026-09-06 — App contract moved from `127.0.0.1:$PORT` to a
   per-instance unix socket under a third writable bind, `run/<nonce>/`; the
   socket and the unit share a nonce.
@@ -793,5 +793,5 @@ Dated one-liners; the full text of each is in git.
   unprivileged manager (`UserNamespacePath=`, v259, is refused there).
   The probe now checks that `/dev/mqueue` is owned by its own uid (a
   mqueuefs it mounted itself, in an IPC namespace its user namespace
-  owns) and that its IPC namespace is not hotserve's own, and that a
+  owns) and that its IPC namespace is not motel's own, and that a
   file written in its `/dev/shm` is not on the host.

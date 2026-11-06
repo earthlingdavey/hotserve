@@ -8,7 +8,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // Shape is what the box needs to know about a Caddyfile, and all it
@@ -16,7 +16,7 @@ import (
 // block's signers. It is read from the raw tokens, never from the
 // adapted configuration — which is what makes the reading safe to do
 // as root on pushed input, and the same whoever does it: `init`, the
-// handler's pre-check, the applier and `hotserve box webhook` cannot
+// handler's pre-check, the applier and `motel box webhook` cannot
 // disagree about which address a file names or who may sign for it.
 type Shape struct {
 	// Host is the address of the one site carrying box_webhook, which

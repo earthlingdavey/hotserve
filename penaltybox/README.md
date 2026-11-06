@@ -55,14 +55,14 @@ endpoints, expensive queries) with higher levels.
 ## Install
 
 ```sh
-xcaddy build --with github.com/smallhoursorg/hotserve/penaltybox
+xcaddy build --with github.com/smallhoursorg/motel/penaltybox
 ```
 
 Or with the Caddy builder image:
 
 ```dockerfile
 FROM caddy:2.11.4-builder AS builder
-RUN xcaddy build --with github.com/smallhoursorg/hotserve/penaltybox
+RUN xcaddy build --with github.com/smallhoursorg/motel/penaltybox
 
 FROM caddy:2.11.4
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
@@ -328,14 +328,14 @@ order: see [Caddyfile](#caddyfile).)
 
 ## Development
 
-penaltybox lives in the [hotserve](../) monorepo; the make targets at
+penaltybox lives in the [motel](../) monorepo; the make targets at
 the repo root cover it (no local Go toolchain needed — everything runs
 in Docker):
 
 ```sh
 make test              # unit tests, all modules (race detector, coverage)
 make test-integration  # caddytest harness against an in-process Caddy
-make e2e               # both module suites against the hotserve binary (incl. Souin+Otter)
+make e2e               # both module suites against the motel binary (incl. Souin+Otter)
 make lint vet tidy
 ```
 

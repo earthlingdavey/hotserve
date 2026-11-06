@@ -48,7 +48,7 @@ func TestFileStateStoreRoundTrip(t *testing.T) {
 			PID:       999,
 			Command:   []string{"/usr/bin/node", "server.js"},
 			StartedAt: time.Unix(1_700_000_000, 0).UTC(),
-			Unit:      "hotserve-blog.v3.0a1b2c3d0a1b2c3d.service",
+			Unit:      "motel-blog.v3.0a1b2c3d0a1b2c3d.service",
 		},
 		UpdatedAt: time.Unix(1_700_000_100, 0).UTC(),
 	}
@@ -105,7 +105,7 @@ func assertOnlyEntries(t *testing.T, dir string, names ...string) {
 
 // The state at its largest — the longest version and app name, both
 // timestamps with nanoseconds and a zone — sits far under the read
-// bound, so the bound refuses nothing hotserve wrote; and it loads.
+// bound, so the bound refuses nothing motel wrote; and it loads.
 func TestStateMaxBytesBoundsTheLargestState(t *testing.T) {
 	version := strings.Repeat("v", 64)
 	app := strings.Repeat("a", appNameMaxLen)
@@ -204,7 +204,7 @@ func TestFileStateStoreLoadDoesNotBlockOnAFIFO(t *testing.T) {
 	}
 }
 
-// A state.json larger than any state hotserve writes is refused, and
+// A state.json larger than any state motel writes is refused, and
 // not read whole into memory; one at the bound still loads.
 func TestFileStateStoreLoadRefusesAnOversizedFile(t *testing.T) {
 	store := &fileStateStore{path: filepath.Join(t.TempDir(), "state.json")}
@@ -350,7 +350,7 @@ func TestReleaseOrderLedger(t *testing.T) {
 		// "forged" for a file under its name that names another version,
 		// "unreadable" for something there that cannot be read as one.
 		record string
-		rec    time.Time // when hotserve wrote the record
+		rec    time.Time // when motel wrote the record
 		dir    time.Time // the release dir's mtime: the app's to set
 	}
 	cases := []struct {

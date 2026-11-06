@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // FuzzApplyBundle: whatever bytes stand in in/ as a bundle, one run
@@ -146,7 +146,7 @@ func FuzzRecord(f *testing.F) {
 	})
 }
 
-// FuzzRetention: whatever the hotserve uid names and writes in stage/,
+// FuzzRetention: whatever the motel uid names and writes in stage/,
 // the sweep removes only `<id>.auth` entries, keeps at most 32 ids, and
 // never follows, blocks or fails the run.
 func FuzzRetention(f *testing.F) {

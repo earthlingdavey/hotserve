@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/envfile"
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/envfile"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 const (
@@ -120,8 +120,8 @@ func setupBox(t *testing.T) (*box, *term) {
 	t.Helper()
 	b := newBox(t)
 	must(t, os.Remove(b.cfg.EnvFile))
-	b.cfg.EnvFile = filepath.Join(filepath.Dir(b.cfg.EnvFile), "etc", "hotserve-backup", "repository.env")
-	b.cfg.OldEnvFile = filepath.Join(filepath.Dir(b.cfg.EnvFile), "..", "hotserve", "backup.env")
+	b.cfg.EnvFile = filepath.Join(filepath.Dir(b.cfg.EnvFile), "etc", "motel-backup", "repository.env")
+	b.cfg.OldEnvFile = filepath.Join(filepath.Dir(b.cfg.EnvFile), "..", "motel", "backup.env")
 	b.initOut, b.probeOut = initialized, configJSON
 	// A fresh box: the look for a repository finds none.
 	b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 10}
@@ -288,7 +288,7 @@ func TestAFreshSetupShowsThePasswordBeforeAnythingIsWritten(t *testing.T) {
 	// manager, network, no capability, and the temp file — the working
 	// file is not touched until the repository has answered.
 	s := b.spec("init")
-	if s.User != backupUser || !s.Network || len(s.Capabilities) != 0 || s.SameUIDNamespaces || s.CacheDirectory != "hotserve-backup" {
+	if s.User != backupUser || !s.Network || len(s.Capabilities) != 0 || s.SameUIDNamespaces || s.CacheDirectory != "motel-backup" {
 		t.Fatalf("the init unit: %+v", s)
 	}
 	if p := b.spec("probe"); strings.Join(p.Argv, " ") != "/usr/bin/restic cat config --no-lock" || p.User != backupUser || !p.Network || len(p.Capabilities) != 0 || !strings.HasPrefix(p.EnvironmentFile, b.cfg.EnvFile+".") {
@@ -326,19 +326,19 @@ func TestNothingIsAskedBeforeThePreflightPasses(t *testing.T) {
 		break_ func(b *box)
 		want   string
 	}{
-		{"restic missing", func(b *box) { b.haveProgram = func(p string) bool { return p != b.cfg.Restic } }, "restic, the backup program hotserve-backup runs, is not installed at /usr/bin/restic: apt install restic"},
+		{"restic missing", func(b *box) { b.haveProgram = func(p string) bool { return p != b.cfg.Restic } }, "restic, the backup program motel-backup runs, is not installed at /usr/bin/restic: apt install restic"},
 		{"sqlite3 missing", func(b *box) { b.haveProgram = func(p string) bool { return p != "/usr/bin/sqlite3" } }, "sqlite3 is not installed at /usr/bin/sqlite3: apt install sqlite3"},
-		{"hotserve missing", func(b *box) { b.haveProgram = func(p string) bool { return p != "/usr/bin/hotserve" } }, "hotserve is not installed at /usr/bin/hotserve"},
-		{"this command elsewhere", func(b *box) { b.haveProgram = func(p string) bool { return p != b.cfg.Self } }, "hotserve-backup is not installed at /usr/bin/hotserve-backup, where the units run it"},
+		{"motel missing", func(b *box) { b.haveProgram = func(p string) bool { return p != "/usr/bin/motel" } }, "motel is not installed at /usr/bin/motel"},
+		{"this command elsewhere", func(b *box) { b.haveProgram = func(p string) bool { return p != b.cfg.Self } }, "motel-backup is not installed at /usr/bin/motel-backup, where the units run it"},
 		{"old systemd", func(b *box) { b.version = 255 }, "systemd 257 or later is needed (Debian 13's); this box has 255"},
-		{"the hotserve account missing", func(b *box) {
-			dataOwner = func(context.Context) (int, int, error) { return 0, 0, errors.New("the hotserve account is not there") }
-		}, "the hotserve account is not there"},
+		{"the motel account missing", func(b *box) {
+			dataOwner = func(context.Context) (int, int, error) { return 0, 0, errors.New("the motel account is not there") }
+		}, "the motel account is not there"},
 		{"the plan fails", func(b *box) {
 			b.outcome["plan"] = unit.Outcome{Result: "exit-code", ExitStatus: 1}
 			b.planErr = "root depends on {$LIVESWAP_ROOT}\x1b[0m: give it a literal value\n"
 		}, "could not be turned into a plan (exit 1): root depends on {$LIVESWAP_ROOT} [0m: give it a literal value"},
-		{"the plan fails with nothing said", func(b *box) { b.outcome["plan"] = unit.Outcome{Result: "exit-code", ExitStatus: 1} }, "could not be turned into a plan (exit 1); `journalctl -u hotserve_backup_plan_"},
+		{"the plan fails with nothing said", func(b *box) { b.outcome["plan"] = unit.Outcome{Result: "exit-code", ExitStatus: 1} }, "could not be turned into a plan (exit 1); `journalctl -u motel_backup_plan_"},
 		{"a run holds the lock", func(b *box) {
 			unlock, err := lock(filepath.Join(b.cfg.RunDir, "lock"))
 			must(b.t, err)
@@ -366,7 +366,7 @@ func TestNothingIsAskedBeforeThePreflightPasses(t *testing.T) {
 // at its start, which restic takes for a host.
 func TestASchemeResticReadsIsNotRefusedForItsCase(t *testing.T) {
 	for _, repo := range []string{"s3:https://s3.example.com/b", "s3:httpS://s3.example.com/b", "s3:http://e2e-s3:9000/box", "s3:s3.example.com/b", "s3://s3.example.com/b"} {
-		if _, err := backendOf(repo, "/etc/hotserve-backup/repository.env"); err != nil {
+		if _, err := backendOf(repo, "/etc/motel-backup/repository.env"); err != nil {
 			t.Errorf("%s: %v", repo, err)
 		}
 	}
@@ -536,7 +536,7 @@ func TestTheRunsRemedyPastesAsOneLiteralArgument(t *testing.T) {
 				t.Fatalf("%s holds a quote", u)
 			}
 			msg := b2RunRefused(repo).Error()
-			if want := "as root, hotserve-backup setup '" + u + "' moves it"; !strings.Contains(msg, want) {
+			if want := "as root, motel-backup setup '" + u + "' moves it"; !strings.Contains(msg, want) {
 				t.Fatalf("%s\nwant it to hold %s", msg, want)
 			}
 		})
@@ -544,14 +544,14 @@ func TestTheRunsRemedyPastesAsOneLiteralArgument(t *testing.T) {
 }
 
 // The record keeps the run's b2: refusal whole for a bucket and path of
-// up to 55 characters, the slash between them counted, and the command
-// to paste whole, its closing quote included, up to 181 (the README's
+// up to 58 characters, the slash between them counted, and the command
+// to paste whole, its closing quote included, up to 184 (the README's
 // accepted residual); one more cuts each.
 func TestTheRunsB2RefusalFitsTheRecord(t *testing.T) {
 	for _, c := range []struct {
 		n              int
 		whole, command bool
-	}{{55, true, true}, {56, false, true}, {181, false, true}, {182, false, false}} {
+	}{{58, true, true}, {59, false, true}, {184, false, true}, {185, false, false}} {
 		repo := "b2:" + strings.Repeat("b", 20) + ":" + strings.Repeat("p", c.n-21)
 		msg := b2RunRefused(repo).Error()
 		kept := record.Text(msg)
@@ -897,7 +897,7 @@ func TestALookThatFailedOnItsOwnIsSaidBeforeAnyPassword(t *testing.T) {
 	}{
 		{"the manager could not set the unit up", func(b *box) { b.outcome["probe"] = unit.Outcome{Result: "exit-code", ExitStatus: 217} }, "looking for the repository: systemd could not set the unit up (status 217)"},
 		{"ended by a signal", func(b *box) { b.outcome["probe"] = unit.Outcome{Result: "signal"} }, "looking for the repository: restic was ended by signal"},
-		{"could not be started", func(b *box) { b.err["probe"] = errors.New("starting hotserve_backup_probe: no such user") }, "no such user"},
+		{"could not be started", func(b *box) { b.err["probe"] = errors.New("starting motel_backup_probe: no such user") }, "no such user"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, m := setupBox(t)
@@ -916,7 +916,7 @@ func TestALookThatFailedOnItsOwnIsSaidBeforeAnyPassword(t *testing.T) {
 }
 
 // A program is one every account can run: the units run restic as
-// hotserve-backup and sqlite3 as the app's own uid, so an execute bit
+// motel-backup and sqlite3 as the app's own uid, so an execute bit
 // for root alone is not installed either.
 func TestAProgramIsOneEveryAccountCanRun(t *testing.T) {
 	dir := t.TempDir()
@@ -942,7 +942,7 @@ func TestAProgramIsOneEveryAccountCanRun(t *testing.T) {
 func TestAResticThatCannotRunIsNotInstalled(t *testing.T) {
 	b, m := setupBox(t)
 	b.haveProgram = func(p string) bool { return p != b.cfg.Restic }
-	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "restic, the backup program hotserve-backup runs, is not installed") {
+	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err == nil || !strings.Contains(err.Error(), "restic, the backup program motel-backup runs, is not installed") {
 		t.Fatalf("err = %v", err)
 	}
 	if len(m.asked) != 0 {
@@ -987,14 +987,14 @@ func TestTheInitUnitIsLeftToFinishAndWaitedFor(t *testing.T) {
 	// the unit a killed setup left, before anything of its own.
 	b2, m2 := setupBox(t)
 	must(t, os.MkdirAll(b2.cfg.RunDir, 0o700))
-	must(t, os.WriteFile(filepath.Join(b2.cfg.RunDir, "init-unit"), []byte("hotserve_backup_init_0123456789ab.service\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(b2.cfg.RunDir, "init-unit"), []byte("motel_backup_init_0123456789ab.service\n"), 0o600))
 	if _, err := b2.setup(t, m2, "s3:http://e2e-s3:9000/box"); err != nil {
 		t.Fatal(err)
 	}
-	if len(b2.waited) != 1 || b2.waited[0] != "hotserve_backup_init_0123456789ab.service" {
+	if len(b2.waited) != 1 || b2.waited[0] != "motel_backup_init_0123456789ab.service" {
 		t.Fatalf("waited for %v", b2.waited)
 	}
-	if !strings.Contains(m2.saidAll(), "waiting for the restic init a setup that did not finish left running: hotserve_backup_init_0123456789ab.service") {
+	if !strings.Contains(m2.saidAll(), "waiting for the restic init a setup that did not finish left running: motel_backup_init_0123456789ab.service") {
 		t.Fatalf("said:\n%s", m2.saidAll())
 	}
 	if _, err := os.Lstat(filepath.Join(b2.cfg.RunDir, "init-unit")); err == nil {
@@ -1004,7 +1004,7 @@ func TestTheInitUnitIsLeftToFinishAndWaitedFor(t *testing.T) {
 	// the lock holder with the runner's words.
 	b3, _ := setupBox(t)
 	must(t, os.MkdirAll(b3.cfg.RunDir, 0o700))
-	must(t, os.WriteFile(filepath.Join(b3.cfg.RunDir, "init-unit"), []byte("hotserve_backup_init_0123456789ab.service\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(b3.cfg.RunDir, "init-unit"), []byte("motel_backup_init_0123456789ab.service\n"), 0o600))
 	must(t, os.MkdirAll(filepath.Dir(b3.cfg.EnvFile), 0o755))
 	must(t, os.WriteFile(b3.cfg.EnvFile, []byte("RESTIC_PASSWORD=x\n"), 0o600))
 	b3.waitErr = errors.New("still running after 3m")
@@ -1019,7 +1019,7 @@ func TestTheInitUnitIsLeftToFinishAndWaitedFor(t *testing.T) {
 // there has ended.
 func TestAnInitTheRunnerLostSightOfStaysRecorded(t *testing.T) {
 	b, m := setupBox(t)
-	b.err["init"] = errors.New("hotserve_backup_init: its state could not be read 10 times running")
+	b.err["init"] = errors.New("motel_backup_init: its state could not be read 10 times running")
 	_, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
 	if err == nil || !strings.Contains(err.Error(), "could not be read 10 times") || !strings.Contains(err.Error(), "keep the password shown above") {
 		t.Fatalf("err = %v", err)
@@ -1028,7 +1028,7 @@ func TestAnInitTheRunnerLostSightOfStaysRecorded(t *testing.T) {
 	// fate the same: init ran with the password, whatever the runner
 	// could see of it.
 	b, m = setupBox(t)
-	b.err["init"] = fmt.Errorf("%w: hotserve_backup_init: its state could not be read (stopping it: timeout)", unit.ErrNotConfirmedGone)
+	b.err["init"] = fmt.Errorf("%w: motel_backup_init: its state could not be read (stopping it: timeout)", unit.ErrNotConfirmedGone)
 	_, err = b.setup(t, m, "s3:http://e2e-s3:9000/box")
 	if err == nil || !errors.Is(err, unit.ErrNotConfirmedGone) || !strings.Contains(err.Error(), "keep the password shown above") {
 		t.Fatalf("err = %v", err)
@@ -1046,7 +1046,7 @@ func TestAnInterruptDuringTheWaitForAnEarlierInitIsHonoured(t *testing.T) {
 	b, m := setupBox(t)
 	must(t, os.MkdirAll(b.cfg.RunDir, 0o700))
 	marker := filepath.Join(b.cfg.RunDir, "init-unit")
-	must(t, os.WriteFile(marker, []byte("hotserve_backup_init_0123456789ab.service\n"), 0o600))
+	must(t, os.WriteFile(marker, []byte("motel_backup_init_0123456789ab.service\n"), 0o600))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := Setup(ctx, b.cfg, b, SetupOptions{Repository: "s3:http://e2e-s3:9000/box", Terminal: m})
@@ -1820,7 +1820,7 @@ func TestARepositoryThatDoesNotAnswerIsGivenUpOnAndInitLeftRunning(t *testing.T)
 	b, m := setupBox(t)
 	b.hang = "init"
 	_, err := b.setup(t, m, "s3:http://e2e-s3:9000/box")
-	if err == nil || !strings.Contains(err.Error(), "the repository did not answer within") || !strings.Contains(err.Error(), "restic init is left running as hotserve_backup_init_") || !strings.Contains(err.Error(), "systemctl stop hotserve_backup_init_") || !strings.HasSuffix(err.Error(), "keep the password shown above: restic init ran with it, and may have made the repository; run setup again, which looks first and asks for it if the repository is there") {
+	if err == nil || !strings.Contains(err.Error(), "the repository did not answer within") || !strings.Contains(err.Error(), "restic init is left running as motel_backup_init_") || !strings.Contains(err.Error(), "systemctl stop motel_backup_init_") || !strings.HasSuffix(err.Error(), "keep the password shown above: restic init ran with it, and may have made the repository; run setup again, which looks first and asks for it if the repository is there") {
 		t.Fatalf("err = %v", err)
 	}
 	if len(b.stopped) != 0 {
@@ -2196,17 +2196,17 @@ func TestTheAccountIsMadeWhenMissingAndLeftAloneWhenNot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.accountsMade != 1 || rep.Account != "made" || !strings.Contains(m.saidAll(), "account hotserve-backup: made") {
+	if b.accountsMade != 1 || rep.Account != "made" || !strings.Contains(m.saidAll(), "account motel-backup: made") {
 		t.Fatalf("made %d, report %+v\n%s", b.accountsMade, rep, m.saidAll())
 	}
 	b, m = setupBox(t)
 	if _, err := b.setup(t, m, "s3:http://e2e-s3:9000/box"); err != nil {
 		t.Fatal(err)
 	}
-	if b.accountsMade != 0 || !strings.Contains(m.saidAll(), "account hotserve-backup: present") {
+	if b.accountsMade != 0 || !strings.Contains(m.saidAll(), "account motel-backup: present") {
 		t.Fatalf("made %d\n%s", b.accountsMade, m.saidAll())
 	}
-	if !strings.Contains(useraddArgv(), "useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment made-by-hotserve hotserve-backup") {
+	if !strings.Contains(useraddArgv(), "useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment made-by-motel motel-backup") {
 		t.Fatalf("useradd: %s", useraddArgv())
 	}
 }

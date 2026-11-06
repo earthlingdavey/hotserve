@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // forgetTestAddress is the cleanup for a test that charged the shared
@@ -233,12 +233,12 @@ func TestAuthorizeRefusesALongTokenUnread(t *testing.T) {
 func TestOutageLineIsPerCaller(t *testing.T) {
 	iss := trusttest.NewIssuer(t)
 	iss.JWKSDown.Store(true)
-	vs := Verifiers([]Source{{kind: "oidc", issuer: iss.URL, audience: "hotserve", claims: map[string]string{"sub": "ci"}}}, iss.Client)
+	vs := Verifiers([]Source{{kind: "oidc", issuer: iss.URL, audience: "motel", claims: map[string]string{"sub": "ci"}}}, iss.Client)
 	settled(t, vs...)
 	core, logs := observer.New(zap.WarnLevel)
 	logger := zap.New(core)
 	l := NewLimiter(trusttest.NewClock())
-	tok := iss.Mint(t, iss.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+	tok := iss.Mint(t, iss.Priv, "motel", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	for _, c := range []struct{ key, value, addr string }{
 		{"app", "demo", "203.0.113.11:1"},
 		{"webhook", "box", "203.0.113.12:1"},
@@ -312,9 +312,9 @@ func TestNewIsResolveOnACopy(t *testing.T) {
 	// resolved, as liveswap's Provision resolves them, so a token for
 	// the values is accepted and one for the placeholders' own text is
 	// not — and resolved on a copy, so the config still says {env.NAME}.
-	t.Setenv("HOTSERVE_TEST_AUDIENCE", "box")
-	t.Setenv("HOTSERVE_TEST_SUBJECT", "ci")
-	cfgs := []TrustConfig{{Kind: "local", PublicKey: keyPath, Audience: "{env.HOTSERVE_TEST_AUDIENCE}", Claims: map[string]string{"sub": "{env.HOTSERVE_TEST_SUBJECT}"}}}
+	t.Setenv("MOTEL_TEST_AUDIENCE", "box")
+	t.Setenv("MOTEL_TEST_SUBJECT", "ci")
+	cfgs := []TrustConfig{{Kind: "local", PublicKey: keyPath, Audience: "{env.MOTEL_TEST_AUDIENCE}", Claims: map[string]string{"sub": "{env.MOTEL_TEST_SUBJECT}"}}}
 	vs, err := New(cfgs, false)
 	if err != nil || len(vs) != 1 || vs[0].Label() != "local:"+keyPath {
 		t.Fatalf("New(local) = %v, %v; want one verifier labelled local:%s", vs, err, keyPath)
@@ -322,13 +322,13 @@ func TestNewIsResolveOnACopy(t *testing.T) {
 	if who, _, err := authorize(ctx, vs, trusttest.Mint(t, priv, "box", map[string]string{"sub": "ci"})); err != nil || who.By != "local:"+keyPath+" sub=ci" {
 		t.Errorf("a token for the resolved values: By = %q, %v; want accepted", who.By, err)
 	}
-	if _, _, err := authorize(ctx, vs, trusttest.Mint(t, priv, "{env.HOTSERVE_TEST_AUDIENCE}", map[string]string{"sub": "ci"})); err == nil {
+	if _, _, err := authorize(ctx, vs, trusttest.Mint(t, priv, "{env.MOTEL_TEST_AUDIENCE}", map[string]string{"sub": "ci"})); err == nil {
 		t.Errorf("a token for the placeholder's own text was accepted: the audience was not resolved")
 	}
-	if _, _, err := authorize(ctx, vs, trusttest.Mint(t, priv, "box", map[string]string{"sub": "{env.HOTSERVE_TEST_SUBJECT}"})); err == nil {
+	if _, _, err := authorize(ctx, vs, trusttest.Mint(t, priv, "box", map[string]string{"sub": "{env.MOTEL_TEST_SUBJECT}"})); err == nil {
 		t.Errorf("a token presenting the placeholder's own text was accepted: the claim was not resolved")
 	}
-	if cfgs[0].Audience != "{env.HOTSERVE_TEST_AUDIENCE}" || cfgs[0].Claims["sub"] != "{env.HOTSERVE_TEST_SUBJECT}" {
+	if cfgs[0].Audience != "{env.MOTEL_TEST_AUDIENCE}" || cfgs[0].Claims["sub"] != "{env.MOTEL_TEST_SUBJECT}" {
 		t.Errorf("New resolved the caller's config in place: %+v", cfgs[0])
 	}
 
@@ -338,7 +338,7 @@ func TestNewIsResolveOnACopy(t *testing.T) {
 	}
 
 	// A source Build refuses is refused in Build's words.
-	bad := []TrustConfig{{Kind: "github", Audience: "hotserve"}}
+	bad := []TrustConfig{{Kind: "github", Audience: "motel"}}
 	_, got := New(bad, false)
 	_, want := Build(bad, nil)
 	if got == nil || want == nil || got.Error() != want.Error() {
@@ -354,9 +354,9 @@ func TestNewIsResolveOnACopy(t *testing.T) {
 	// them outlives the test.
 	iss := trusttest.NewIssuer(t)
 	cfg := func() []TrustConfig {
-		return []TrustConfig{{Kind: "oidc", Issuer: iss.URL, Audience: "hotserve", Subject: "ci"}}
+		return []TrustConfig{{Kind: "oidc", Issuer: iss.URL, Audience: "motel", Subject: "ci"}}
 	}
-	tok := iss.Mint(t, iss.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+	tok := iss.Mint(t, iss.Priv, "motel", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	insecure, err := New(cfg(), true)
 	if err != nil {
 		t.Fatal(err)

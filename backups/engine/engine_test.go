@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/smallhoursorg/hotserve/backups/dump"
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/backups/dump"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
 )
 
 const (
@@ -73,8 +73,8 @@ type box struct {
 	hang                       string
 	version                    int
 	haveProgram                func(string) bool
-	account                    bool     // whether the hotserve-backup account exists
-	comment                    string   // its comment: hotserve's mark, where hotserve made it
+	account                    bool     // whether the motel-backup account exists
+	comment                    string   // its comment: motel's mark, where motel made it
 	localComment               string   // its comment in /etc/passwd
 	nssLine, localLine         string   // the whole line the box resolves, and /etc/passwd's, where a row sets them
 	notLocal                   bool     // /etc/passwd holds no account of that name
@@ -113,7 +113,7 @@ func (b *box) Sees(_ context.Context, mountPoint string) (bool, error) {
 	return !b.unseen, b.seesErr
 }
 
-var roleRe = regexp.MustCompile(`^hotserve_backup_([a-z]+)[0-9]*_`)
+var roleRe = regexp.MustCompile(`^motel_backup_([a-z]+)[0-9]*_`)
 
 func newBox(t *testing.T) *box {
 	t.Helper()
@@ -145,9 +145,9 @@ func newBox(t *testing.T) *box {
 	}
 	t.Cleanup(func() { account, makeAccount = oldAccount, oldMake })
 	b.cfg = Config{
-		ConfigDir: "/etc/hotserve",
+		ConfigDir: "/etc/motel",
 		EnvFile:   filepath.Join(dir, "backup.env"), StateDir: filepath.Join(dir, "state"), RunDir: filepath.Join(dir, "run"),
-		Self: "/usr/bin/hotserve-backup", Restic: "/usr/bin/restic",
+		Self: "/usr/bin/motel-backup", Restic: "/usr/bin/restic",
 	}
 	must(t, os.WriteFile(b.cfg.EnvFile, []byte("RESTIC_PASSWORD=the-secret\n"), 0o600))
 	must(t, os.MkdirAll(filepath.Join(b.root, "blog", "shared", "uploads"), 0o755))
@@ -184,7 +184,7 @@ func newBox(t *testing.T) *box {
 	old, oldMount, oldUnmount, oldUnder := dataOwner, bindMount, unmountDetach, mountsUnder
 	dataOwner = func(context.Context) (int, int, error) { return os.Getuid(), os.Getgid(), nil }
 	// Which program the helpers are started from: the file, where the
-	// test made one; this lane has no /usr/bin/hotserve-backup.
+	// test made one; this lane has no /usr/bin/motel-backup.
 	oldProgramOf := programOf
 	programOf = func(path string) (string, error) {
 		if _, err := os.Stat(path); err == nil {
@@ -490,7 +490,7 @@ func TestWhatEachUnitIsGiven(t *testing.T) {
 		}
 	}
 	if s := b.spec("plan"); s.User != backupUser {
-		t.Errorf("the plan unit runs as %q: the config dir holds env files the hotserve group can read", s.User)
+		t.Errorf("the plan unit runs as %q: the config dir holds env files the motel group can read", s.User)
 	}
 	if s := b.spec("dump"); s.User != dataUser {
 		t.Errorf("the dump unit runs as %q: only the data user may open a live database", s.User)
@@ -872,7 +872,7 @@ func TestAPlanThatCannotBeMadeKeepsWhatWasKnown(t *testing.T) {
 func TestLeftoversAreStoppedByName(t *testing.T) {
 	b := newBox(t)
 	must(t, os.MkdirAll(b.cfg.RunDir, 0o755))
-	left := "hotserve_backup_upload_blog_0123456789ab.service"
+	left := "motel_backup_upload_blog_0123456789ab.service"
 	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "units"), []byte(left+"\n"), 0o600))
 	if _, err := Run(context.Background(), b.cfg, b); err != nil {
 		t.Fatal(err)
@@ -1136,7 +1136,7 @@ func TestOnlyTheParentOfANestedPathReachesACommandLine(t *testing.T) {
 func TestALeftoverThatCannotBeStoppedIsRecorded(t *testing.T) {
 	b := newBox(t)
 	must(t, os.MkdirAll(b.cfg.RunDir, 0o700))
-	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "units"), []byte("hotserve_backup_upload_blog_0123456789ab.service\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "units"), []byte("motel_backup_upload_blog_0123456789ab.service\n"), 0o600))
 	b.stopErr = errors.New("it would not stop")
 	st, err := Run(context.Background(), b.cfg, b)
 	if err == nil || st == nil || !strings.Contains(st.Error, "could not be stopped") {
@@ -1287,7 +1287,7 @@ func TestWithNoRecordTheRepositoryIsAskedWhetherTheAppWasEverBackedUp(t *testing
 			if h.User != backupUser || !h.Network || h.EnvironmentFile == "" || len(h.Capabilities) != 0 || len(h.Binds) != 0 {
 				t.Errorf("the unit that asks: %+v", h)
 			}
-			if got := strings.Join(h.Argv[1:], " "); got != "snapshots --json --no-lock --host hotserve --tag app:blog" {
+			if got := strings.Join(h.Argv[1:], " "); got != "snapshots --json --no-lock --host motel --tag app:blog" {
 				t.Errorf("asks with: %s", got)
 			}
 		})
@@ -1371,8 +1371,8 @@ func TestARunReadsTheRepositoryAsTheUnitsAreGivenIt(t *testing.T) {
 		{"b2: in another key", "RESTIC_REPOSITORY_OLD=b2:hs-backups:dev\n" + s3, false},
 		{"b2: inside the value", "RESTIC_REPOSITORY=s3:http://e2e-s3:9000/b2:x\n", false},
 		{"no repository", "", false},
-		{"the repository named in a file restic reads", "RESTIC_REPOSITORY_FILE=/etc/hotserve-backup/repo\n", true},
-		{"RESTIC_REPOSITORY_FILE beside RESTIC_REPOSITORY", s3 + "RESTIC_REPOSITORY_FILE=/etc/hotserve-backup/repo\n", true},
+		{"the repository named in a file restic reads", "RESTIC_REPOSITORY_FILE=/etc/motel-backup/repo\n", true},
+		{"RESTIC_REPOSITORY_FILE beside RESTIC_REPOSITORY", s3 + "RESTIC_REPOSITORY_FILE=/etc/motel-backup/repo\n", true},
 		{"RESTIC_REPOSITORY_FILE set empty", "RESTIC_REPOSITORY_FILE=\n" + s3, false},
 		{"a byte that is not UTF-8 in a value", s3 + "NOTE=caf\xe9\n", true},
 		{"a byte that is not UTF-8 in a comment, which the manager takes", s3 + "# caf\xe9\n", false},

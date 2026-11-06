@@ -1,4 +1,4 @@
-# e2e config for the hotserve product binary: both modules' scenario
+# e2e config for the motel product binary: both modules' scenario
 # suites run against this one config. Plain HTTP inside the compose
 # network. The admin API is exposed so the reload-survival scenario can
 # POST this same file to /load mid-traffic.
@@ -44,7 +44,7 @@
 			command ./server $HOME $$
 			# A secret the crash scenario's release prints: the failed
 			# deploy's response must carry the line with it redacted.
-			env_file /etc/hotserve/demo.env
+			env_file /etc/motel/demo.env
 			health_interval 250ms
 			health_timeout 1s
 			soak 1s
@@ -55,7 +55,7 @@
 			# heal the replacement (and re-probe) within seconds.
 			watchdog_grace 5s
 			keep 2
-			# A declaration, which hotserve validates and otherwise
+			# A declaration, which motel validates and otherwise
 			# ignores: every scenario here runs with one loaded.
 			backup {
 				sqlite demo.db
@@ -71,9 +71,9 @@
 		}
 
 		# The Deno example (examples/deno), with the flags from its own
-		# hotserve.caddy; only the e2e timings are added here.
+		# motel.caddy; only the e2e timings are added here.
 		app deno-example {
-			import /etc/hotserve/deno-example.caddy
+			import /etc/motel/deno-example.caddy
 			health_interval 250ms
 			health_timeout 1s
 			soak 1s
@@ -85,7 +85,7 @@
 		# The Node example (examples/node): one executable, no runtime
 		# on the box. Same e2e timings.
 		app node-example {
-			import /etc/hotserve/node-example.caddy
+			import /etc/motel/node-example.caddy
 			health_interval 250ms
 			health_timeout 1s
 			soak 1s

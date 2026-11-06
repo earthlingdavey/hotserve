@@ -6,7 +6,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 
-	"github.com/smallhoursorg/hotserve/liveswap/internal/dispenser"
+	"github.com/smallhoursorg/motel/liveswap/internal/dispenser"
 )
 
 // Parse reads one `deploy_trust <preset> { ... }` block, at whatever
@@ -115,8 +115,8 @@ func Parse(d *caddyfile.Dispenser) (TrustConfig, error) {
 // match runs from that quote to the key's end, and what is left either
 // merges into the next key or does not decode. Every other name is kept
 // pinnable, since an issuer may emit it. A config written as JSON loses
-// the pair before any hotserve code runs, which is why a JSON config is
-// unsupported (README.md, "What hotserve is (and isn't)"; #251).
+// the pair before any motel code runs, which is why a JSON config is
+// unsupported (README.md, "What motel is (and isn't)"; #251).
 func caddyStripsKey(key string) bool {
 	return key == "@id" || strings.HasSuffix(key, `"@id`)
 }

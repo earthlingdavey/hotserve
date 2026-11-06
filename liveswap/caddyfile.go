@@ -11,10 +11,10 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/dustin/go-humanize"
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 
-	"github.com/smallhoursorg/hotserve/liveswap/internal/dispenser"
+	"github.com/smallhoursorg/motel/liveswap/internal/dispenser"
 )
 
 func init() {
@@ -195,8 +195,8 @@ func (cfg *AppConfig) unmarshalBlock(d *caddyfile.Dispenser, backupFiles *[]stri
 			// every "@id" key from the JSON before decoding it
 			// (caddy.RemoveMetaFields): Validate never sees that one, and
 			// the app would start without it. A config written as JSON
-			// loses the key before any hotserve code runs, which is why
-			// a JSON config is unsupported (README.md, "What hotserve is
+			// loses the key before any motel code runs, which is why
+			// a JSON config is unsupported (README.md, "What motel is
 			// (and isn't)"; #251).
 			if !validEnvKey(key) {
 				return d.Errf("env key %q is not a valid environment variable name (must match %s)", key, envKeyRe)

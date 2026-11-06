@@ -1,7 +1,7 @@
 // Package dump takes a consistent copy of each SQLite database an app
 // declares, into a staging directory, and checks the copy.
 //
-// It is what runs inside the dump unit: as the hotserve uid, in the
+// It is what runs inside the dump unit: as the motel uid, in the
 // app's own kind of sandbox, with no network and no credential,
 // because the bytes it hands to sqlite3 are the app's to choose. It
 // trusts nothing about them: not that a declared path is a file, not
@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/nofollow"
+	"github.com/smallhoursorg/motel/backups/nofollow"
 	"golang.org/x/sys/unix"
 )
 

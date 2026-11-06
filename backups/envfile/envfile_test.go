@@ -243,8 +243,8 @@ func TestALeftoverIsWhatWriteOrSetupLeaves(t *testing.T) {
 	if !IsLeftover(filepath.Base(tmp.Name()), "repository.env") {
 		t.Fatalf("what Write makes on the way, %s, is not a leftover", filepath.Base(tmp.Name()))
 	}
-	if Staged("/etc/hotserve-backup/repository.env") != "/etc/hotserve-backup/repository.env.staged" {
-		t.Fatalf("the staged name: %s", Staged("/etc/hotserve-backup/repository.env"))
+	if Staged("/etc/motel-backup/repository.env") != "/etc/motel-backup/repository.env.staged" {
+		t.Fatalf("the staged name: %s", Staged("/etc/motel-backup/repository.env"))
 	}
 	if !IsLeftover(filepath.Base(Staged("repository.env")), "repository.env") {
 		t.Fatal("setup's own staged file is not a leftover")

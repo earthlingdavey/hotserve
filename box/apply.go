@@ -1,8 +1,8 @@
 package box
 
-// `hotserve box apply`: the root applier (DESIGN-box.md, "The trust
+// `motel box apply`: the root applier (DESIGN-box.md, "The trust
 // chain" steps 9–16, "The install transaction", "Retention"). One shot,
-// started by hotserve-box-apply.path when in/ or work/ is not empty or
+// started by motel-box-apply.path when in/ or work/ is not empty or
 // txn.json exists.
 //
 // The rules every function here keeps:
@@ -14,7 +14,7 @@ package box
 //     gives (I8: temporary fsynced, renamed, directory fsynced).
 //  3. Nothing is written to disk from a defer, so a test that panics at
 //     a hook stands for a crash faithfully.
-//  4. Every value a bundle, a marker or the hotserve uid chose that
+//  4. Every value a bundle, a marker or the motel uid chose that
 //     reaches a result, a record or the journal is held to a grammar
 //     (ids, hosts, principals, app names) or passes proof.Bound or the
 //     diff's redaction and cap.
@@ -41,7 +41,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // Applier is one run of the applier. Its fields are the seams the tests
@@ -54,7 +54,7 @@ type Applier struct {
 	verifier *proof.Verifier
 	logger   *zap.Logger
 	hooks    hooks
-	// waitUntil is the end of the run's one budget for waiting on a hotserve that is
+	// waitUntil is the end of the run's one budget for waiting on a motel that is
 	// activating or reloading (running).
 	waitUntil time.Time
 	// lockWait, when set, is called once if lock must wait for another
@@ -78,7 +78,7 @@ const nobody = 65534
 func newApplier(logger *zap.Logger) *Applier {
 	return &Applier{
 		root:     "/",
-		systemd:  systemctl{unit: "hotserve"},
+		systemd:  systemctl{unit: "motel"},
 		clock:    realClock{},
 		verifier: &proof.Verifier{RunAs: nobody},
 		logger:   logger,
@@ -186,14 +186,14 @@ func (a *Applier) run(ctx context.Context) error {
 // starts the next run at once, so a cause that does not clear by itself
 // loops it to its trigger limit, after which nothing runs until the
 // console restarts it.
-const msgLeftOnDisk = "box apply leaves work on disk: the path unit starts it again at once, and stops at its trigger limit (trigger-limit-hit) if the cause persists; once the console has cleared the cause, systemctl restart hotserve-box-apply.path, and again ten seconds later if that fails"
+const msgLeftOnDisk = "box apply leaves work on disk: the path unit starts it again at once, and stops at its trigger limit (trigger-limit-hit) if the cause persists; once the console has cleared the cause, systemctl restart motel-box-apply.path, and again ten seconds later if that fails"
 
 // leftOnDisk journals msgLeftOnDisk, once, if the run leaves what starts
 // the next run at once: the record, an entry in work/, or an entry of
 // in/ the run listed — every entry of in/ if it listed none. An entry
 // that landed in in/ after the listing is the next run's work, not a
 // stop, and is not counted. The line carries counts, never the names,
-// which the hotserve uid chose.
+// which the motel uid chose.
 func (a *Applier) leftOnDisk() {
 	var left []string
 	if exists(a.x("txn.json")) {
@@ -310,7 +310,7 @@ func (a *Applier) removeVerified(id string) {
 }
 
 // sweepTemporaries removes the temporaries a crash can leave: the swap's
-// in /etc/hotserve and /etc/hotserve/secrets, and writeDurable's beside
+// in /etc/motel and /etc/motel/secrets, and writeDurable's beside
 // txn.json, applied.json and the results. Every one is in a directory
 // only root writes.
 func (a *Applier) sweepTemporaries() {
@@ -411,7 +411,7 @@ func (a *Applier) take() []string {
 		}
 		// A push settles once (step 9): a bundle whose push already
 		// ended — back in in/ after a power loss beat its unlink's
-		// durability, or replayed by the hotserve uid — is removed and
+		// durability, or replayed by the motel uid — is removed and
 		// never run again.
 		if a.settled(id) {
 			a.logger.Warn("box: removed a bundle whose push has already settled", zap.String("id", id))

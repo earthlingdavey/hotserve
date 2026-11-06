@@ -36,9 +36,9 @@ import (
 	"testing"
 	"time"
 
-	hsbox "github.com/smallhoursorg/hotserve/box"
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap"
+	hsbox "github.com/smallhoursorg/motel/box"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 // The box template's scripts — bin/signer, bin/check, bin/apply — in a
@@ -63,18 +63,18 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// hotserveBinary is this tree's hotserve, built once: the scripts' `box
+// motelBinary is this tree's motel, built once: the scripts' `box
 // describe`, `box webhook` and `validate` are the code under test.
-func hotserveBinary(t *testing.T) string {
+func motelBinary(t *testing.T) string {
 	t.Helper()
 	buildOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "hotserve-bin")
+		dir, err := os.MkdirTemp("", "motel-bin")
 		if err != nil {
 			buildErr = err
 			return
 		}
-		builtBin = filepath.Join(dir, "hotserve")
-		out, err := exec.Command("go", "build", "-o", builtBin, "github.com/smallhoursorg/hotserve/cmd/hotserve").CombinedOutput()
+		builtBin = filepath.Join(dir, "motel")
+		out, err := exec.Command("go", "build", "-o", builtBin, "github.com/smallhoursorg/motel/cmd/motel").CombinedOutput()
 		if err != nil {
 			buildErr = fmt.Errorf("go build: %w\n%s", err, out)
 		}
@@ -107,11 +107,11 @@ func newBoxRepo(t *testing.T) *boxRepo {
 		t.Fatal(err)
 	}
 	// Nothing of the process's own: no git config, no Actions variables,
-	// no curl config, no hotserve settings.
+	// no curl config, no motel settings.
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		if strings.HasPrefix(k, "GIT_") || strings.HasPrefix(k, "GITHUB_") || strings.HasPrefix(k, "ACTIONS_") ||
-			strings.HasPrefix(k, "HOTSERVE") || strings.HasPrefix(k, "CURL_") || k == "HOME" || k == "XDG_CONFIG_HOME" {
+			strings.HasPrefix(k, "MOTEL") || strings.HasPrefix(k, "CURL_") || k == "HOME" || k == "XDG_CONFIG_HOME" {
 			continue
 		}
 		r.env = append(r.env, kv)
@@ -344,9 +344,9 @@ func TestBoxSigner(t *testing.T) {
 }
 
 func TestBoxCheck(t *testing.T) {
-	bin := hotserveBinary(t)
+	bin := motelBinary(t)
 	r := newBoxRepo(t)
-	check := func() (string, int) { return r.run("check", "HOTSERVE="+bin) }
+	check := func() (string, int) { return r.run("check", "MOTEL="+bin) }
 	// The template as it ships: no signer yet.
 	if out, code := check(); code != 1 || !strings.Contains(out, "has no signer (make signer adds yours)") {
 		t.Fatalf("the template as it ships: exit %d\n%s", code, out)
@@ -434,7 +434,7 @@ func TestBoxCheck(t *testing.T) {
 	// A describe or a validate that fails and says nothing (killed, or
 	// crashed): the file and the command that failed are named.
 	r.write(boxFile, good)
-	silent := filepath.Join(r.home, "silent-hotserve")
+	silent := filepath.Join(r.home, "silent-motel")
 	script := "#!/bin/sh\n" +
 		"case \"$FAIL $1\" in\n" +
 		"\"describe box\"|\"validate validate\") exit 1 ;;\n" +
@@ -447,7 +447,7 @@ func TestBoxCheck(t *testing.T) {
 		"describe": "check: " + boxFile + ": " + silent + " box describe failed, and said nothing\n",
 		"validate": "check: " + boxFile + " does not validate:\n  " + silent + " validate failed, and said nothing\n",
 	} {
-		if out, code := r.run("check", "HOTSERVE="+silent, "REAL="+bin, "FAIL="+fail); code != 1 || !strings.Contains(out, want) {
+		if out, code := r.run("check", "MOTEL="+silent, "REAL="+bin, "FAIL="+fail); code != 1 || !strings.Contains(out, want) {
 			t.Errorf("%s fails and says nothing: exit %d\n%s", fail, code, out)
 		}
 	}
@@ -595,7 +595,7 @@ func (s *standIn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "front401":
 			proxied(w, 401)
 		case "nobaseline":
-			reply(w, 409, map[string]string{"error": "this box has no baseline; hotserve init <sha>, as root inside the box's directory, sets one"})
+			reply(w, 409, map[string]string{"error": "this box has no baseline; motel init <sha>, as root inside the box's directory, sets one"})
 		default:
 			st := map[string]string{"commit": s.baseline, "box_webhook": "deploy.example.com", "sha256": digest(s.installed)}
 			if s.recipient != "" {
@@ -798,7 +798,7 @@ func encode(v any) []byte {
 }
 
 // applyRig is a repository whose box runs its first signed commit — as
-// after `hotserve init` — and the stand-ins its boxes are reached at.
+// after `motel init` — and the stand-ins its boxes are reached at.
 type applyRig struct {
 	*boxRepo
 	bin      string
@@ -809,7 +809,7 @@ type applyRig struct {
 
 func newApplyRig(t *testing.T) *applyRig {
 	t.Helper()
-	g := &applyRig{boxRepo: newBoxRepo(t), bin: hotserveBinary(t)}
+	g := &applyRig{boxRepo: newBoxRepo(t), bin: motelBinary(t)}
 	g.key("id_ed25519")
 	if out, code := g.run("signer"); code != 0 {
 		t.Fatalf("signer: exit %d\n%s", code, out)
@@ -843,7 +843,7 @@ func (g *applyRig) route(hosts map[string]*standIn) {
 // apply runs bin/apply from a laptop: a fixed token.
 func (g *applyRig) apply(env ...string) (string, int) {
 	g.t.Helper()
-	return g.run("apply", append([]string{"HOTSERVE=" + g.bin, "CURL_HOME=" + g.curlHome, "HOTSERVE_TOKEN=laptop"}, env...)...)
+	return g.run("apply", append([]string{"MOTEL=" + g.bin, "CURL_HOME=" + g.curlHome, "MOTEL_TOKEN=laptop"}, env...)...)
 }
 
 // runArgs runs bin/apply from a laptop with arguments.
@@ -851,7 +851,7 @@ func (g *applyRig) runArgs(args []string) (string, int) {
 	g.t.Helper()
 	cmd := exec.Command(filepath.Join(g.dir, "bin", "apply"), args...)
 	cmd.Dir = g.dir
-	cmd.Env = append(append([]string{}, g.env...), "HOTSERVE="+g.bin, "CURL_HOME="+g.curlHome, "HOTSERVE_TOKEN=laptop")
+	cmd.Env = append(append([]string{}, g.env...), "MOTEL="+g.bin, "CURL_HOME="+g.curlHome, "MOTEL_TOKEN=laptop")
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
@@ -1024,7 +1024,7 @@ func TestBoxApply(t *testing.T) {
 	t.Run("refused before anything is sent", func(t *testing.T) {
 		g := newApplyRig(t)
 		g.box.set(func(s *standIn) { s.onGet = "nobaseline" })
-		if out, code := g.apply(); code != 1 || !strings.Contains(out, "HTTP 409: this box has no baseline; hotserve init <sha>, as root") {
+		if out, code := g.apply(); code != 1 || !strings.Contains(out, "HTTP 409: this box has no baseline; motel init <sha>, as root") {
 			t.Fatalf("no baseline: exit %d\n%s", code, out)
 		}
 		g.box.set(func(s *standIn) { s.onGet = "401" })
@@ -1046,7 +1046,7 @@ func TestBoxApply(t *testing.T) {
 		}
 		inShallow := exec.Command(script)
 		inShallow.Dir = shallow
-		inShallow.Env = append(append([]string{}, g.env...), "HOTSERVE="+g.bin, "CURL_HOME="+g.curlHome, "HOTSERVE_TOKEN=laptop")
+		inShallow.Env = append(append([]string{}, g.env...), "MOTEL="+g.bin, "CURL_HOME="+g.curlHome, "MOTEL_TOKEN=laptop")
 		if out, err := inShallow.CombinedOutput(); err == nil || !strings.Contains(string(out), "this clone is shallow") {
 			t.Fatalf("a shallow clone: %v\n%s", err, out)
 		}
@@ -1070,7 +1070,7 @@ func TestBoxApply(t *testing.T) {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("fast-import: %v\n%s", err, out)
 		}
-		if out, code := g.apply(); code != 1 || !strings.Contains(out, "is longer than 500 commits; run hotserve box baseline") {
+		if out, code := g.apply(); code != 1 || !strings.Contains(out, "is longer than 500 commits; run motel box baseline") {
 			t.Fatalf("past the cap: exit %d\n%s", code, out)
 		}
 		if g.box.seen().bundles != 0 {
@@ -1086,9 +1086,9 @@ func TestBoxApply(t *testing.T) {
 			"GITHUB_ACTIONS=true", "GITHUB_SHA=" + head, "GITHUB_STEP_SUMMARY=" + summary,
 			"GITHUB_REPOSITORY=your-org/boxes", "GITHUB_REF=refs/heads/main",
 			"ACTIONS_ID_TOKEN_REQUEST_URL=" + g.box.srv.URL + "/token?api-version=2.0", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=req",
-			"HOTSERVE_TOKEN=",
+			"MOTEL_TOKEN=",
 			// An audience with characters a query must encode.
-			"HOTSERVE_AUDIENCE=a&b c#d",
+			"MOTEL_AUDIENCE=a&b c#d",
 		}
 		g.box.set(func(s *standIn) { s.onPost = []string{"504"} })
 		// A mint that fails is tried again.
@@ -1148,7 +1148,7 @@ func TestBoxApply(t *testing.T) {
 		if out, code := g.secrets("", "postgres://one", "set", "APP=example", "VAR=DATABASE_URL", "BOX_KEY="+box); code != 0 {
 			t.Fatalf("make secret: exit %d\n%s", code, out)
 		}
-		g.write(boxFile, strings.Replace(g.read(boxFile), "# env_file /etc/hotserve/secrets/example.env", "env_file /etc/hotserve/secrets/example.env", 1))
+		g.write(boxFile, strings.Replace(g.read(boxFile), "# env_file /etc/motel/secrets/example.env", "env_file /etc/motel/secrets/example.env", 1))
 		head := g.commit("example: DATABASE_URL")
 		summary := filepath.Join(t.TempDir(), "summary")
 		out, code := g.apply("GITHUB_STEP_SUMMARY=" + summary)
@@ -1236,7 +1236,7 @@ func TestBoxApply(t *testing.T) {
 		}
 		// A box that names no key.
 		g.box.set(func(s *standIn) { s.recipient = "" })
-		if out, code := g.apply(); code != 1 || !strings.Contains(out, "the box names no key for secrets (no recipient in GET /): run hotserve box key as root on it; nothing was sent") || g.box.seen().bundles != sent {
+		if out, code := g.apply(); code != 1 || !strings.Contains(out, "the box names no key for secrets (no recipient in GET /): run motel box key as root on it; nothing was sent") || g.box.seen().bundles != sent {
 			t.Fatalf("no key on the box: exit %d\n%s", code, out)
 		}
 		// Values, and no recipients file to check the key against.
@@ -1249,7 +1249,7 @@ func TestBoxApply(t *testing.T) {
 		// Every secret removed, over an env file edited on the box: the
 		// push removed it, and says so.
 		g.remove("deploy.example.com/secrets")
-		g.write(boxFile, strings.Replace(g.read(boxFile), "\tenv_file /etc/hotserve/secrets/example.env", "\t# env_file /etc/hotserve/secrets/example.env", 1))
+		g.write(boxFile, strings.Replace(g.read(boxFile), "\tenv_file /etc/motel/secrets/example.env", "\t# env_file /etc/motel/secrets/example.env", 1))
 		g.box.set(func(s *standIn) { s.envEdited = []string{"example"} })
 		head = g.commit("no secrets")
 		if out, code := g.apply(); code != 0 || !strings.Contains(out, "apply: deploy.example.com secrets: example: removed DATABASE_URL\n") ||
@@ -1318,43 +1318,43 @@ func TestBoxApply(t *testing.T) {
 	})
 }
 
-// recorder is a hotserve that writes a tag to $HOTSERVE_RAN each time
+// recorder is a motel that writes a tag to $MOTEL_RAN each time
 // it runs, then runs this tree's: what a stub release looks like.
 func recorder(t *testing.T, path, tag, bin string) {
 	t.Helper()
-	script := "#!/bin/sh\nprintf '%s\\n' '" + tag + "' >>\"$HOTSERVE_RAN\"\nexec \"" + bin + "\" \"$@\"\n"
+	script := "#!/bin/sh\nprintf '%s\\n' '" + tag + "' >>\"$MOTEL_RAN\"\nexec \"" + bin + "\" \"$@\"\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// TestBoxCheckVersionFile: a box with a HOTSERVE_VERSION file is checked
-// with $HOTSERVE-<version>; one without, with $HOTSERVE; a file that
+// TestBoxCheckVersionFile: a box with a MOTEL_VERSION file is checked
+// with $MOTEL-<version>; one without, with $MOTEL; a file that
 // names no release is refused and named, never read as the latest.
 func TestBoxCheckVersionFile(t *testing.T) {
-	bin := hotserveBinary(t)
+	bin := motelBinary(t)
 	r := newBoxRepo(t)
 	r.key("id_ed25519")
 	if out, code := r.run("signer"); code != 0 {
 		t.Fatalf("signer: exit %d\n%s", code, out)
 	}
-	// $HOTSERVE and its releases, each a recorder, in a directory of
+	// $MOTEL and its releases, each a recorder, in a directory of
 	// this test's own.
 	bins := t.TempDir()
-	hs := filepath.Join(bins, "hotserve")
+	hs := filepath.Join(bins, "motel")
 	recorder(t, hs, "default", bin)
 	recorder(t, hs+"-0.3.1", "0.3.1", bin)
 	recorder(t, hs+"-0.3.1-rc1", "0.3.1-rc1", bin)
 	ran := filepath.Join(t.TempDir(), "ran")
 	check := func() (string, int) {
 		_ = os.Remove(ran)
-		return r.run("check", "HOTSERVE="+hs, "HOTSERVE_RAN="+ran)
+		return r.run("check", "MOTEL="+hs, "MOTEL_RAN="+ran)
 	}
 	runs := func() string {
 		b, _ := os.ReadFile(ran)
 		return string(b)
 	}
-	const vfile = "deploy.example.com/HOTSERVE_VERSION"
+	const vfile = "deploy.example.com/MOTEL_VERSION"
 	good := r.read(boxFile)
 	second := strings.Replace(good, "deploy.example.com {", "deploy2.example.com {", 1)
 
@@ -1378,7 +1378,7 @@ func TestBoxCheckVersionFile(t *testing.T) {
 	// A release that is not here: refused, naming the binary and what
 	// installs it; nothing ran.
 	r.write(vfile, "0.3.0\n")
-	if out, code := check(); code != 1 || !strings.Contains(out, "check: deploy.example.com/Caddyfile: "+vfile+" names 0.3.0, and "+hs+"-0.3.0 is not here to check it with: bin/install-hotserve installs one") || runs() != "" {
+	if out, code := check(); code != 1 || !strings.Contains(out, "check: deploy.example.com/Caddyfile: "+vfile+" names 0.3.0, and "+hs+"-0.3.0 is not here to check it with: bin/install-motel installs one") || runs() != "" {
 		t.Fatalf("a release not installed: exit %d\n%s\nran:\n%s", code, out, runs())
 	}
 	// Not a release: refused and named, the file empty included; the
@@ -1386,7 +1386,7 @@ func TestBoxCheckVersionFile(t *testing.T) {
 	for _, file := range []string{"", "\n", "v", "v\n", "0.3", "0.3.1\n0.3.2\n", "0.3.1 \n", "latest\n", "0.3.1-rc1 # the candidate\n", "\xef\xbb\xbf0.3.1\n"} {
 		r.write(vfile, file)
 		out, code := check()
-		if code != 1 || !strings.Contains(out, "check: deploy.example.com/Caddyfile: "+vfile+" does not name a hotserve release: '") || !strings.Contains(out, "is not a release's version, 0.3.1 or v0.3.1-rc1, on one line") || runs() != "" {
+		if code != 1 || !strings.Contains(out, "check: deploy.example.com/Caddyfile: "+vfile+" does not name a motel release: '") || !strings.Contains(out, "is not a release's version, 0.3.1 or v0.3.1-rc1, on one line") || runs() != "" {
 			t.Fatalf("file %q: exit %d\n%s\nran:\n%s", file, code, out, runs())
 		}
 		if empty := strings.TrimSpace(file) == ""; empty != strings.Contains(out, "an empty file pins nothing: name the release this box runs, or delete the file") {
@@ -1399,14 +1399,14 @@ func TestBoxCheckVersionFile(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(r.dir, vfile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := check(); code != 1 || !strings.Contains(out, vfile+" cannot be read: a box's HOTSERVE_VERSION is a regular file of one line") {
+	if out, code := check(); code != 1 || !strings.Contains(out, vfile+" cannot be read: a box's MOTEL_VERSION is a regular file of one line") {
 		t.Fatalf("a directory: exit %d\n%s", code, out)
 	}
 	r.remove(vfile)
 	if err := os.Symlink("../versions/gone", filepath.Join(r.dir, vfile)); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := check(); code != 1 || !strings.Contains(out, vfile+" cannot be read: a box's HOTSERVE_VERSION is a regular file of one line") || runs() != "" {
+	if out, code := check(); code != 1 || !strings.Contains(out, vfile+" cannot be read: a box's MOTEL_VERSION is a regular file of one line") || runs() != "" {
 		t.Fatalf("a dangling link: exit %d\n%s", code, out)
 	}
 	r.remove(vfile)
@@ -1414,7 +1414,7 @@ func TestBoxCheckVersionFile(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(r.dir, vfile), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := check(); code != 1 || !strings.Contains(out, vfile+" cannot be read: a box's HOTSERVE_VERSION is a regular file of one line") || runs() != "" {
+	if out, code := check(); code != 1 || !strings.Contains(out, vfile+" cannot be read: a box's MOTEL_VERSION is a regular file of one line") || runs() != "" {
 		t.Fatalf("a pipe: exit %d\n%s", code, out)
 	}
 	r.remove(vfile)
@@ -1423,7 +1423,7 @@ func TestBoxCheckVersionFile(t *testing.T) {
 
 // releases is a stand-in for github.com's release pages: the latest's
 // redirect, and each release's tarball and checksums.txt. The tarball's
-// hotserve is a recorder tagged with its version.
+// motel is a recorder tagged with its version.
 type releases struct {
 	t      *testing.T
 	srv    *httptest.Server
@@ -1469,14 +1469,14 @@ func newReleases(t *testing.T, latest, bin string) (g *releases, ca []byte) {
 	return g, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
-var releasePath = regexp.MustCompile(`^/smallhoursorg/hotserve/releases/download/v([0-9A-Za-z.-]+)/(.+)$`)
+var releasePath = regexp.MustCompile(`^/smallhoursorg/motel/releases/download/v([0-9A-Za-z.-]+)/(.+)$`)
 
 func (g *releases) tarball(v string) []byte {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(zw)
-	script := "#!/bin/sh\nprintf '%s\\n' '" + v + "' >>\"$HOTSERVE_RAN\"\nexec \"" + g.bin + "\" \"$@\"\n"
-	for _, f := range []struct{ name, body string }{{"LICENSE", "a licence\n"}, {"hotserve", script}} {
+	script := "#!/bin/sh\nprintf '%s\\n' '" + v + "' >>\"$MOTEL_RAN\"\nexec \"" + g.bin + "\" \"$@\"\n"
+	for _, f := range []struct{ name, body string }{{"LICENSE", "a licence\n"}, {"motel", script}} {
 		if err := tw.WriteHeader(&tar.Header{Name: f.name, Mode: 0o755, Size: int64(len(f.body))}); err != nil {
 			g.t.Fatal(err)
 		}
@@ -1494,11 +1494,11 @@ func (g *releases) tarball(v string) []byte {
 }
 
 func (g *releases) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/smallhoursorg/hotserve/releases/latest" {
-		http.Redirect(w, r, "https://github.com/smallhoursorg/hotserve/releases/tag/v"+g.latest, http.StatusFound)
+	if r.URL.Path == "/smallhoursorg/motel/releases/latest" {
+		http.Redirect(w, r, "https://github.com/smallhoursorg/motel/releases/tag/v"+g.latest, http.StatusFound)
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/smallhoursorg/hotserve/releases/tag/") {
+	if strings.HasPrefix(r.URL.Path, "/smallhoursorg/motel/releases/tag/") {
 		_, _ = io.WriteString(w, "a release page\n")
 		return
 	}
@@ -1512,7 +1512,7 @@ func (g *releases) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	tgz := "hotserve_" + v + "_linux_" + g.arch + ".tar.gz"
+	tgz := "motel_" + v + "_linux_" + g.arch + ".tar.gz"
 	switch name {
 	case tgz:
 		g.mu.Lock()
@@ -1527,8 +1527,8 @@ func (g *releases) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if corrupt {
 			sum = digest([]byte("other bytes"))
 		}
-		other := "hotserve_" + v + "_linux_" + map[string]string{"amd64": "arm64", "arm64": "amd64"}[g.arch] + ".tar.gz"
-		_, _ = fmt.Fprintf(w, "%s  %s\n%s  %s\n%s  hotserve_%s_%s.deb\n", sum, tgz, digest([]byte(other)), other, digest([]byte("deb")), v, g.arch)
+		other := "motel_" + v + "_linux_" + map[string]string{"amd64": "arm64", "arm64": "amd64"}[g.arch] + ".tar.gz"
+		_, _ = fmt.Fprintf(w, "%s  %s\n%s  %s\n%s  motel_%s_%s.deb\n", sum, tgz, digest([]byte(other)), other, digest([]byte("deb")), v, g.arch)
 	default:
 		http.NotFound(w, r)
 	}
@@ -1546,21 +1546,21 @@ func (g *releases) reset() {
 	g.downloads = map[string]int{}
 }
 
-// TestBoxInstallHotserve: bin/install-hotserve against a stand-in
+// TestBoxInstallMotel: bin/install-motel against a stand-in
 // github.com, with sudo a script that puts /usr/local/bin under a
 // directory of the test's. Every release the boxes name is installed
-// once, verified, as hotserve-<version>; the default as hotserve too;
+// once, verified, as motel-<version>; the default as motel too;
 // and bin/check then picks each box's.
-func TestBoxInstallHotserve(t *testing.T) {
+func TestBoxInstallMotel(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("bin/install-hotserve installs Linux binaries, and refuses elsewhere")
+		t.Skip("bin/install-motel installs Linux binaries, and refuses elsewhere")
 	}
 	for _, tool := range []string{"sha256sum", "tar"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Fatalf("bin/install-hotserve needs %s on PATH", tool)
+			t.Fatalf("bin/install-motel needs %s on PATH", tool)
 		}
 	}
-	bin := hotserveBinary(t)
+	bin := motelBinary(t)
 	r := newBoxRepo(t)
 	r.key("id_ed25519")
 	if out, code := r.run("signer"); code != 0 {
@@ -1590,7 +1590,7 @@ func TestBoxInstallHotserve(t *testing.T) {
 		t.Fatal(err)
 	}
 	ran := filepath.Join(t.TempDir(), "ran")
-	env := []string{"CURL_HOME=" + curlHome, "PATH=" + stubs + string(os.PathListSeparator) + os.Getenv("PATH"), "HOTSERVE_RAN=" + ran}
+	env := []string{"CURL_HOME=" + curlHome, "PATH=" + stubs + string(os.PathListSeparator) + os.Getenv("PATH"), "MOTEL_RAN=" + ran}
 	installArgs := func(args []string, extra ...string) (string, int) {
 		t.Helper()
 		gh.reset()
@@ -1598,7 +1598,7 @@ func TestBoxInstallHotserve(t *testing.T) {
 		if err := os.MkdirAll(usrLocalBin, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command(filepath.Join(r.dir, "bin", "install-hotserve"), args...)
+		cmd := exec.Command(filepath.Join(r.dir, "bin", "install-motel"), args...)
 		cmd.Dir, cmd.Env = r.dir, append(append(append([]string{}, r.env...), env...), extra...)
 		out, err := cmd.CombinedOutput()
 		var exit *exec.ExitError
@@ -1606,7 +1606,7 @@ func TestBoxInstallHotserve(t *testing.T) {
 			return string(out), exit.ExitCode()
 		}
 		if err != nil {
-			t.Fatalf("bin/install-hotserve: %v\n%s", err, out)
+			t.Fatalf("bin/install-motel: %v\n%s", err, out)
 		}
 		return string(out), 0
 	}
@@ -1633,13 +1633,13 @@ func TestBoxInstallHotserve(t *testing.T) {
 		}
 		return names
 	}
-	// tagOf runs an installed hotserve and returns the version its
+	// tagOf runs an installed motel and returns the version its
 	// recorder wrote: which release's bytes it is.
 	tagOf := func(name string) string {
 		t.Helper()
 		_ = os.Remove(ran)
 		cmd := exec.Command(filepath.Join(usrLocalBin, name), "box", "webhook", filepath.Join(r.dir, boxFile))
-		cmd.Env = append(append([]string{}, r.env...), "HOTSERVE_RAN="+ran)
+		cmd.Env = append(append([]string{}, r.env...), "MOTEL_RAN="+ran)
 		out, err := cmd.CombinedOutput()
 		if err != nil || strings.TrimSpace(string(out)) != "https://deploy.example.com/" {
 			t.Fatalf("%s box webhook: %v\n%s", name, err, out)
@@ -1649,25 +1649,25 @@ func TestBoxInstallHotserve(t *testing.T) {
 	}
 	arch := runtime.GOARCH
 	// ok is sha256sum's line for a verified tarball, before the install's.
-	ok := func(v string) string { return "hotserve_" + v + "_linux_" + arch + ".tar.gz: OK\n" }
+	ok := func(v string) string { return "motel_" + v + "_linux_" + arch + ".tar.gz: OK\n" }
 	stable := func(v string) string {
-		return ok(v) + "install-hotserve: hotserve " + v + " (" + arch + "), and hotserve-" + v + "\n"
+		return ok(v) + "install-motel: motel " + v + " (" + arch + "), and motel-" + v + "\n"
 	}
 	pinned := func(v string) string {
-		return ok(v) + "install-hotserve: hotserve-" + v + " (" + arch + "), for the boxes whose HOTSERVE_VERSION names it\n"
+		return ok(v) + "install-motel: motel-" + v + " (" + arch + "), for the boxes whose MOTEL_VERSION names it\n"
 	}
 
-	// No file and no variable: the latest, once, as hotserve and
-	// hotserve-<latest>.
+	// No file and no variable: the latest, once, as motel and
+	// motel-<latest>.
 	out, code := install()
 	if code != 0 || out != stable("0.3.1") {
 		t.Fatalf("the latest: exit %d\n%s", code, out)
 	}
-	if got := installed(); !slices.Equal(got, []string{"hotserve", "hotserve-0.3.1"}) {
+	if got := installed(); !slices.Equal(got, []string{"motel", "motel-0.3.1"}) {
 		t.Fatalf("installed %v", got)
 	}
-	if !maps.Equal(gh.served(), map[string]int{"0.3.1": 1}) || tagOf("hotserve") != "0.3.1" || tagOf("hotserve-0.3.1") != "0.3.1" {
-		t.Fatalf("downloads %v; hotserve is %s", gh.served(), tagOf("hotserve"))
+	if !maps.Equal(gh.served(), map[string]int{"0.3.1": 1}) || tagOf("motel") != "0.3.1" || tagOf("motel-0.3.1") != "0.3.1" {
+		t.Fatalf("downloads %v; motel is %s", gh.served(), tagOf("motel"))
 	}
 
 	// Four boxes, three releases between them: each release once,
@@ -1677,7 +1677,7 @@ func TestBoxInstallHotserve(t *testing.T) {
 	box := func(host, version string) {
 		r.write(host+"/Caddyfile", strings.Replace(good, "deploy.example.com {", host+" {", 1))
 		if version != "" {
-			r.write(host+"/HOTSERVE_VERSION", version)
+			r.write(host+"/MOTEL_VERSION", version)
 		}
 	}
 	box("deploy2.example.com", "0.3.0\n")
@@ -1688,21 +1688,21 @@ func TestBoxInstallHotserve(t *testing.T) {
 	if code != 0 || out != want {
 		t.Fatalf("three releases: exit %d\n%s", code, out)
 	}
-	if got := installed(); !slices.Equal(got, []string{"hotserve", "hotserve-0.3.0", "hotserve-0.3.1", "hotserve-0.3.1-rc1"}) {
+	if got := installed(); !slices.Equal(got, []string{"motel", "motel-0.3.0", "motel-0.3.1", "motel-0.3.1-rc1"}) {
 		t.Fatalf("installed %v", got)
 	}
 	if !maps.Equal(gh.served(), map[string]int{"0.3.1": 1, "0.3.0": 1, "0.3.1-rc1": 1}) {
 		t.Fatalf("downloads %v", gh.served())
 	}
-	for name, tag := range map[string]string{"hotserve": "0.3.1", "hotserve-0.3.0": "0.3.0", "hotserve-0.3.1": "0.3.1", "hotserve-0.3.1-rc1": "0.3.1-rc1"} {
+	for name, tag := range map[string]string{"motel": "0.3.1", "motel-0.3.0": "0.3.0", "motel-0.3.1": "0.3.1", "motel-0.3.1-rc1": "0.3.1-rc1"} {
 		if got := tagOf(name); got != tag {
 			t.Fatalf("%s is release %s, not %s", name, got, tag)
 		}
 	}
 	// And bin/check picks each box's.
 	_ = os.Remove(ran)
-	hs := filepath.Join(usrLocalBin, "hotserve")
-	out, code = r.run("check", "HOTSERVE="+hs, "HOTSERVE_RAN="+ran)
+	hs := filepath.Join(usrLocalBin, "motel")
+	out, code = r.run("check", "MOTEL="+hs, "MOTEL_RAN="+ran)
 	want = "deploy.example.com/Caddyfile → https://deploy.example.com/ (1 app, 1 signer)\n" +
 		"deploy2.example.com/Caddyfile → https://deploy2.example.com/ (1 app, 1 signer), checked with " + hs + "-0.3.0\n" +
 		"deploy3.example.com/Caddyfile → https://deploy3.example.com/ (1 app, 1 signer), checked with " + hs + "-0.3.1-rc1\n" +
@@ -1714,12 +1714,12 @@ func TestBoxInstallHotserve(t *testing.T) {
 
 	// The variable: the default, and a box's file naming the same
 	// release is one download.
-	out, code = install("HOTSERVE_VERSION=v0.3.0")
+	out, code = install("MOTEL_VERSION=v0.3.0")
 	if code != 0 || out != stable("0.3.0")+pinned("0.3.1-rc1") {
 		t.Fatalf("the variable: exit %d\n%s", code, out)
 	}
-	if !maps.Equal(gh.served(), map[string]int{"0.3.0": 1, "0.3.1-rc1": 1}) || tagOf("hotserve") != "0.3.0" {
-		t.Fatalf("downloads %v; hotserve is %s", gh.served(), tagOf("hotserve"))
+	if !maps.Equal(gh.served(), map[string]int{"0.3.0": 1, "0.3.1-rc1": 1}) || tagOf("motel") != "0.3.0" {
+		t.Fatalf("downloads %v; motel is %s", gh.served(), tagOf("motel"))
 	}
 
 	// A box's file that names no release is said, naming the file, and
@@ -1727,46 +1727,46 @@ func TestBoxInstallHotserve(t *testing.T) {
 	// make check is what refuses the box. The variable's shape is the
 	// same, and its refusal is the run's: nothing to check with.
 	three := map[string]int{"0.3.1": 1, "0.3.0": 1, "0.3.1-rc1": 1}
-	four := []string{"hotserve", "hotserve-0.3.0", "hotserve-0.3.1", "hotserve-0.3.1-rc1"}
+	four := []string{"motel", "motel-0.3.0", "motel-0.3.1", "motel-0.3.1-rc1"}
 	for _, c := range []struct{ file, said string }{
-		{"", "'' (from deploy2.example.com/HOTSERVE_VERSION): a release's version, 0.3.1 or v0.3.1-rc1, on one line; an empty file pins nothing: name a release, or delete it\n"},
-		{"\n", "'' (from deploy2.example.com/HOTSERVE_VERSION): a release's version, 0.3.1 or v0.3.1-rc1, on one line; an empty file pins nothing"},
-		{"v\n", "'v' (from deploy2.example.com/HOTSERVE_VERSION): a release's version, 0.3.1 or v0.3.1-rc1, on one line\n"},
-		{"0.3\n", "'0.3' (from deploy2.example.com/HOTSERVE_VERSION)"},
-		{"0.3.0\n0.3.1\n", "'0.3.0\n0.3.1' (from deploy2.example.com/HOTSERVE_VERSION)"},
-		{"latest\n", "'latest' (from deploy2.example.com/HOTSERVE_VERSION)"},
+		{"", "'' (from deploy2.example.com/MOTEL_VERSION): a release's version, 0.3.1 or v0.3.1-rc1, on one line; an empty file pins nothing: name a release, or delete it\n"},
+		{"\n", "'' (from deploy2.example.com/MOTEL_VERSION): a release's version, 0.3.1 or v0.3.1-rc1, on one line; an empty file pins nothing"},
+		{"v\n", "'v' (from deploy2.example.com/MOTEL_VERSION): a release's version, 0.3.1 or v0.3.1-rc1, on one line\n"},
+		{"0.3\n", "'0.3' (from deploy2.example.com/MOTEL_VERSION)"},
+		{"0.3.0\n0.3.1\n", "'0.3.0\n0.3.1' (from deploy2.example.com/MOTEL_VERSION)"},
+		{"latest\n", "'latest' (from deploy2.example.com/MOTEL_VERSION)"},
 	} {
-		r.write("deploy2.example.com/HOTSERVE_VERSION", c.file)
+		r.write("deploy2.example.com/MOTEL_VERSION", c.file)
 		out, code := install()
-		if code != 0 || !strings.Contains(out, "install-hotserve: not a hotserve release: "+c.said) ||
-			!strings.Contains(out, "install-hotserve: deploy2.example.com/HOTSERVE_VERSION skipped; make check refuses this box\n") ||
+		if code != 0 || !strings.Contains(out, "install-motel: not a motel release: "+c.said) ||
+			!strings.Contains(out, "install-motel: deploy2.example.com/MOTEL_VERSION skipped; make check refuses this box\n") ||
 			!maps.Equal(gh.served(), three) || !slices.Equal(installed(), four) {
 			t.Fatalf("file %q: exit %d\n%s\ndownloads %v, installed %v", c.file, code, out, gh.served(), installed())
 		}
 	}
-	r.remove("deploy2.example.com/HOTSERVE_VERSION")
-	if err := os.Mkdir(filepath.Join(r.dir, "deploy2.example.com/HOTSERVE_VERSION"), 0o755); err != nil {
+	r.remove("deploy2.example.com/MOTEL_VERSION")
+	if err := os.Mkdir(filepath.Join(r.dir, "deploy2.example.com/MOTEL_VERSION"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	out, code = install()
-	if code != 0 || !strings.Contains(out, "install-hotserve: deploy2.example.com/HOTSERVE_VERSION cannot be read: a box's HOTSERVE_VERSION is a regular file of one line, 0.3.1 or v0.3.1-rc1; skipped, and make check refuses this box\n") ||
-		strings.Contains(out, "not a hotserve release") || !maps.Equal(gh.served(), three) {
+	if code != 0 || !strings.Contains(out, "install-motel: deploy2.example.com/MOTEL_VERSION cannot be read: a box's MOTEL_VERSION is a regular file of one line, 0.3.1 or v0.3.1-rc1; skipped, and make check refuses this box\n") ||
+		strings.Contains(out, "not a motel release") || !maps.Equal(gh.served(), three) {
 		t.Fatalf("a directory: exit %d\n%s\ndownloads %v", code, out, gh.served())
 	}
-	r.remove("deploy2.example.com/HOTSERVE_VERSION")
+	r.remove("deploy2.example.com/MOTEL_VERSION")
 	// A pipe at the name: said, skipped, not waited on.
-	if err := syscall.Mkfifo(filepath.Join(r.dir, "deploy2.example.com/HOTSERVE_VERSION"), 0o644); err != nil {
+	if err := syscall.Mkfifo(filepath.Join(r.dir, "deploy2.example.com/MOTEL_VERSION"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, code = install()
-	if code != 0 || !strings.Contains(out, "install-hotserve: deploy2.example.com/HOTSERVE_VERSION cannot be read: a box's HOTSERVE_VERSION is a regular file of one line, 0.3.1 or v0.3.1-rc1; skipped, and make check refuses this box\n") || !maps.Equal(gh.served(), three) {
+	if code != 0 || !strings.Contains(out, "install-motel: deploy2.example.com/MOTEL_VERSION cannot be read: a box's MOTEL_VERSION is a regular file of one line, 0.3.1 or v0.3.1-rc1; skipped, and make check refuses this box\n") || !maps.Equal(gh.served(), three) {
 		t.Fatalf("a pipe: exit %d\n%s\ndownloads %v", code, out, gh.served())
 	}
-	r.remove("deploy2.example.com/HOTSERVE_VERSION")
+	r.remove("deploy2.example.com/MOTEL_VERSION")
 	for _, v := range []string{"v", "0.3", "latest"} {
-		out, code := install("HOTSERVE_VERSION=" + v)
-		if code != 1 || !strings.Contains(out, "install-hotserve: not a hotserve release: '"+v+"' (from HOTSERVE_VERSION): a release's version, 0.3.1 or v0.3.1-rc1, on one line\n") || len(gh.served()) != 0 {
-			t.Fatalf("HOTSERVE_VERSION=%s: exit %d\n%s", v, code, out)
+		out, code := install("MOTEL_VERSION=" + v)
+		if code != 1 || !strings.Contains(out, "install-motel: not a motel release: '"+v+"' (from MOTEL_VERSION): a release's version, 0.3.1 or v0.3.1-rc1, on one line\n") || len(gh.served()) != 0 {
+			t.Fatalf("MOTEL_VERSION=%s: exit %d\n%s", v, code, out)
 		}
 	}
 
@@ -1775,37 +1775,37 @@ func TestBoxInstallHotserve(t *testing.T) {
 	// refuses that box and the others still pass. The default's is the
 	// run's.
 	tgz := func(v string) string {
-		return "https://github.com/smallhoursorg/hotserve/releases/download/v" + v + "/hotserve_" + v + "_linux_" + arch + ".tar.gz"
+		return "https://github.com/smallhoursorg/motel/releases/download/v" + v + "/motel_" + v + "_linux_" + arch + ".tar.gz"
 	}
-	r.write("deploy2.example.com/HOTSERVE_VERSION", "0.3.9\n")
-	r.write("deploy4.example.com/HOTSERVE_VERSION", "v0.3.9\n")
+	r.write("deploy2.example.com/MOTEL_VERSION", "0.3.9\n")
+	r.write("deploy4.example.com/MOTEL_VERSION", "v0.3.9\n")
 	out, code = install()
-	if code != 0 || !strings.Contains(out, "install-hotserve: no release at "+tgz("0.3.9")+", which deploy2.example.com/HOTSERVE_VERSION, deploy4.example.com/HOTSERVE_VERSION names; skipped, and make check refuses that box\n") ||
-		!maps.Equal(gh.served(), map[string]int{"0.3.1": 1, "0.3.1-rc1": 1}) || !slices.Equal(installed(), []string{"hotserve", "hotserve-0.3.1", "hotserve-0.3.1-rc1"}) {
+	if code != 0 || !strings.Contains(out, "install-motel: no release at "+tgz("0.3.9")+", which deploy2.example.com/MOTEL_VERSION, deploy4.example.com/MOTEL_VERSION names; skipped, and make check refuses that box\n") ||
+		!maps.Equal(gh.served(), map[string]int{"0.3.1": 1, "0.3.1-rc1": 1}) || !slices.Equal(installed(), []string{"motel", "motel-0.3.1", "motel-0.3.1-rc1"}) {
 		t.Fatalf("a release with no build: exit %d\n%s\ndownloads %v, installed %v", code, out, gh.served(), installed())
 	}
-	out, code = r.run("check", "HOTSERVE="+hs, "HOTSERVE_RAN="+ran)
-	if code != 1 || !strings.Contains(out, "check: deploy2.example.com/Caddyfile: deploy2.example.com/HOTSERVE_VERSION names 0.3.9, and "+hs+"-0.3.9 is not here to check it with: bin/install-hotserve installs one for each box's file (in the workflow; there is no macOS build), and says when a release has no build to install\n") ||
-		!strings.Contains(out, "check: deploy4.example.com/Caddyfile: deploy4.example.com/HOTSERVE_VERSION names 0.3.9, and ") ||
+	out, code = r.run("check", "MOTEL="+hs, "MOTEL_RAN="+ran)
+	if code != 1 || !strings.Contains(out, "check: deploy2.example.com/Caddyfile: deploy2.example.com/MOTEL_VERSION names 0.3.9, and "+hs+"-0.3.9 is not here to check it with: bin/install-motel installs one for each box's file (in the workflow; there is no macOS build), and says when a release has no build to install\n") ||
+		!strings.Contains(out, "check: deploy4.example.com/Caddyfile: deploy4.example.com/MOTEL_VERSION names 0.3.9, and ") ||
 		!strings.Contains(out, "deploy.example.com/Caddyfile → https://deploy.example.com/ (1 app, 1 signer)\n") ||
 		!strings.Contains(out, "deploy3.example.com/Caddyfile → https://deploy3.example.com/ (1 app, 1 signer), checked with "+hs+"-0.3.1-rc1\n") {
 		t.Fatalf("check after a skipped release: exit %d\n%s", code, out)
 	}
-	if out, code := install("HOTSERVE_VERSION=0.3.9"); code != 1 || !strings.Contains(out, "install-hotserve: no release at "+tgz("0.3.9")+" (from HOTSERVE_VERSION)\n") || len(installed()) != 0 {
+	if out, code := install("MOTEL_VERSION=0.3.9"); code != 1 || !strings.Contains(out, "install-motel: no release at "+tgz("0.3.9")+" (from MOTEL_VERSION)\n") || len(installed()) != 0 {
 		t.Fatalf("a default with no build: exit %d\n%s\ninstalled %v", code, out, installed())
 	}
-	r.write("deploy4.example.com/HOTSERVE_VERSION", "0.3.0")
-	r.write("deploy2.example.com/HOTSERVE_VERSION", "latest\n")
+	r.write("deploy4.example.com/MOTEL_VERSION", "0.3.0")
+	r.write("deploy2.example.com/MOTEL_VERSION", "latest\n")
 	// `default`: the default alone, the boxes' files unread — the
 	// apply job's, which one box's bad file must not stop.
 	out, code = installArgs([]string{"default"})
-	if code != 0 || out != stable("0.3.1") || !maps.Equal(gh.served(), map[string]int{"0.3.1": 1}) || !slices.Equal(installed(), []string{"hotserve", "hotserve-0.3.1"}) {
+	if code != 0 || out != stable("0.3.1") || !maps.Equal(gh.served(), map[string]int{"0.3.1": 1}) || !slices.Equal(installed(), []string{"motel", "motel-0.3.1"}) {
 		t.Fatalf("default: exit %d\n%s\ndownloads %v", code, out, gh.served())
 	}
-	if out, code := installArgs([]string{"all"}); code != 1 || !strings.Contains(out, "install-hotserve: 'all'?") {
+	if out, code := installArgs([]string{"all"}); code != 1 || !strings.Contains(out, "install-motel: 'all'?") {
 		t.Fatalf("an unknown argument: exit %d\n%s", code, out)
 	}
-	r.write("deploy2.example.com/HOTSERVE_VERSION", "0.3.0\n")
+	r.write("deploy2.example.com/MOTEL_VERSION", "0.3.0\n")
 
 	// A tarball that does not match its checksums.txt is not installed,
 	// and the run fails there.
@@ -1813,7 +1813,7 @@ func TestBoxInstallHotserve(t *testing.T) {
 	gh.corrupt = "0.3.0"
 	gh.mu.Unlock()
 	out, code = install()
-	if code == 0 || !strings.Contains(out, "FAILED") || slices.Contains(installed(), "hotserve-0.3.0") {
+	if code == 0 || !strings.Contains(out, "FAILED") || slices.Contains(installed(), "motel-0.3.0") {
 		t.Fatalf("a corrupt tarball: exit %d\n%s\ninstalled %v", code, out, installed())
 	}
 }

@@ -13,7 +13,7 @@ import (
 
 // The deploy marker, <app>/deploying.json: a URL or push deploy in
 // flight. Such a deploy extracts a release that it removes again if
-// it fails; a hotserve that stops during it (a crash, a restart, an
+// it fails; a motel that stops during it (a crash, a restart, an
 // upgrade) removes nothing, and the release would stay under the
 // version's name — a redeploy refused as "already exists", a rollback
 // launching it without its pre_start (#318). The marker says which
@@ -23,7 +23,7 @@ import (
 //     extracts: a rollback or a relaunch launches a release already
 //     on disk, which nothing here may remove.
 //   - Removed once the deploy's record is written, whatever the deploy
-//     came to, so a marker that outlives its deploy is one no hotserve
+//     came to, so a marker that outlives its deploy is one no motel
 //     finished, or one whose removal failed after its record was
 //     written — told apart by the record's start time.
 //   - Settled (settleInterrupted) only after a confirmed sweep, by
@@ -77,7 +77,7 @@ func loadDeployMarker(d appDirs) (deployMarker, error) {
 	if !validVersion(m.Version) {
 		return m, fmt.Errorf("%w: it names %q, which is not a version", errNotAMarker, m.Version)
 	}
-	if m.StartedAt.IsZero() { // every marker hotserve writes carries its deploy's start
+	if m.StartedAt.IsZero() { // every marker motel writes carries its deploy's start
 		return m, fmt.Errorf("%w: it carries no start time", errNotAMarker)
 	}
 	return m, nil
@@ -92,12 +92,12 @@ func clearDeployMarker(d appDirs) error {
 	return nil
 }
 
-// interruptedDeployError is what a deploy cut short by a hotserve stop
+// interruptedDeployError is what a deploy cut short by a motel stop
 // is recorded as; a release that could not be removed adds why, in the
 // words a failed deploy's cleanup uses.
-const interruptedDeployError = "the deploy was cut short: hotserve stopped or restarted during it"
+const interruptedDeployError = "the deploy was cut short: motel stopped or restarted during it"
 
-// settleInterrupted settles a marker a deploy no hotserve finished
+// settleInterrupted settles a marker a deploy no motel finished
 // left, under the rules above. The caller holds deployMu and has just
 // confirmed a sweep keeping the instance of version keep ("" for
 // none). The marker is gone afterwards unless removing it failed,
@@ -143,7 +143,7 @@ func (ma *managedApp) settleInterrupted(c collaborators, keep string) error {
 	case err != nil:
 		// A record there that cannot be read may be that deploy's:
 		// nothing is removed or written over it.
-		logger.Error("deploy marker removed without acting: the version's deploy record cannot be read, so whether hotserve finished that deploy cannot be told; a release it left stays until GC", zap.Error(err))
+		logger.Error("deploy marker removed without acting: the version's deploy record cannot be read, so whether motel finished that deploy cannot be told; a release it left stays until GC", zap.Error(err))
 		return ma.clearMarker(c)
 	case recorded && started.Equal(m.StartedAt):
 		// That deploy was recorded; only its marker's removal failed.
@@ -158,9 +158,9 @@ func (ma *managedApp) settleInterrupted(c collaborators, keep string) error {
 	}
 	if rmErr := removeRelease(d, m.Version); rmErr != nil {
 		result.Error = fmt.Sprintf("%s; release %s left on disk: cleanup of failed release %s: %v", interruptedDeployError, m.Version, m.Version, rmErr)
-		logger.Error("the release of a deploy hotserve did not finish could not be removed; it stays until GC", zap.Error(rmErr))
+		logger.Error("the release of a deploy motel did not finish could not be removed; it stays until GC", zap.Error(rmErr))
 	} else {
-		logger.Warn("removed the release of a deploy hotserve did not finish; the version can be deployed again")
+		logger.Warn("removed the release of a deploy motel did not finish; the version can be deployed again")
 	}
 	ma.recordDeploy(c, result)
 	ma.mu.Lock()
@@ -216,7 +216,7 @@ func (ma *managedApp) settleBeforeDeploy(c collaborators, old *instance) error {
 		return nil
 	}
 	if err := ma.sweepOrWhy(c, old, ""); err != nil {
-		return fmt.Errorf("%w; not deploying until the deploy hotserve did not finish is settled", err)
+		return fmt.Errorf("%w; not deploying until the deploy motel did not finish is settled", err)
 	}
 	keep := ""
 	if old != nil {

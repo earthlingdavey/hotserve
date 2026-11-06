@@ -38,7 +38,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // headerRequestID carries the id the workflow chose for its push.

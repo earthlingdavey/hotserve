@@ -41,9 +41,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/smallhoursorg/hotserve/backups/dump"
-	"github.com/smallhoursorg/hotserve/backups/nofollow"
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/backups/dump"
+	"github.com/smallhoursorg/motel/backups/nofollow"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
 	"golang.org/x/sys/unix"
 )
 
@@ -1040,7 +1040,7 @@ func (j *job) copyFile(src, rel string, perm uint32) error {
 // is listed as left in place, backed up, and restored — a name is never
 // a reason to remove a file or to leave one out, since an app may call
 // a file of its own anything.
-const tmpPrefix = ".hotserve-restore-"
+const tmpPrefix = ".motel-restore-"
 
 func tmpName() (string, error) {
 	b := make([]byte, 8)

@@ -191,7 +191,7 @@ jobs:
       # probe (liveswap/sandbox.go) is what refuses to start on such a
       # host rather than running apps with no sandbox.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # make e2e dumps hotserve/upstream/artifact logs itself when
+      # make e2e dumps motel/upstream/artifact logs itself when
       # scenarios fail.
       - run: make e2e COMPOSE="$COMPOSE"
 

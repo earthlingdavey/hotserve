@@ -16,10 +16,10 @@
 
 ## copy a at 2026-10-04T13:20:00Z
    copy exit 0, 10 files
-66815c80  2026-10-04 13:18:47  hotserve    app:demo,hotserve  /backup/demo  72.049 KiB
+66815c80  2026-10-04 13:18:47  motel    app:demo,motel  /backup/demo  72.049 KiB
 no errors were found
 
 ## copy b at 2026-10-04T13:23:00Z
    copy exit 0, 17 files
-f7da9025  2026-10-04 13:20:29  hotserve    app:demo,hotserve  /backup/demo  72.049 KiB
+f7da9025  2026-10-04 13:20:29  motel    app:demo,motel  /backup/demo  72.049 KiB
 no errors were found

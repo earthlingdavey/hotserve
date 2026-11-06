@@ -1,7 +1,7 @@
 #!/bin/sh
 # Shared helpers for the e2e suites (sourced, not run). Callers set
 # PROXY / HOOK / ART first; wait_for_token then sets TOKEN from the
-# deploy token the e2e-hotserve container mints into the shared
+# deploy token the e2e-motel container mints into the shared
 # volume (e2e/mint-token.sh) — the `deploy_trust local` path standing
 # in for a CI OIDC provider the offline compose network cannot reach.
 FAILURES=0

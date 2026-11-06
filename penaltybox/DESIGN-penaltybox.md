@@ -1,6 +1,6 @@
 # `penaltybox` Caddy module: design
 
-Status: **implemented**, and compiled into the hotserve product build.
+Status: **implemented**, and compiled into the motel product build.
 This document is the module's design and behaviour spec. The module is
 the Caddy counterpart to the HAProxy and Fastly consumption recipes for
 the rate-limit hint header — read

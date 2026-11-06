@@ -4,13 +4,13 @@
 #
 # What it holds the commands to:
 #
-#	hotserve-backup drill     checks the repository itself after its apps:
+#	motel-backup drill     checks the repository itself after its apps:
 #	                          its structure, and one fifty-second of its
 #	                          data — the group after the last one read, the
 #	                          ISO week's where none was — taking no lock
-#	hotserve-backup run       writes into the repository the record that it
+#	motel-backup run       writes into the repository the record that it
 #	                          ended ok on an app
-#	hotserve-backup restore   on a box with no record, says what those
+#	motel-backup restore   on a box with no record, says what those
 #	                          records say
 #
 # The check's verdict is one of clean, damaged, unreachable, no
@@ -32,7 +32,7 @@ cp /root/Caddyfile.base "$CADDYFILE"
 # stores a snapshot's time in the zone it runs in.
 ln -sf /usr/share/zoneinfo/Europe/Berlin /etc/localtime
 
-drill() { hotserve-backup drill >"$OUT" 2>&1; }
+drill() { motel-backup drill >"$OUT" 2>&1; }
 says() { grep -q -e "$1" "$OUT"; }
 # The record's last_check, on one line, and its class.
 last_check() { tr -d '\n' <"$STATUS" | sed 's/  */ /g' | sed -n 's/.*"last_check": {\([^}]*\)}.*/\1/p'; }
@@ -57,7 +57,7 @@ first_drill() {
 	return $rc
 }
 # records: the ids the repository's clean-run records vouch for.
-records() { rr snapshots --no-lock --json --host hotserve --tag hotserve-clean 2>/dev/null | grep -o '"vouches:[0-9a-f]\{64\}"' | cut -d: -f2 | tr -d '"'; }
+records() { rr snapshots --no-lock --json --host motel --tag motel-clean 2>/dev/null | grep -o '"vouches:[0-9a-f]\{64\}"' | cut -d: -f2 | tr -d '"'; }
 # blog_db_pack <snapshot>: the pack that holds the first blob of blog's
 # database in that snapshot of blog, from the snapshot's own tree and
 # the repository's index — data a fetch of blog must read; not a tree,
@@ -97,9 +97,9 @@ shop_id=$(newest shop)
 [ -n "$blog_id" ] && [ -n "$shop_id" ] || fail "fixture: the first run made no snapshot: $(cat "$OUT")"
 records >/root/records
 grep -qx "$blog_id" /root/records && grep -qx "$shop_id" /root/records && [ "$(wc -l </root/records)" = 2 ] && pass "a record vouches for blog's snapshot and shop's, and there is none for notyet, which has no data" || fail "the records vouch for: $(cat /root/records); blog $blog_id, shop $shop_id"
-paths=$(rr snapshots --no-lock --json --tag hotserve-clean 2>/dev/null | grep -o '"paths":\["[^"]*"\]' | sort -u | tr '\n' ' ')
-[ "$paths" = '"paths":["/hotserve-clean-blog"] "paths":["/hotserve-clean-shop"] ' ] && pass "each app's records are a group of their own, as its snapshots are" || fail "the records' paths: $paths"
-rr snapshots --no-lock --json --tag app:blog 2>/dev/null | grep -q hotserve-clean && fail "a record is among blog's own snapshots" || pass "and none is among an app's own snapshots"
+paths=$(rr snapshots --no-lock --json --tag motel-clean 2>/dev/null | grep -o '"paths":\["[^"]*"\]' | sort -u | tr '\n' ' ')
+[ "$paths" = '"paths":["/motel-clean-blog"] "paths":["/motel-clean-shop"] ' ] && pass "each app's records are a group of their own, as its snapshots are" || fail "the records' paths: $paths"
+rr snapshots --no-lock --json --tag app:blog 2>/dev/null | grep -q motel-clean && fail "a record is among blog's own snapshots" || pass "and none is among an app's own snapshots"
 # At the snapshot's own time, to the second: a forget policy that keeps
 # the snapshot for a period keeps its record, in the same period.
 stored=$(rr cat snapshot --no-lock "$blog_id" 2>/dev/null | grep -o '"time": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"$//')
@@ -116,7 +116,7 @@ if first_drill; then pass "a drill of a sound repository exits 0"; else fail "th
 NEXT="$((${GROUP%/52} % 52 + 1))/52"
 says "^repository: its structure, and data group $GROUP: clean$" && pass "and says the repository's structure and, a first check, the ISO week's group, $GROUP, are clean" || fail "the drill said: $(cat "$OUT")"
 [ "$(check_class)" = clean ] && last_check | grep -q "\"group\": \"$GROUP\"" && pass "the record's last_check says so" || fail "last_check: $(last_check)"
-hotserve-backup status >/root/status.out 2>&1 && grep -q "repository last checked .*: its structure, and data group $GROUP: clean" /root/status.out && pass "status says when it was checked, and is content" || fail "status: $(cat /root/status.out)"
+motel-backup status >/root/status.out 2>&1 && grep -q "repository last checked .*: its structure, and data group $GROUP: clean" /root/status.out && pass "status says when it was checked, and is content" || fail "status: $(cat /root/status.out)"
 
 echo "=== check 3: a pack gone from the storage is damage, and backups go on ==="
 pack=$(blog_db_pack "$blog_id")
@@ -135,7 +135,7 @@ if drill; then fail "a drill of a repository missing a pack exited 0"; else pass
 # a disk that filled during the fetch [measured, #170] — so the drill
 # names no cause, and points at restic's words.
 short=$(echo "$blog_id" | cut -c1-8)
-says "^blog: restore not proven: snapshot $short: fetching snapshot $short: restic could not restore all of it (exit 1); \`journalctl -u hotserve_backup_fetch_blog_[0-9a-f]*\.service\` has restic's own words" && pass "blog's restore is not proven: its fetch failed, and the drill points at restic's own words, naming no cause" || fail "blog's line: $(grep '^blog:' "$OUT")"
+says "^blog: restore not proven: snapshot $short: fetching snapshot $short: restic could not restore all of it (exit 1); \`journalctl -u motel_backup_fetch_blog_[0-9a-f]*\.service\` has restic's own words" && pass "blog's restore is not proven: its fetch failed, and the drill points at restic's own words, naming no cause" || fail "blog's line: $(grep '^blog:' "$OUT")"
 # What check 2's drill proved stays proven, and is named beside it.
 says "^blog: restore not proven: .* (last proven: snapshot $short, on " && pass "and names the snapshot last proven, check 2's" || fail "blog's line: $(grep '^blog:' "$OUT")"
 # That failure is blog's own: shop, whose pack is there, is drilled and
@@ -144,9 +144,9 @@ says "^blog: restore not proven: .* (last proven: snapshot $short, on " && pass 
 says "^shop: restore proven: snapshot " && pass "and shop is proven all the same: a fetch's exit 1 is that app's own" || fail "shop's line: $(grep '^shop:' "$OUT")"
 # A second check reads the group after the first's; and the count is
 # restic's — two where the pack gone is in the group read as well.
-says "^repository: its structure, and data group $NEXT: damaged: restic check found [0-9][0-9]* errors*; a prune run off the box, or the storage failing, during the check looks the same, and the next check reads this group again; restic's own words: \`journalctl -u hotserve_backup_repocheck_[0-9a-f]*.service\`$" && pass "and says damaged, how much, and where restic's words are, of the group after the last one read, $NEXT" || fail "the drill said: $(cat "$OUT")"
+says "^repository: its structure, and data group $NEXT: damaged: restic check found [0-9][0-9]* errors*; a prune run off the box, or the storage failing, during the check looks the same, and the next check reads this group again; restic's own words: \`journalctl -u motel_backup_repocheck_[0-9a-f]*.service\`$" && pass "and says damaged, how much, and where restic's words are, of the group after the last one read, $NEXT" || fail "the drill said: $(cat "$OUT")"
 [ "$(check_class)" = damaged ] && pass "the record's last_check is damaged" || fail "last_check: $(last_check)"
-if hotserve-backup status >/root/status.out 2>&1; then fail "status exited 0 on a damaged repository"; else grep -q "the repository check of .* (data group $NEXT): damaged: restic check found [0-9][0-9]* error" /root/status.out && pass "status is unhealthy, and says why" || fail "status: $(cat /root/status.out)"; fi
+if motel-backup status >/root/status.out 2>&1; then fail "status exited 0 on a damaged repository"; else grep -q "the repository check of .* (data group $NEXT): damaged: restic check found [0-9][0-9]* error" /root/status.out && pass "status is unhealthy, and says why" || fail "status: $(cat /root/status.out)"; fi
 # Damage keeps its group: the next check reads it again, and says so
 # until it reads clean (the owner, 2026-09-30).
 drill
@@ -184,7 +184,7 @@ write_env "s3:http://no-such-host.invalid:9000/checkrepo2" "$PASSWORD"
 t0=$(date +%s)
 drill
 says "^repository: its structure, and data group $GROUP: unreachable: " && [ "$(took "$t0")" -lt 90 ] && pass "a host that does not resolve is unreachable too ($(took "$t0")s) — never damaged" || fail "the drill said, in $(took "$t0")s: $(cat "$OUT")"
-[ "$(units_left)" = 0 ] && pass "no unit is left" || fail "units left: $(systemctl list-units --all --no-legend 'hotserve_backup_*')"
+[ "$(units_left)" = 0 ] && pass "no unit is left" || fail "units left: $(systemctl list-units --all --no-legend 'motel_backup_*')"
 cp /root/Caddyfile.base "$CADDYFILE"
 write_env "$REPO" "$PASSWORD"
 
@@ -194,14 +194,14 @@ echo "=== check 6: a check killed hard is no verdict of damage, and the next run
 # show: on a repository this small a check that locks holds its lock
 # for less than any step a suite can take.
 run || fail "fixture: a run on $REPO: $(cat "$OUT")"
-hotserve-backup drill >"$OUT" 2>&1 &
+motel-backup drill >"$OUT" 2>&1 &
 drilling=$!
 if hold_restic "/usr/bin/restic check"; then
 	kill -KILL "$pid"
 	wait "$drilling"
 	says "^repository: its structure, and data group [0-9]*/52: failed: restic was ended by signal$" && pass "a check killed hard is said to have failed, not to be damaged" || fail "the drill said: $(cat "$OUT")"
 	[ "$(check_class)" = failed ] && pass "the record's last_check is failed" || fail "last_check: $(last_check)"
-	[ "$(units_left)" = 0 ] && pass "no unit is left" || fail "units left: $(systemctl list-units --all --no-legend 'hotserve_backup_*')"
+	[ "$(units_left)" = 0 ] && pass "no unit is left" || fail "units left: $(systemctl list-units --all --no-legend 'motel_backup_*')"
 	before=$(newest blog)
 	t0=$(date +%s)
 	run
@@ -216,22 +216,22 @@ vouched=$(newest blog)
 crafted=$(craft blog /var/lib/liveswap/blog/shared)
 [ -n "$crafted" ] && [ "$(newest blog)" = "$crafted" ] && pass "fixture: blog's newest snapshot is one no run made" || fail "fixture: nothing was crafted"
 rm -f "$STATUS"
-echo n | hotserve-backup restore blog >"$OUT" 2>&1
+echo n | motel-backup restore blog >"$OUT" 2>&1
 says "blog: this is not the last snapshot a backup run ended ok on — that is $(echo "$vouched" | cut -c1-8)" && pass "a restore on a rebuilt box says the newest is not what a run ended ok on, and names the one that is" || fail "the question said: $(cat "$OUT")"
 says "restore snapshot $(echo "$crafted" | cut -c1-8)" && pass "and still offers the newest (the owner, 2026-09-29)" || fail "the question: $(cat "$OUT")"
 forget "$crafted"
-echo n | hotserve-backup restore blog >"$OUT" 2>&1
+echo n | motel-backup restore blog >"$OUT" 2>&1
 says "not the last snapshot" || says "is not known" && fail "the newest, vouched for, is said not to be: $(cat "$OUT")" || pass "with the newest vouched for, nothing is said of it"
 echo "=== check 8: a run stopped while it writes a record says the record may be missing, and the next run writes one ==="
-hotserve-backup run >"$OUT" 2>&1 &
+motel-backup run >"$OUT" 2>&1 &
 running=$!
-if hold_restic "hotserve-clean-blog"; then
+if hold_restic "motel-clean-blog"; then
 	# Held as it starts, before restic has written anything. The run is
 	# stopped as Ctrl-C stops it, and restic let go only once the manager
 	# is stopping its unit: it cannot finish its write first.
 	kill -INT "$running"
 	i=0
-	until systemctl list-units --plain --no-legend --state=deactivating 'hotserve_backup_vouch_*' | grep -q .; do
+	until systemctl list-units --plain --no-legend --state=deactivating 'motel_backup_vouch_*' | grep -q .; do
 		i=$((i + 1))
 		[ "$i" -ge 200 ] && break
 		sleep 0.05
@@ -240,9 +240,9 @@ if hold_restic "hotserve-clean-blog"; then
 	if wait "$running"; then fail "a run stopped while it wrote a record exited 0"; else pass "a run stopped while it wrote a record exits non-zero"; fi
 	grep -q "blog: snapshot [0-9a-f]\{8\} is a complete backup, and the record that says so may not have been written: the command was stopped while it was being written" "$STATUS" && pass "the record says blog's record of a clean run may not have been written, and why" || fail "the record's warning: $(grep '"warning"' "$STATUS")"
 	[ "$(class blog)" = ok ] && pass "and blog's backup, which is sound, is still ok" || fail "blog: $(app_json blog)"
-	hotserve-backup status >/root/status.out 2>&1
+	motel-backup status >/root/status.out 2>&1
 	grep -q "^warning: .*blog: snapshot [0-9a-f]\{8\} is a complete backup, and the record that says so may not have been written" /root/status.out && pass "status says so" || fail "status: $(cat /root/status.out)"
-	[ "$(units_left)" = 0 ] && pass "no unit is left" || fail "units left: $(systemctl list-units --all --no-legend 'hotserve_backup_*')"
+	[ "$(units_left)" = 0 ] && pass "no unit is left" || fail "units left: $(systemctl list-units --all --no-legend 'motel_backup_*')"
 else
 	wait "$running"
 	fail "fixture: no restic writing blog's record was seen to hold: $(cat "$OUT")"

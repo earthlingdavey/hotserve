@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
@@ -1207,7 +1207,7 @@ func TestWebhookIssuerOutageIsNamedPastTheBudget(t *testing.T) {
 	keys := trusttest.NewClock()
 	rig.ma.verifiers = primed(t, deploytrust.VerifiersOn(keys, []deploytrust.Source{oidcSource(t, iss.URL)}, iss.Client))
 	token := func() string {
-		return iss.Mint(t, iss.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+		return iss.Mint(t, iss.Priv, "motel", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	}
 	const ci, other = "203.0.113.9:1", "203.0.113.10:1"
 	outageLines := func(all []observer.LoggedEntry) (n int) {
@@ -1316,7 +1316,7 @@ func TestWebhookOutageIsNamedWhenAnotherSourceAccepts(t *testing.T) {
 	rig.ma.verifiers = primed(t, append(
 		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, down.URL)}, down.Client),
 		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, up.URL)}, up.Client)...))
-	tok := up.Mint(t, up.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+	tok := up.Mint(t, up.Priv, "motel", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	if w := do(t, h, http.MethodGet, "/demo", tok, ""); w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
@@ -1341,7 +1341,7 @@ func TestWebhookOutageNamesEverySourceDown(t *testing.T) {
 	rig.ma.verifiers = primed(t, append(
 		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, a.URL)}, a.Client),
 		deploytrust.Verifiers([]deploytrust.Source{oidcSource(t, b.URL)}, b.Client)...))
-	tok := a.Mint(t, a.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+	tok := a.Mint(t, a.Priv, "motel", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 	if w := do(t, h, http.MethodGet, "/demo", tok, ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", w.Code)
 	}

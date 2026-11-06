@@ -57,30 +57,30 @@ jobs:
       # README saying what the packages would have done for you):
       # Apache-2.0 redistribution should carry the license text, the
       # compressed download is a third the size, and the shape matches
-      # what Caddy itself ships. hotserve-backup and its four unit
+      # what Caddy itself ships. motel-backup and its four unit
       # files come along (the owner, 2026-09-27), as the package has
       # them: built, and no more tested than the rest of the archive.
       - run: |
           for arch in amd64 arm64; do
             staging=$(mktemp -d)
-            cp "build/hotserve-linux-$arch" "$staging/hotserve"
-            cp "build/hotserve-backup-linux-$arch" "$staging/hotserve-backup"
+            cp "build/motel-linux-$arch" "$staging/motel"
+            cp "build/motel-backup-linux-$arch" "$staging/motel-backup"
             mkdir "$staging/systemd"
-            cp packaging/hotserve-backup.service packaging/hotserve-backup.timer \
-              packaging/hotserve-backup-drill.service packaging/hotserve-backup-drill.timer \
+            cp packaging/motel-backup.service packaging/motel-backup.timer \
+              packaging/motel-backup-drill.service packaging/motel-backup-drill.timer \
               "$staging/systemd/"
             cp LICENSE "$staging/LICENSE"
             cat > "$staging/README.txt" <<'EOF'
-          hotserve — raw binary distribution
+          motel — raw binary distribution
           ==================================
 
-          This archive contains the bare hotserve executable. It is for
+          This archive contains the bare motel executable. It is for
           systemd hosts where you manage the service yourself — a
           NixOS-style distro, say.
 
           systemd is not optional: liveswap runs your apps as transient
           units on the service user's own systemd manager, and there is
-          no fallback runner. Without one, hotserve still serves, but a
+          no fallback runner. Without one, motel still serves, but a
           Caddyfile defining any app refuses to start.
 
           If you are on Debian 13, use the .deb from the same release
@@ -92,57 +92,57 @@ jobs:
           Many container and LXC hosts cannot deliver it.
 
           What the package would have set up, and you now own:
-            - a dedicated system user/group (hotserve) to run as
+            - a dedicated system user/group (motel) to run as
             - a systemd unit (Type=notify) running:
-                hotserve run --config /etc/hotserve/Caddyfile
+                motel run --config /etc/motel/Caddyfile
               with XDG_DATA_HOME/XDG_CONFIG_HOME pointed somewhere the
               service user can write (TLS certificates live there)
             - libpam-systemd installed, and:
-                loginctl enable-linger hotserve
+                loginctl enable-linger motel
               so that user's systemd manager exists without a login —
               your apps run as units under it, so without this they
               cannot start at all
-            - a starter config at /etc/hotserve/Caddyfile
+            - a starter config at /etc/motel/Caddyfile
 
-          Backups: hotserve-backup, and systemd/ with its two services
+          Backups: motel-backup, and systemd/ with its two services
           and two timers. What the package would have set up, and you
           now own:
-            - hotserve-backup at /usr/bin/hotserve-backup, beside
-              /usr/bin/hotserve, /usr/bin/restic (0.18) and
+            - motel-backup at /usr/bin/motel-backup, beside
+              /usr/bin/motel, /usr/bin/restic (0.18) and
               /usr/bin/sqlite3: the units it starts run each by that
               path, and it refuses a box where one is missing; and the
-              CA store (ca-certificates), which restic and hotserve
+              CA store (ca-certificates), which restic and motel
               verify every certificate against
             - the four unit files in /etc/systemd/system, then:
                 systemctl daemon-reload
-                systemctl enable --now hotserve-backup.timer \
-                  hotserve-backup-drill.timer
+                systemctl enable --now motel-backup.timer \
+                  motel-backup-drill.timer
             - the account restic runs as, which setup also makes when
               it is missing:
-                useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment made-by-hotserve hotserve-backup
+                useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment made-by-motel motel-backup
             - nothing runs until you have run:
-                hotserve-backup setup <repository>
+                motel-backup setup <repository>
             - and on the way out, what the package's scripts do: to
               replace the binary, nothing — a backup under way is left
               to finish, and a helper of another version does nothing
               for it; to remove it, stop the two timers and the two
-              services first, then run hotserve-backup sweep,
+              services first, then run motel-backup sweep,
               which takes away what a killed command left under
-              /run/hotserve-backup — never unmount or rm -r there by
+              /run/motel-backup — never unmount or rm -r there by
               hand: a nested mount taken away first, or an rm through
               a mount, loses an app's files; and remove, with the unit
               files,
-                /var/lib/systemd/timers/stamp-hotserve-backup*.timer
+                /var/lib/systemd/timers/stamp-motel-backup*.timer
               or a later install catches up a run nobody missed
 
-          Docs: https://github.com/smallhoursorg/hotserve
+          Docs: https://github.com/smallhoursorg/motel
           (backups: docs/backups.md there, and backups/README.md for how
           they work)
           EOF
-            chmod 0755 "$staging/hotserve" "$staging/hotserve-backup"
+            chmod 0755 "$staging/motel" "$staging/motel-backup"
             chmod 0644 "$staging"/systemd/*
-            tar -czf "dist/hotserve_${GITHUB_REF_NAME#v}_linux_${arch}.tar.gz" \
-              -C "$staging" hotserve hotserve-backup systemd LICENSE README.txt
+            tar -czf "dist/motel_${GITHUB_REF_NAME#v}_linux_${arch}.tar.gz" \
+              -C "$staging" motel motel-backup systemd LICENSE README.txt
           done
           # GitHub mangles "~" in asset filenames to "." — so rename
           # prerelease packages (0.0.1~rc1 -> 0.0.1.rc1) BEFORE
@@ -165,7 +165,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag "${args[@]}"
 
   # Each example is also a template repository of its own
-  # (smallhoursorg/hotserve-example-node, -deno, -box), for "Use this
+  # (smallhoursorg/motel-example-node, -deno, -box), for "Use this
   # template". This repo stays the source: once the release is out,
   # each mirror's main becomes exactly what examples/<runtime> holds at
   # this tag, the tree the ci job's e2e deployed, and gains the tag.
@@ -178,7 +178,7 @@ jobs:
   #   - The three repositories, public and created empty; then for each:
   #       gh repo edit <repo> --template --enable-issues=false \
   #         --enable-wiki=false --enable-projects=false \
-  #         --description "Template: generated from smallhoursorg/hotserve examples/<runtime> on each release; changes go there"
+  #         --description "Template: generated from smallhoursorg/motel examples/<runtime> on each release; changes go there"
   #       gh api -X PUT repos/<repo>/actions/permissions -F enabled=false
   #     Actions off, or each sync runs the example's own workflow in
   #     the mirror (with nothing set up there it only fails, but off

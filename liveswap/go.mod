@@ -1,4 +1,4 @@
-module github.com/smallhoursorg/hotserve/liveswap
+module github.com/smallhoursorg/motel/liveswap
 
 // The Go toolchain is pinned by the golang image in docker-compose.yml —
 // no toolchain directive needed here.

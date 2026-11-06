@@ -14,7 +14,7 @@ import (
 // against local repositories: git's insteadOf turns the script's
 // https://github.com/ into file://, so nothing leaves the machine and gh
 // is never asked for a credential. Each release below is a commit and a
-// tag in a stand-in hotserve; the mirror is a bare repository.
+// tag in a stand-in motel; the mirror is a bare repository.
 func TestPublishTemplate(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Fatal("this test needs git on PATH")
@@ -189,11 +189,11 @@ func TestTemplateLinksStayInside(t *testing.T) {
 				file, _, _ := strings.Cut(target, "#")
 				resolved := filepath.Join(filepath.Dir(path), filepath.FromSlash(file))
 				rel, err := filepath.Rel(ex, resolved)
-				// A leading / is the repository's root, hotserve's here
+				// A leading / is the repository's root, motel's here
 				// and the example's own in the template: it cannot name
 				// the same file in both.
 				if strings.HasPrefix(file, "/") || err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					t.Errorf("%s links to %s, outside examples/%s: in its template repository that is a 404; link to https://github.com/smallhoursorg/hotserve/… instead", path, target, ex)
+					t.Errorf("%s links to %s, outside examples/%s: in its template repository that is a 404; link to https://github.com/smallhoursorg/motel/… instead", path, target, ex)
 					continue
 				}
 				if _, err := os.Stat(resolved); err != nil {

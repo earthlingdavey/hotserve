@@ -16,8 +16,8 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 // Identities are generated per test, never committed: gitleaks keeps an
@@ -147,7 +147,7 @@ func TestEnsureIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _, err := ensureIdentity(file, now)
-		if err == nil || err.Error() != file+" is not an age identity: move it aside, run hotserve box key again, then make rekey BOX_KEY=<the new key> in the repository" {
+		if err == nil || err.Error() != file+" is not an age identity: move it aside, run motel box key again, then make rekey BOX_KEY=<the new key> in the repository" {
 			t.Fatal(err)
 		}
 	})
@@ -340,11 +340,11 @@ func secretsFile(exampleLines, apiLines string) []byte {
 }
 
 func TestWalkAppEnv(t *testing.T) {
-	s, err := Walk(secretsFile("\t\t\tenv_file /etc/hotserve/secrets/example.env\n\t\t\tenv MODE production\n\t\t\tenv PORT {socket}\n\t\t\tdeploy_trust github {\n\t\t\t\tclaim env_file x\n\t\t\t}\n", ""))
+	s, err := Walk(secretsFile("\t\t\tenv_file /etc/motel/secrets/example.env\n\t\t\tenv MODE production\n\t\t\tenv PORT {socket}\n\t\t\tdeploy_trust github {\n\t\t\t\tclaim env_file x\n\t\t\t}\n", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.AppEnv["example"]; got.EnvFile != "/etc/hotserve/secrets/example.env" || !slices.Equal(got.Env, []string{"MODE", "PORT"}) {
+	if got := s.AppEnv["example"]; got.EnvFile != "/etc/motel/secrets/example.env" || !slices.Equal(got.Env, []string{"MODE", "PORT"}) {
 		t.Fatalf("%+v", got)
 	}
 	if got, ok := s.AppEnv["api"]; !ok || got.EnvFile != "" || len(got.Env) != 0 {
@@ -365,27 +365,27 @@ func TestSecretsFit(t *testing.T) {
 		}
 		return s
 	}
-	const managed = "\t\t\tenv_file /etc/hotserve/secrets/example.env\n"
+	const managed = "\t\t\tenv_file /etc/motel/secrets/example.env\n"
 	for name, c := range map[string]struct {
 		example, api string
 		secrets      *proof.Secrets
 		want         string // "" fits
 	}{
 		"no secrets, no env_file":        {"", "", secrets(), ""},
-		"no secrets, a hand-made file":   {"\t\t\tenv_file /etc/hotserve/example.env\n", "", secrets(), ""},
+		"no secrets, a hand-made file":   {"\t\t\tenv_file /etc/motel/example.env\n", "", secrets(), ""},
 		"secrets read by their app":      {managed + "\t\t\tenv MODE x\n", "", secrets("example:DATABASE_URL,STRIPE_KEY"), ""},
-		"a spelling that cleans to it":   {"\t\t\tenv_file /etc/hotserve//secrets/./example.env\n", "", secrets("example:K"), ""},
+		"a spelling that cleans to it":   {"\t\t\tenv_file /etc/motel//secrets/./example.env\n", "", secrets("example:K"), ""},
 		"secrets for no app":             {managed, "", secrets("example:K", "billing:K"), "deploy.example.com/secrets/billing/ names no app in the new Caddyfile: add the app, or remove the directory"},
-		"secrets, no env_file":           {"", "", secrets("example:K"), "app example has secrets and no env_file: add env_file /etc/hotserve/secrets/example.env to its block"},
-		"secrets, the old file":          {"\t\t\tenv_file /etc/hotserve/example.env\n", "", secrets("example:K"), "app example has secrets, and its env_file is not /etc/hotserve/secrets/example.env: set it"},
-		"secrets, a placeholder":         {"\t\t\tenv_file {env.SECRET_PATH}\n", "", secrets("example:K"), "its env_file is not /etc/hotserve/secrets/example.env: set it"},
+		"secrets, no env_file":           {"", "", secrets("example:K"), "app example has secrets and no env_file: add env_file /etc/motel/secrets/example.env to its block"},
+		"secrets, the old file":          {"\t\t\tenv_file /etc/motel/example.env\n", "", secrets("example:K"), "app example has secrets, and its env_file is not /etc/motel/secrets/example.env: set it"},
+		"secrets, a placeholder":         {"\t\t\tenv_file {env.SECRET_PATH}\n", "", secrets("example:K"), "its env_file is not /etc/motel/secrets/example.env: set it"},
 		"an env line shadows a secret":   {managed + "\t\t\tenv STRIPE_KEY sk_test\n", "", secrets("example:DATABASE_URL,STRIPE_KEY"), "app example sets STRIPE_KEY with env and as a secret; env wins over env_file, so the secret would never reach it"},
-		"a SOCKET secret":                {managed, "", secrets("example:SOCKET"), "secret SOCKET for app example: hotserve sets SOCKET last, so it would never reach the app"},
-		"another app's file":             {managed, "\t\t\tenv_file /etc/hotserve/secrets/example.env\n", secrets("example:K"), "app api's env_file is app example's secrets file"},
-		"the managed file, no secrets":   {managed, "", secrets(), "app example's env_file is /etc/hotserve/secrets/example.env, and deploy.example.com/secrets/example/ holds no secret: add one, or remove the env_file line"},
-		"something else in secrets/":     {"", "\t\t\tenv_file /etc/hotserve/secrets/shared.conf\n", secrets(), "app api's env_file is in /etc/hotserve/secrets, where the box keeps each app's own file: use /etc/hotserve/secrets/api.env"},
-		"a name outside the app grammar": {"", "\t\t\tenv_file /etc/hotserve/secrets/Bad.env\n", secrets(), "app api's env_file is in /etc/hotserve/secrets, where the box keeps each app's own file"},
-		"the directory itself":           {"", "\t\t\tenv_file /etc/hotserve/secrets/\n", secrets(), "app api's env_file is in /etc/hotserve/secrets, where the box keeps each app's own file: use /etc/hotserve/secrets/api.env"},
+		"a SOCKET secret":                {managed, "", secrets("example:SOCKET"), "secret SOCKET for app example: motel sets SOCKET last, so it would never reach the app"},
+		"another app's file":             {managed, "\t\t\tenv_file /etc/motel/secrets/example.env\n", secrets("example:K"), "app api's env_file is app example's secrets file"},
+		"the managed file, no secrets":   {managed, "", secrets(), "app example's env_file is /etc/motel/secrets/example.env, and deploy.example.com/secrets/example/ holds no secret: add one, or remove the env_file line"},
+		"something else in secrets/":     {"", "\t\t\tenv_file /etc/motel/secrets/shared.conf\n", secrets(), "app api's env_file is in /etc/motel/secrets, where the box keeps each app's own file: use /etc/motel/secrets/api.env"},
+		"a name outside the app grammar": {"", "\t\t\tenv_file /etc/motel/secrets/Bad.env\n", secrets(), "app api's env_file is in /etc/motel/secrets, where the box keeps each app's own file"},
+		"the directory itself":           {"", "\t\t\tenv_file /etc/motel/secrets/\n", secrets(), "app api's env_file is in /etc/motel/secrets, where the box keeps each app's own file: use /etc/motel/secrets/api.env"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			shape, err := Walk(secretsFile(c.example, c.api))
@@ -406,7 +406,7 @@ func TestSecretsFit(t *testing.T) {
 		})
 	}
 	t.Run("an env_file value is never quoted back", func(t *testing.T) {
-		shape, err := Walk(secretsFile("\t\t\tenv_file /etc/hotserve/s3cr3t-path.env\n", ""))
+		shape, err := Walk(secretsFile("\t\t\tenv_file /etc/motel/s3cr3t-path.env\n", ""))
 		if err != nil {
 			t.Fatal(err)
 		}

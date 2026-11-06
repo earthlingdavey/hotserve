@@ -1,7 +1,7 @@
 #!/bin/sh
 # The box channel end to end (box/DESIGN-box.md), inside the e2e box:
-# the e2e-hotserve container, systemd as PID 1, hotserve.service as the
-# hotserve user, and the packaged hotserve-box-apply.path and .service
+# the e2e-motel container, systemd as PID 1, motel.service as the
+# motel user, and the packaged motel-box-apply.path and .service
 # with the tmpfiles exchange tree. Commits are made and SSH-signed by
 # git here, bundled the way the template's workflow bundles them, and
 # POSTed to box_webhook with a `deploy_trust local` token naming the
@@ -13,7 +13,7 @@
 # imports inlined (a signed file has none), a `box` block, and a
 # box_webhook site on a bare hostname (served with an internal-CA
 # certificate on 8443: the address rules allow no scheme or port), at
-# <host>/Caddyfile in the repository. Its baseline is set by `hotserve
+# <host>/Caddyfile in the repository. Its baseline is set by `motel
 # init`, run inside that directory as the operator runs it.
 #
 # Runs last in `make e2e` (`docker compose exec`); puts the e2e config
@@ -23,8 +23,8 @@ set -u
 
 HOST=box.e2e.test
 URL=https://$HOST:8443/
-BOX=/var/lib/hotserve-box
-LIVE=/etc/hotserve/Caddyfile
+BOX=/var/lib/motel-box
+LIVE=/etc/motel/Caddyfile
 FILE=$HOST/Caddyfile
 
 work=$(mktemp -d)
@@ -39,9 +39,9 @@ newid() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 # tok [<sha>]: a fresh box token, naming the commit when given one.
 tok() {
 	if [ -n "${1:-}" ]; then
-		hotserve deploy-token --key /shared/deploy.key --audience e2e-box --ttl 5m --claims "sha=$1"
+		motel deploy-token --key /shared/deploy.key --audience e2e-box --ttl 5m --claims "sha=$1"
 	else
-		hotserve deploy-token --key /shared/deploy.key --audience e2e-box --ttl 5m
+		motel deploy-token --key /shared/deploy.key --audience e2e-box --ttl 5m
 	fi
 }
 
@@ -132,7 +132,7 @@ push() {
 settled() {
 	i=0
 	while [ "$i" -lt 60 ]; do
-		[ "$(systemctl is-active hotserve-box-apply.service)" != activating ] \
+		[ "$(systemctl is-active motel-box-apply.service)" != activating ] \
 			&& [ -z "$(ls -A "$BOX/in")$(ls -A "$BOX/work")" ] && break
 		i=$((i + 1))
 		sleep 0.5
@@ -141,7 +141,7 @@ settled() {
 		fail "$1: left in/ or work/ non-empty: $(ls -A "$BOX/in" "$BOX/work" | tr '\n' ' ')"
 	elif [ -e "$BOX/txn.json" ]; then
 		fail "$1: left txn.json behind"
-	elif ls /etc/hotserve/.Caddyfile.box-* >/dev/null 2>&1; then
+	elif ls /etc/motel/.Caddyfile.box-* >/dev/null 2>&1; then
 		fail "$1: left a .Caddyfile.box-* temporary"
 	fi
 }
@@ -231,20 +231,20 @@ git -C "$repo" add -A
 git -C "$repo" -c user.signingkey="$work/alice" commit -q -S -m "$HOST: the first file"
 C0=$(git -C "$repo" rev-parse HEAD)
 
-# install_baseline <sha>: `hotserve init <sha>`, as root inside the
+# install_baseline <sha>: `motel init <sha>`, as root inside the
 # box's directory copied from the commit (git archive, as init's help
-# copies it), on a box where hotserve runs; its output in $work/init.out.
+# copies it), on a box where motel runs; its output in $work/init.out.
 install_baseline() {
 	rm -rf "$work/init" && mkdir -p "$work/init" \
 		&& git -C "$repo" archive "$1" "$HOST" | tar -xf - -C "$work/init" \
-		&& (cd "$work/init/$HOST" && hotserve init "$1") >"$work/init.out" 2>&1
+		&& (cd "$work/init/$HOST" && motel init "$1") >"$work/init.out" 2>&1
 }
 
 # restore: the e2e config back, and no baseline.
 restore() {
 	cp "$work/original" "$LIVE.e2e-tmp" && chmod 0644 "$LIVE.e2e-tmp" && mv "$LIVE.e2e-tmp" "$LIVE" \
 		&& rm -f "$BOX/applied.json" \
-		&& { systemctl reload hotserve || systemctl restart hotserve; }
+		&& { systemctl reload motel || systemctl restart motel; }
 }
 
 # ready: GET / answers 200 (the internal certificate is issued
@@ -261,17 +261,17 @@ ready() {
 }
 
 echo "=== box apply 0: the units are in place and the box answers ==="
-[ "$(systemctl is-active hotserve-box-apply.path)" = active ] \
-	&& pass "hotserve-box-apply.path is active" || fail "the path unit is $(systemctl is-active hotserve-box-apply.path)"
-[ "$(stat -c '%a %U %G' "$BOX" "$BOX/in" "$BOX/out" | tr '\n' ' ')" = "2750 root hotserve 770 root hotserve 2750 root hotserve " ] \
+[ "$(systemctl is-active motel-box-apply.path)" = active ] \
+	&& pass "motel-box-apply.path is active" || fail "the path unit is $(systemctl is-active motel-box-apply.path)"
+[ "$(stat -c '%a %U %G' "$BOX" "$BOX/in" "$BOX/out" | tr '\n' ' ')" = "2750 root motel 770 root motel 2750 root motel " ] \
 	&& pass "the exchange tree has the Paths table's modes" || fail "exchange tree: $(stat -c '%n %a %U %G' "$BOX" "$BOX/in" "$BOX/out" | tr '\n' ' ')"
 if ! install_baseline "$C0"; then
-	fail "hotserve init failed: $(cat "$work/init.out"); $(journalctl -u hotserve --no-pager -n 5 | grep -o '"msg":"[^"]*"' | tail -1)"
+	fail "motel init failed: $(cat "$work/init.out"); $(journalctl -u motel --no-pager -n 5 | grep -o '"msg":"[^"]*"' | tail -1)"
 	restore
 	exit 1
 fi
 grep -qx "init: reloaded. From here, this box takes config only as signed commits sent by your repository's workflow." "$work/init.out" \
-	&& pass "hotserve init installed the baseline and reloaded" || fail "hotserve init printed: $(cat "$work/init.out")"
+	&& pass "motel init installed the baseline and reloaded" || fail "motel init printed: $(cat "$work/init.out")"
 [ "$(json_str "$(cat "$BOX/applied.json")" path)" = "$FILE" ] && [ "$(json_str "$(cat "$BOX/applied.json")" signer)" = init ] \
 	&& pass "applied.json records $FILE, derived from the host, signed by init" || fail "applied.json: $(cat "$BOX/applied.json")"
 BASE=$C0
@@ -398,7 +398,7 @@ refused "a file with no box_webhook" "the new Caddyfile has no site with box_web
 render "$ALICE" "$(printf '\n:8181 {\n\tno_such_directive\n}\n')" >"$work/fbad"
 X=$(commit alice "$work/fbad")
 push "$X"
-refused "a config hotserve validate rejects" "hotserve validate:"
+refused "a config motel validate rejects" "motel validate:"
 
 # A backup declaration is validated as every line is: one that names a
 # sibling's shared dir is refused at step 6. The refusal quotes Caddy's
@@ -409,22 +409,22 @@ refused "a config hotserve validate rejects" "hotserve validate:"
 sed 's#files  uploads#files  ../../deno-example/shared#' "$work/f2" >"$work/fbackup"
 cmp -s "$work/f2" "$work/fbackup" && fail "the box's file has no \`files  uploads\` line to break"
 # Caddy logs the error as JSON off a terminal, its quotes escaped.
-hotserve validate --adapter caddyfile --config "$work/fbackup" 2>&1 | grep -qE 'backup files \\?"\.\./\.\./deno-example/shared\\?": the path reaches outside' \
-	&& pass "fixture: hotserve validate refuses the file for the backup path" || fail "fixture: hotserve validate does not refuse the file for the backup path"
+motel validate --adapter caddyfile --config "$work/fbackup" 2>&1 | grep -qE 'backup files \\?"\.\./\.\./deno-example/shared\\?": the path reaches outside' \
+	&& pass "fixture: motel validate refuses the file for the backup path" || fail "fixture: motel validate does not refuse the file for the backup path"
 BK=$(commit alice "$work/fbackup")
 push "$BK"
-refused "a backup path outside the app's shared dir" "hotserve validate:"
+refused "a backup path outside the app's shared dir" "motel validate:"
 # A root from the environment is one a backup run, which reads the
-# Caddyfile without hotserve's environment, cannot know: hotserve
-# accepts it, and step 6's hotserve-backup validate refuses it, naming
+# Caddyfile without motel's environment, cannot know: motel
+# accepts it, and step 6's motel-backup validate refuses it, naming
 # the variable. (Box apply 9b makes the same change to the box's file on
-# a box where hotserve-backup is not installed.)
+# a box where motel-backup is not installed.)
 # shellcheck disable=SC2016 # the Caddyfile's own {$NAME}, not the shell's
 sed 's#root /var/lib/liveswap#root {$LIVESWAP_ROOT:/var/lib/liveswap}#' "$work/f2" >"$work/fenvroot"
 grep -qF '{$LIVESWAP_ROOT:' "$work/fenvroot" || fail "the box's file has no root line to make a variable"
 ER=$(commit alice "$work/fenvroot")
 push "$ER"
-refused "a root from the environment, for backups" "hotserve-backup validate: hotserve-backup: the liveswap root or a backup path depends on the environment variable(s) LIVESWAP_ROOT"
+refused "a root from the environment, for backups" "motel-backup validate: motel-backup: the liveswap root or a backup path depends on the environment variable(s) LIVESWAP_ROOT"
 
 # The door: this box's server listens on 8443, and the push arrived
 # there; a file that moves it validates and would load, and is refused
@@ -501,7 +501,7 @@ grep -q '^HTTP/1.1 400' "$work/trickle" && grep -qF 'could not read the bundle: 
 	&& pass "the trickled upload is answered 400 at the bound" || fail "trickle: $(tail -c 400 "$work/trickle")"
 [ "$trickle_took" -ge 120 ] && [ "$trickle_took" -le 195 ] \
 	&& pass "answered after ${trickle_took}s: the bound and at most one idle window" || fail "answered after ${trickle_took}s"
-journalctl -u hotserve --since "@$trickle_start" --no-pager -o cat | grep -q 'box push upload failed' \
+journalctl -u motel --since "@$trickle_start" --no-pager -o cat | grep -q 'box push upload failed' \
 	&& pass "the journal has the upload failed line" || fail "no 'box push upload failed' line in the journal"
 probe
 [ "$CODE" = 422 ] && pass "the slot is free: the next push is read and refused" || fail "probe after the bound: $CODE $(resp)"
@@ -522,9 +522,9 @@ settled "rollback"
 
 echo "=== box apply 5: a console edit is reported, and the next push reinstalls the commit ==="
 # A console edit can import what a push cannot. Here the demo app's
-# backup block comes from a snippet defined outside /etc/hotserve, which
+# backup block comes from a snippet defined outside /etc/motel, which
 # a backup run's view does not hold, so that app would not be backed up
-# while every run said ok: hotserve reload refuses it, and the running
+# while every run said ok: motel reload refuses it, and the running
 # config goes on. A start is never refused for it — every site would
 # be down — and says why.
 mkdir -p /srv/outside
@@ -534,25 +534,25 @@ chmod 0644 /srv/outside/bk.caddy
 grep -q "import bk" "$work/foutside" || fail "the box's file has no backup block to move"
 cat "$work/foutside" >"$LIVE"
 since=$(date +%s)
-systemctl reload hotserve >"$work/out" 2>&1 && fail "systemctl reload took a backup declared outside /etc/hotserve" || pass "a reload of it is refused"
-journalctl -u hotserve --since "@$since" --no-pager -o cat | grep -qF "read from /srv/outside/bk.caddy, outside /etc/hotserve" \
+systemctl reload motel >"$work/out" 2>&1 && fail "systemctl reload took a backup declared outside /etc/motel" || pass "a reload of it is refused"
+journalctl -u motel --since "@$since" --no-pager -o cat | grep -qF "read from /srv/outside/bk.caddy, outside /etc/motel" \
 	&& pass "and the journal says why" || fail "the journal does not say why the reload was refused"
 [ "$(served 8180)" = v1 ] && pass "and the running config goes on serving" || fail "after the refused reload: '$(served 8180)'"
 # (Meanwhile the box's GET / answers 500: its walk refuses the import in
 # the file it runs. So the start is watched on the demo site, and the
 # box is asked again once the file is mended.)
-systemctl restart hotserve
+systemctl restart motel
 i=0
 until [ "$(served 8180)" = v1 ] || [ "$i" -ge 60 ]; do i=$((i + 1)); sleep 0.5; done
 [ "$(served 8180)" = v1 ] && pass "a start with it serves all the same" || fail "after a start: '$(served 8180)'"
-journalctl -u hotserve --since "@$since" --no-pager -o cat | grep -q "served all the same" \
+journalctl -u motel --since "@$since" --no-pager -o cat | grep -q "served all the same" \
 	&& pass "and says why it is wrong, in the journal" || fail "the start said nothing of the backup"
 cat "$work/f1" >"$LIVE"
-systemctl reload hotserve && pass "with the backup back in the file, a reload is taken" || fail "the reload after mending it"
+systemctl reload motel && pass "with the backup back in the file, a reload is taken" || fail "the reload after mending it"
 ready && pass "and the box answers again" || fail "the box does not answer after the mend: $CODE $(resp | head -c 300)"
 rm -rf /srv/outside
 printf '\n# edited at the console\n' >>"$LIVE"
-systemctl reload hotserve
+systemctl reload motel
 bundle "$C1" "$C1"
 post "$C1"
 case $CODE in 202 | 504) poll ;; esac
@@ -562,40 +562,40 @@ PHASE=$(phase)
 cmp -s "$LIVE" "$work/f1" && pass "the live file is the commit's again" || fail "the console edit survived"
 settled "out-of-band"
 
-echo "=== box apply 6: with hotserve stopped, the applier refuses and changes nothing ==="
-# Nothing can POST with hotserve down, so the bundle is dropped as the
-# handler drops it: assembled in stage/ by the hotserve uid, renamed
+echo "=== box apply 6: with motel stopped, the applier refuses and changes nothing ==="
+# Nothing can POST with motel down, so the bundle is dropped as the
+# handler drops it: assembled in stage/ by the motel uid, renamed
 # into in/.
 AT=$C1
 C3=$(commit alice "$work/f2")
 bundle "$C3" "$C1"
-systemctl stop hotserve
+systemctl stop motel
 ID=$(newid)
-install -o hotserve -g hotserve -m 0644 "$work/bundle.tgz" "$BOX/stage/.e2e-$ID"
+install -o motel -g motel -m 0644 "$work/bundle.tgz" "$BOX/stage/.e2e-$ID"
 mv "$BOX/stage/.e2e-$ID" "$BOX/in/$ID.tar"
 i=0
 while [ ! -s "$BOX/out/$ID.json" ] && [ "$i" -lt 60 ]; do
 	i=$((i + 1))
 	sleep 0.5
 done
-[ "$(json_str "$(cat "$BOX/out/$ID.json" 2>/dev/null)" phase)" = refused ] && grep -qF "hotserve is not running; nothing applied" "$BOX/out/$ID.json" \
-	&& pass "the applier refuses while hotserve is stopped" || fail "with hotserve stopped: $(cat "$BOX/out/$ID.json" 2>/dev/null)"
-cmp -s "$LIVE" "$work/f1" && pass "the live file is unchanged" || fail "the live file changed with hotserve stopped"
+[ "$(json_str "$(cat "$BOX/out/$ID.json" 2>/dev/null)" phase)" = refused ] && grep -qF "motel is not running; nothing applied" "$BOX/out/$ID.json" \
+	&& pass "the applier refuses while motel is stopped" || fail "with motel stopped: $(cat "$BOX/out/$ID.json" 2>/dev/null)"
+cmp -s "$LIVE" "$work/f1" && pass "the live file is unchanged" || fail "the live file changed with motel stopped"
 settled "stopped"
-systemctl start hotserve
-ready && pass "hotserve is back" || fail "hotserve did not come back: $CODE"
+systemctl start motel
+ready && pass "motel is back" || fail "motel did not come back: $CODE"
 
 echo "=== box apply 7: the template's bin/apply, unchanged, against this box ==="
 # examples/box/bin/apply is what a box repository's workflow runs. It
 # posts to the address the committed file names, https://$HOST/ on
 # 443; curl's own config file routes that to 8443 and takes the
 # internal CA's certificate (the script has no test hooks). The
-# laptop's token: one, naming the commit, via HOTSERVE_TOKEN.
+# laptop's token: one, naming the commit, via MOTEL_TOKEN.
 mkdir -p "$repo/bin" "$work/curl"
 cp /template/bin/apply "$repo/bin/apply"
 printf 'connect-to = %s:443:127.0.0.1:8443\ninsecure\nhttp1.1\n' "$HOST" >"$work/curl/.curlrc"
 template_apply() { # <sha> → its output in $work/tout, exit status returned
-	CURL_HOME=$work/curl HOTSERVE_TOKEN=$(tok "$1") "$repo/bin/apply" "$HOST" >"$work/tout" 2>&1
+	CURL_HOME=$work/curl MOTEL_TOKEN=$(tok "$1") "$repo/bin/apply" "$HOST" >"$work/tout" 2>&1
 }
 AT=$C1
 C4=$(commit alice "$work/f2")
@@ -632,14 +632,14 @@ echo "=== box apply 8: secrets, set with the template's own commands and sent by
 # block moves from its hand-made env file to the one the box writes.
 cp /template/Makefile "$repo/Makefile"
 cp /template/bin/secrets "$repo/bin/secrets"
-ENV=/etc/hotserve/secrets/demo.env
-KEY=$(cat /etc/hotserve/age.pub 2>/dev/null)
-grep -qxF "init: secrets for this box encrypt to $KEY; hotserve box key prints it again" "$work/init.out" \
-	&& pass "hotserve init made the box's key and printed it" || fail "init's key line, against age.pub '$KEY': $(cat "$work/init.out")"
-[ "$(hotserve box key 2>/dev/null)" = "$KEY" ] && pass "hotserve box key prints that key alone" || fail "hotserve box key: $(hotserve box key 2>&1)"
-[ "$(stat -c '%a %U %G' /etc/hotserve/age /etc/hotserve/age/identity /etc/hotserve/age.pub /etc/hotserve/secrets | tr '\n' ' ')" = "700 root root 600 root root 644 root root 2750 root hotserve " ] \
+ENV=/etc/motel/secrets/demo.env
+KEY=$(cat /etc/motel/age.pub 2>/dev/null)
+grep -qxF "init: secrets for this box encrypt to $KEY; motel box key prints it again" "$work/init.out" \
+	&& pass "motel init made the box's key and printed it" || fail "init's key line, against age.pub '$KEY': $(cat "$work/init.out")"
+[ "$(motel box key 2>/dev/null)" = "$KEY" ] && pass "motel box key prints that key alone" || fail "motel box key: $(motel box key 2>&1)"
+[ "$(stat -c '%a %U %G' /etc/motel/age /etc/motel/age/identity /etc/motel/age.pub /etc/motel/secrets | tr '\n' ' ')" = "700 root root 600 root root 644 root root 2750 root motel " ] \
 	&& pass "the key and the env files' directory have the Paths table's modes" \
-	|| fail "modes: $(stat -c '%n %a %U %G' /etc/hotserve/age /etc/hotserve/age/identity /etc/hotserve/age.pub /etc/hotserve/secrets | tr '\n' ' ')"
+	|| fail "modes: $(stat -c '%n %a %U %G' /etc/motel/age /etc/motel/age/identity /etc/motel/age.pub /etc/motel/secrets | tr '\n' ' ')"
 ready
 [ "$(json_str "$(resp)" recipient)" = "$KEY" ] && pass "GET / names the box's key" || fail "GET /: $(resp)"
 
@@ -657,17 +657,17 @@ secret() {
 	shift 2
 	(cd "$repo" && printf '%s' "$val" | make -s secret APP=demo VAR="$v" "$@") >"$work/sout" 2>&1
 }
-# reloads_since <epoch>: how many times hotserve.service was reloaded.
-reloads_since() { journalctl -u hotserve.service --since "@$1" --no-pager -o cat | grep -c '^Reloading' || true; }
+# reloads_since <epoch>: how many times motel.service was reloaded.
+reloads_since() { journalctl -u motel.service --since "@$1" --no-pager -o cat | grep -c '^Reloading' || true; }
 
 git -C "$repo" checkout -q --detach "$C4"
 V1=e2e-value-from-the-repository-1
-if secret SECRET "$V1" BOX_KEY="$KEY" && grep -qF "env_file /etc/hotserve/secrets/demo.env" "$work/sout"; then
+if secret SECRET "$V1" BOX_KEY="$KEY" && grep -qF "env_file /etc/motel/secrets/demo.env" "$work/sout"; then
 	pass "make secret encrypted the value and named the env_file line to add"
 else
 	fail "make secret: $(cat "$work/sout")"
 fi
-sed -i 's#env_file /etc/hotserve/demo.env#env_file /etc/hotserve/secrets/demo.env#' "$repo/$FILE"
+sed -i 's#env_file /etc/motel/demo.env#env_file /etc/motel/secrets/demo.env#' "$repo/$FILE"
 S1=$(commit_index alice "demo: SECRET from the repository")
 t0=$(date +%s)
 if template_apply "$S1" && grep -qxF "apply: $HOST secrets: demo: added SECRET" "$work/tout" \
@@ -677,9 +677,9 @@ if template_apply "$S1" && grep -qxF "apply: $HOST secrets: demo: added SECRET" 
 else
 	fail "bin/apply with a secret: $(cat "$work/tout")"
 fi
-[ "$(stat -c '%a %U %G' "$ENV" 2>/dev/null)" = "640 root hotserve" ] && pass "the env file is 0640 root:hotserve" || fail "the env file: $(stat -c '%a %U %G' "$ENV" 2>&1)"
-grep -qxF "SECRET=\"$V1\"" "$ENV" && pass "the env file holds the value, as hotserve reads it" || fail "the env file holds: $(cat "$ENV" 2>&1)"
-[ "$(reloads_since "$t0")" -ge 1 ] && pass "a push that changed the Caddyfile reloaded hotserve" || fail "no reload in the journal: the reload check below proves nothing"
+[ "$(stat -c '%a %U %G' "$ENV" 2>/dev/null)" = "640 root motel" ] && pass "the env file is 0640 root:motel" || fail "the env file: $(stat -c '%a %U %G' "$ENV" 2>&1)"
+grep -qxF "SECRET=\"$V1\"" "$ENV" && pass "the env file holds the value, as motel reads it" || fail "the env file holds: $(cat "$ENV" 2>&1)"
+[ "$(reloads_since "$t0")" -ge 1 ] && pass "a push that changed the Caddyfile reloaded motel" || fail "no reload in the journal: the reload check below proves nothing"
 [ "$(baseline)" = "$S1" ] && pass "the baseline is the commit with the secret" || fail "the baseline is $(baseline), not $S1"
 settled "secret added"
 
@@ -687,10 +687,10 @@ settled "secret added"
 # deploy's answer names the variable it redacted, never the value. The
 # hand-made demo.env sets SECRET too, so it is moved aside for this
 # deploy: a launch that still read it would fail, not pass.
-mv /etc/hotserve/demo.env /etc/hotserve/demo.env.aside
+mv /etc/motel/demo.env /etc/motel/demo.env.aside
 code=$(curl -s -o "$work/deploy" -w '%{http_code}' --max-time 60 -X POST -H "Authorization: Bearer $(cat /shared/deploy.token)" \
 	-d '{"url":"http://e2e-artifacts:8080/artifacts/demo-crash.tar.gz","version":"box-secrets-crash"}' http://localhost:8081/demo)
-mv /etc/hotserve/demo.env.aside /etc/hotserve/demo.env
+mv /etc/motel/demo.env.aside /etc/motel/demo.env
 if grep -q '"redacted_env":\["SECRET"\]' "$work/deploy" && ! grep -qF "$V1" "$work/deploy"; then
 	pass "a launch read the box's env file: the release printed SECRET, and its answer redacted it"
 else
@@ -708,7 +708,7 @@ else
 	fail "a rotation: $(cat "$work/tout")"
 fi
 grep -qxF "SECRET=\"$V2\"" "$ENV" && pass "the env file holds the new value" || fail "after the rotation: $(cat "$ENV" 2>&1)"
-[ "$(reloads_since "$t0")" = 0 ] && pass "a push of secrets alone did not reload hotserve" || fail "hotserve was reloaded for secrets alone"
+[ "$(reloads_since "$t0")" = 0 ] && pass "a push of secrets alone did not reload motel" || fail "motel was reloaded for secrets alone"
 settled "secret rotated"
 template_apply "$S2" && grep -qF "the box already runs this Caddyfile" "$work/tout" \
 	&& pass "the same commit again is no_change" || fail "a replay: $(cat "$work/tout")"
@@ -766,10 +766,10 @@ rm -r "$repo/$HOST/secrets/ghost"
 
 # A rebuilt box has a new key: bin/apply stops before sending, naming
 # it, and a reader's make rekey moves every value to it.
-mv /etc/hotserve/age/identity "$work/identity.old"
-KEY2=$(hotserve box key 2>/dev/null)
-[ -n "$KEY2" ] && [ "$KEY2" != "$KEY" ] && [ "$(cat /etc/hotserve/age.pub)" = "$KEY2" ] \
-	&& pass "a key moved aside is made again, and age.pub with it" || fail "the new key '$KEY2', age.pub $(cat /etc/hotserve/age.pub)"
+mv /etc/motel/age/identity "$work/identity.old"
+KEY2=$(motel box key 2>/dev/null)
+[ -n "$KEY2" ] && [ "$KEY2" != "$KEY" ] && [ "$(cat /etc/motel/age.pub)" = "$KEY2" ] \
+	&& pass "a key moved aside is made again, and age.pub with it" || fail "the new key '$KEY2', age.pub $(cat /etc/motel/age.pub)"
 K=$(commit_index alice "values for the old key")
 if ! template_apply "$K" && grep -qF "the box's key is $KEY2, but the first recipient in $HOST/secrets/recipients is $KEY" "$work/tout" \
 	&& grep -qF "make rekey BOX_KEY=$KEY2" "$work/tout" && grep -qF "nothing was sent" "$work/tout"; then
@@ -792,47 +792,47 @@ fi
 settled "rekey"
 
 # A hand-made env file brought in: the values the box writes are the
-# ones hotserve read from it.
-if (cd "$repo" && make -s secrets-import APP=demo </etc/hotserve/demo.env) >"$work/iout" 2>&1; then
+# ones motel read from it.
+if (cd "$repo" && make -s secrets-import APP=demo </etc/motel/demo.env) >"$work/iout" 2>&1; then
 	pass "make secrets-import read the hand-made env file"
 else
 	fail "make secrets-import: $(cat "$work/iout")"
 fi
 I=$(commit_index alice "demo: the hand-made env file, brought in")
 template_apply "$I" || fail "bin/apply of the import: $(cat "$work/tout")"
-[ "$(grep -v '^#' "$ENV" | sed 's/^SECRET="\(.*\)"$/SECRET=\1/')" = "$(cat /etc/hotserve/demo.env)" ] \
+[ "$(grep -v '^#' "$ENV" | sed 's/^SECRET="\(.*\)"$/SECRET=\1/')" = "$(cat /etc/motel/demo.env)" ] \
 	&& pass "the env file the box wrote holds the hand-made file's values" || fail "imported: $(cat "$ENV" 2>&1)"
 settled "import"
 
 # Removed from the repository, demo's file goes; a file the box never
 # wrote stays.
-printf 'X=1\n' >/etc/hotserve/secrets/node-example.env
+printf 'X=1\n' >/etc/motel/secrets/node-example.env
 git -C "$repo" rm -r -q "$HOST/secrets/demo"
-sed -i 's#env_file /etc/hotserve/secrets/demo.env#env_file /etc/hotserve/demo.env#' "$repo/$FILE"
+sed -i 's#env_file /etc/motel/secrets/demo.env#env_file /etc/motel/demo.env#' "$repo/$FILE"
 RM=$(commit_index alice "demo: back to its hand-made env file")
 if template_apply "$RM" && grep -qxF "apply: $HOST secrets: demo: removed SECRET" "$work/tout" && [ ! -e "$ENV" ] \
-	&& [ -e /etc/hotserve/secrets/node-example.env ]; then
+	&& [ -e /etc/motel/secrets/node-example.env ]; then
 	pass "a removed app's env file is gone, and one the box never wrote is left alone"
 else
-	fail "removal: $(cat "$work/tout"); $(ls -la /etc/hotserve/secrets 2>&1)"
+	fail "removal: $(cat "$work/tout"); $(ls -la /etc/motel/secrets 2>&1)"
 fi
-rm -f /etc/hotserve/secrets/node-example.env
+rm -f /etc/motel/secrets/node-example.env
 settled "secrets removed"
 # The box's first key back, and age.pub from it.
-mv "$work/identity.old" /etc/hotserve/age/identity && [ "$(hotserve box key 2>/dev/null)" = "$KEY" ] \
+mv "$work/identity.old" /etc/motel/age/identity && [ "$(motel box key 2>/dev/null)" = "$KEY" ] \
 	&& pass "the box's first key is back" || fail "could not put the box's first key back"
 
 echo "=== box apply 9: an administrator who is not root reads the logs, and nothing secret ==="
 # As docs/hardening.md makes one: the adm group alone (e2e/Dockerfile).
 # journalctl exits 0 on an empty journal too: look for known lines.
-runuser -u admin -- journalctl -u hotserve --no-pager 2>&1 | grep -q '"liveswap started"' \
-	&& pass "adm reads hotserve's journal without privilege" || fail "admin cannot read hotserve's journal"
-runuser -u admin -- journalctl -t hotserve-demo --no-pager 2>&1 | grep -q 'hotserve-demo' \
+runuser -u admin -- journalctl -u motel --no-pager 2>&1 | grep -q '"liveswap started"' \
+	&& pass "adm reads motel's journal without privilege" || fail "admin cannot read motel's journal"
+runuser -u admin -- journalctl -t motel-demo --no-pager 2>&1 | grep -q 'motel-demo' \
 	&& pass "adm reads an app's journal" || fail "admin cannot read the app's journal"
-for f in /etc/hotserve/demo.env /etc/hotserve/age/identity; do
+for f in /etc/motel/demo.env /etc/motel/age/identity; do
 	runuser -u admin -- cat "$f" >/dev/null 2>&1 && fail "admin can read $f" || pass "admin cannot read $f"
 done
-for d in /etc/hotserve/secrets /etc/hotserve/age /var/lib/hotserve; do
+for d in /etc/motel/secrets /etc/motel/age /var/lib/motel; do
 	runuser -u admin -- ls "$d" >/dev/null 2>&1 && fail "admin can list $d" || pass "admin cannot list $d"
 done
 # The template's own Caddyfile, with a signer (it ships with none, and
@@ -841,18 +841,18 @@ ssh-keygen -q -t ed25519 -N "" -C e2e -f "$work/example-signer"
 ekey=$(cut -d' ' -f1,2 "$work/example-signer.pub")
 awk -v line="signer e2e@example.com $ekey" '{ print } /^[[:space:]]*# signers[[:space:]]*$/ { print "\t\t" line }' \
 	/template/deploy.example.com/Caddyfile >"$work/example"
-runuser -u admin -- hotserve validate --adapter caddyfile --config /dev/stdin <"$work/example" >"$work/out" 2>&1 \
+runuser -u admin -- motel validate --adapter caddyfile --config /dev/stdin <"$work/example" >"$work/out" 2>&1 \
 	&& pass "the template's Caddyfile is a valid config" || fail "the template's Caddyfile does not validate: $(tail -3 "$work/out")"
-if runuser -u admin -- hotserve box describe /dev/stdin <"$work/example" >"$work/out" 2>&1 \
+if runuser -u admin -- motel box describe /dev/stdin <"$work/example" >"$work/out" 2>&1 \
 	&& [ "$(cat "$work/out")" = "$(printf 'host deploy.example.com\napp example\nsigner e2e@example.com %s' "$ekey")" ]; then
 	pass "the box reads the template as the deploy.example.com box, one app, one signer"
 else
-	fail "hotserve box describe on the template: $(cat "$work/out")"
+	fail "motel box describe on the template: $(cat "$work/out")"
 fi
 
-echo "=== box apply 9b: where hotserve-backup is not installed, step 6 does not ask it ==="
-# Box apply 3's root from the environment, which hotserve-backup
-# validate refused: with no hotserve-backup on the box, the same change
+echo "=== box apply 9b: where motel-backup is not installed, step 6 does not ask it ==="
+# Box apply 3's root from the environment, which motel-backup
+# validate refused: with no motel-backup on the box, the same change
 # is applied (access(X_OK)'s "not installed").
 # shellcheck disable=SC2016 # the Caddyfile's own {$NAME}, not the shell's
 sed -i 's#root /var/lib/liveswap#root {$LIVESWAP_ROOT:/var/lib/liveswap}#' "$repo/$FILE"
@@ -860,22 +860,22 @@ grep -qF '{$LIVESWAP_ROOT:' "$repo/$FILE" || fail "the box's file has no root li
 # A root from the environment is refused only where an app declares a
 # backup: with none, this would apply whatever step 6 asked. So the
 # file is first held to what step 6 would ask, with the binary there.
-/usr/bin/hotserve-backup validate "$repo/$FILE" >"$work/out" 2>&1 \
-	&& fail "fixture: hotserve-backup validate takes the file, so 9b would prove nothing" \
-	|| { grep -q 'LIVESWAP_ROOT' "$work/out" && pass "fixture: hotserve-backup validate refuses the file, naming the variable" || fail "fixture: hotserve-backup validate refused the file for another reason: $(cat "$work/out")"; }
+/usr/bin/motel-backup validate "$repo/$FILE" >"$work/out" 2>&1 \
+	&& fail "fixture: motel-backup validate takes the file, so 9b would prove nothing" \
+	|| { grep -q 'LIVESWAP_ROOT' "$work/out" && pass "fixture: motel-backup validate refuses the file, naming the variable" || fail "fixture: motel-backup validate refused the file for another reason: $(cat "$work/out")"; }
 NB=$(commit_index alice "root from the environment, on a box without backups")
-mv /usr/bin/hotserve-backup /usr/bin/hotserve-backup.aside
+mv /usr/bin/motel-backup /usr/bin/motel-backup.aside
 template_apply "$NB"
 applied=$?
-mv /usr/bin/hotserve-backup.aside /usr/bin/hotserve-backup
+mv /usr/bin/motel-backup.aside /usr/bin/motel-backup
 [ "$applied" = 0 ] && [ "$(baseline)" = "$NB" ] \
-	&& pass "with no hotserve-backup on the box, the push is applied" || fail "push without hotserve-backup: $(cat "$work/tout")"
+	&& pass "with no motel-backup on the box, the push is applied" || fail "push without motel-backup: $(cat "$work/tout")"
 settled "no backups"
 
 echo "=== box apply 10: the path unit never spun ==="
-[ "$(systemctl is-active hotserve-box-apply.path)" = active ] \
-	&& pass "the path unit is still active" || fail "the path unit is $(systemctl is-active hotserve-box-apply.path)"
-if journalctl -u hotserve-box-apply.path -u hotserve-box-apply.service --no-pager | grep -qiE 'trigger limit|start request repeated|start-limit'; then
+[ "$(systemctl is-active motel-box-apply.path)" = active ] \
+	&& pass "the path unit is still active" || fail "the path unit is $(systemctl is-active motel-box-apply.path)"
+if journalctl -u motel-box-apply.path -u motel-box-apply.service --no-pager | grep -qiE 'trigger limit|start request repeated|start-limit'; then
 	fail "the journal has a trigger or start limit line"
 else
 	pass "no trigger or start limit was hit"

@@ -53,7 +53,7 @@ func TestGetUpstreamsReturnsActiveSocket(t *testing.T) {
 }
 
 // Promise: the proxy never follows the app-writable name. An app that
-// replaces its socket with a symlink — to hotserve's admin socket, to
+// replaces its socket with a symlink — to motel's admin socket, to
 // a sibling's — gets a 502, not a connection through it.
 func TestGetUpstreamsRefusesASymlinkUnderTheSocketName(t *testing.T) {
 	rig := newTestRig(t) // no bind: nothing pinned yet when the symlink appears

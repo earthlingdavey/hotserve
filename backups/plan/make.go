@@ -17,14 +17,14 @@ import (
 	"strings"
 )
 
-// hotserve is the binary that adapts the Caddyfile. Absolute: a
+// motel is the binary that adapts the Caddyfile. Absolute: a
 // relative name is looked up on whatever PATH the caller has. A
 // variable only so a test can stand a script in for it.
-var hotserve = "/usr/bin/hotserve"
+var motel = "/usr/bin/motel"
 
-// Program is the path the plan unit runs hotserve from: what setup
+// Program is the path the plan unit runs motel from: what setup
 // checks is installed before asking anyone for a secret.
-func Program() string { return hotserve }
+func Program() string { return motel }
 
 // kinds are the values a variable can be given here, in the order they
 // are tried: a name of its own, then the other things a Caddyfile asks
@@ -73,7 +73,7 @@ type Inspection struct {
 // misses something else: a wildcard directory with a link out beside
 // real ones.
 //
-// It does not have the environment hotserve adapts it in, and is not
+// It does not have the environment motel adapts it in, and is not
 // given it: that environment is where the server's secrets are. But the
 // Caddyfile's own {$NAME} is substituted in the text by whoever adapts,
 // before any module sees a token, and that matters twice.
@@ -108,7 +108,7 @@ func Inspect(ctx context.Context, caddyfile, configDir string) (*Inspection, err
 	// adapter said.
 	adapt := func(env map[string]string) (*Plan, []string, string, error) {
 		//nolint:gosec // a constant path outside tests; the Caddyfile path is the caller's, a root-owned constant
-		cmd := exec.CommandContext(ctx, hotserve, "adapt", "--adapter", "caddyfile", "--config", caddyfile)
+		cmd := exec.CommandContext(ctx, motel, "adapt", "--adapter", "caddyfile", "--config", caddyfile)
 		cmd.Env = []string{} // never nil: nil means "inherit"
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
@@ -116,7 +116,7 @@ func Inspect(ctx context.Context, caddyfile, configDir string) (*Inspection, err
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		if err := cmd.Run(); err != nil {
-			return nil, nil, stderr.String(), fmt.Errorf("%s adapt: %w: %s", hotserve, err, lastLine(stderr.String()))
+			return nil, nil, stderr.String(), fmt.Errorf("%s adapt: %w: %s", motel, err, lastLine(stderr.String()))
 		}
 		if globs := emptyGlobs(stderr.Bytes()); len(globs) > 0 {
 			return nil, nil, stderr.String(), &emptyGlobError{globs}
@@ -169,7 +169,7 @@ func Inspect(ctx context.Context, caddyfile, configDir string) (*Inspection, err
 		if !moved {
 			hint := ""
 			if len(needs) > 0 {
-				hint = fmt.Sprintf(" (it was tried with made-up values for %s, which have no default: a backup reads the Caddyfile without hotserve's environment; a default the Caddyfile adapts with, `{$NAME:value}`, settles it)", strings.Join(needs, ", "))
+				hint = fmt.Sprintf(" (it was tried with made-up values for %s, which have no default: a backup reads the Caddyfile without motel's environment; a default the Caddyfile adapts with, `{$NAME:value}`, settles it)", strings.Join(needs, ", "))
 			}
 			return nil, fmt.Errorf("%w%s", err, hint)
 		}
@@ -234,10 +234,10 @@ func Inspect(ctx context.Context, caddyfile, configDir string) (*Inspection, err
 		}
 	}
 	if len(decisive) > 0 {
-		return nil, fmt.Errorf("the liveswap root or a backup path depends on the environment variable(s) %s through the Caddyfile's {$NAME}; a backup reads the Caddyfile without hotserve's environment, so it would look somewhere else than the server does — write those values literally", strings.Join(decisive, ", "))
+		return nil, fmt.Errorf("the liveswap root or a backup path depends on the environment variable(s) %s through the Caddyfile's {$NAME}; a backup reads the Caddyfile without motel's environment, so it would look somewhere else than the server does — write those values literally", strings.Join(decisive, ", "))
 	}
 	if len(opaque) > 0 {
-		return nil, fmt.Errorf("the Caddyfile does not adapt with the environment variable(s) %s set to any value tried, so what the server reads when they are set — an import, perhaps — cannot be known here; a backup reads the Caddyfile without hotserve's environment", strings.Join(opaque, ", "))
+		return nil, fmt.Errorf("the Caddyfile does not adapt with the environment variable(s) %s set to any value tried, so what the server reads when they are set — an import, perhaps — cannot be known here; a backup reads the Caddyfile without motel's environment", strings.Join(opaque, ", "))
 	}
 	if err := base.Validate(); err != nil {
 		return nil, err

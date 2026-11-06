@@ -17,12 +17,12 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust/trusttest"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust/trusttest"
 )
 
 // clocked is an OIDC source for iss whose refetch interval runs on c.
 func clocked(iss *trusttest.Issuer, c Clock) *oidcVerifier {
-	return &oidcVerifier{issuer: iss.URL, audience: "hotserve", claims: map[string]string{"sub": "ci"}, client: iss.Client, clock: c}
+	return &oidcVerifier{issuer: iss.URL, audience: "motel", claims: map[string]string{"sub": "ci"}, client: iss.Client, clock: c}
 }
 
 // settled is Prime on vs, as a start or a reload does it: it begins
@@ -52,7 +52,7 @@ func waited(t *testing.T, vs ...Verifier) {
 // issuer's current key.
 func ciToken(t *testing.T, iss *trusttest.Issuer) string {
 	t.Helper()
-	return iss.Mint(t, iss.Priv, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
+	return iss.Mint(t, iss.Priv, "motel", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute))
 }
 
 // refusedPlainly fails the test unless err is a refusal of the token's
@@ -94,9 +94,9 @@ func TestKeySetNeverFetchesForAKidItHolds(t *testing.T) {
 	}
 	for range 3 {
 		c.Advance(RefetchInterval)
-		_, err := v.verify(ctx, iss.Mint(t, forger, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute)))
+		_, err := v.verify(ctx, iss.Mint(t, forger, "motel", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute)))
 		refusedPlainly(t, err, "bad signature under a held kid")
-		if want := `signature does not match the key held for kid "` + iss.KID + `": the token is another issuer's, or, if the issuer replaced that key, systemctl reload hotserve`; !strings.Contains(err.Error(), want) {
+		if want := `signature does not match the key held for kid "` + iss.KID + `": the token is another issuer's, or, if the issuer replaced that key, systemctl reload motel`; !strings.Contains(err.Error(), want) {
 			t.Fatalf("bad signature under a held kid: reason = %q, want %q", err, want)
 		}
 	}
@@ -144,7 +144,7 @@ func TestKeySetFetchesForAnUnknownKidOncePerInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 	forged := func(kid string) error {
-		_, err := v.verify(ctx, iss.MintKID(t, forger, kid, "hotserve", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute)))
+		_, err := v.verify(ctx, iss.MintKID(t, forger, kid, "motel", map[string]string{"sub": "ci"}, time.Now().Add(5*time.Minute)))
 		return err
 	}
 	refusedPlainly(t, forged("forged-1"), "unknown kid at the instant of the last fetch")
@@ -155,7 +155,7 @@ func TestKeySetFetchesForAnUnknownKidOncePerInterval(t *testing.T) {
 	// may, and the reload that fetches now: a rotation in that minute is
 	// not read as a trust mismatch.
 	next := c.Now().Add(time.Second).UTC().Format(time.RFC3339)
-	if want := `kid "forged-2"): the token is another issuer's, or is under a new key they were fetched too soon for; a token from ` + next + ` on fetches them again, as does systemctl reload hotserve now`; !strings.Contains(err.Error(), want) {
+	if want := `kid "forged-2"): the token is another issuer's, or is under a new key they were fetched too soon for; a token from ` + next + ` on fetches them again, as does systemctl reload motel now`; !strings.Contains(err.Error(), want) {
 		t.Fatalf("unknown kid within the interval: reason = %q, want %q", err, want)
 	}
 	fetches(t, iss, 1, "unknown kids within the interval")

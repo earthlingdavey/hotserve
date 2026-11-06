@@ -1,0 +1,30 @@
+# motel-box-apply.path — starts motel-box-apply.service, the box
+# applier, whenever the exchange tree /var/lib/motel-box has work.
+# Every line here, and why it is here, is a row of the table in
+# box/DESIGN-box.md, "The applier unit"; box/units_test.go holds this
+# file to that table line for line.
+[Unit]
+Description=motel box applier trigger
+Documentation=https://github.com/smallhoursorg/motel/blob/main/box/DESIGN-box.md
+DefaultDependencies=no
+Requires=sysinit.target
+After=sysinit.target motel.service
+Before=shutdown.target
+Conflicts=shutdown.target
+StartLimitIntervalSec=0
+
+[Path]
+DirectoryNotEmpty=/var/lib/motel-box/in
+DirectoryNotEmpty=/var/lib/motel-box/work
+PathExists=/var/lib/motel-box/txn.json
+PathExistsGlob=/var/lib/motel-box/in/*
+PathExistsGlob=/var/lib/motel-box/in/.[!.]*
+PathExistsGlob=/var/lib/motel-box/in/..?*
+PathExistsGlob=/var/lib/motel-box/work/*
+PathExistsGlob=/var/lib/motel-box/work/.[!.]*
+PathExistsGlob=/var/lib/motel-box/work/..?*
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=20
+
+[Install]
+WantedBy=multi-user.target

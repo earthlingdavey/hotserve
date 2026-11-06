@@ -14,9 +14,9 @@ import (
 )
 
 // The origin: init rows of the Transitions and States tables, through
-// runInit, the entry `hotserve init` calls: no result files, and on a
-// hotserve that is not up once the wait is over, a refusal that writes
-// nothing (the reload is the check; DESIGN-box.md, "`hotserve init`").
+// runInit, the entry `motel init` calls: no result files, and on a
+// motel that is not up once the wait is over, a refusal that writes
+// nothing (the reload is the check; DESIGN-box.md, "`motel init`").
 func TestInitOrigin(t *testing.T) {
 	initRec := func(b *testBox, file []byte, sha string) record {
 		shape, err := Walk(file)

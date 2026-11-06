@@ -2,7 +2,7 @@ package box
 
 // Step 6's reachability (DESIGN-box.md, "Reachability: what may stand
 // before box_webhook"): of the pushed file's adaptation — Caddy's JSON
-// as `hotserve adapt` prints it — whether the server that carries
+// as `motel adapt` prints it — whether the server that carries
 // box_webhook still listens where the push arrived (the door), whether
 // the workflow's connection reaches that server's routes (its request
 // limits among them), and whether a GET and a POST for / on the
@@ -35,7 +35,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddytls"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 const msgAdaptationTooLarge = "the new Caddyfile's adaptation is larger than 16 MiB"

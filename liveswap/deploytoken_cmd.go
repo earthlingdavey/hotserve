@@ -16,7 +16,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
-	"github.com/smallhoursorg/hotserve/liveswap/deploytrust"
+	"github.com/smallhoursorg/motel/liveswap/deploytrust"
 )
 
 // These commands provide the non-CI ("local") deploy path: an operator
@@ -49,7 +49,7 @@ public key, keep the private key on the machine that mints deploy tokens.`,
 		Long: `Signs a JWT with a private key from 'deploy-keygen' and prints it to
 stdout. Use it as the deploy bearer:
 
-    curl -H "Authorization: Bearer $(hotserve deploy-token --key deploy.key --audience deploy.example.com)" ...
+    curl -H "Authorization: Bearer $(motel deploy-token --key deploy.key --audience deploy.example.com)" ...
 
 The token's audience and any --claims must match the app's
 'deploy_trust local' block for the deploy to be authorized.

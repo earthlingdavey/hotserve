@@ -30,7 +30,7 @@ if the rule says one goes in, is put to the owner before code.
 | M73 | What `check --json` says, and how it exits | One line on stdout, `{"message_type":"summary","num_errors":0,"broken_packs":null,…}`, exit 0. **The same summary with `num_errors: 1` is printed where it could not open the repository at all** — exit 12 (wrong password, <1 s), exit 10 (no repository, <1 s), or a host that does not resolve (still retrying at 120 s, `context canceled` when stopped). → `num_errors` is never read alone. Damage found: exit 1, `broken_packs` names them, stderr `error` lines and `exit_error` "Fatal: repository contains errors". |
 | M74 | Bit rot inside a pack, and which group reads it | 16 bytes overwritten inside a 10.8 MB data pack (size unchanged): the structure-only check **exit 0**; of 52 groups **only 8/52 exit 1** — the pack id begins `3b` (59; 59 mod 52 = 7). The group is the pack id's first byte mod 52, plus one. A pack grown or shrunk is found by the structure check itself (size mismatch). |
 | M75 | Locks, a check stopped, a check killed | A running `check` (exclusive) makes a `backup` exit 11 at once; `--retry-lock 5s` waits and succeeds. SIGTERM: exit 130, lock removed, temporary cache removed. **SIGKILL leaves the exclusive lock and the `restic-check-cache-*` directory**; the next backup from the same host (PID dead) exits 11 at once; **a backup with `--retry-lock 40m` against that lock, 40 min old, still exits 11 after 2401 s** — restic 0.18 never passes a stale lock by itself; `restic unlock` removes it (same host, dead PID). **`check --no-lock` writes no lock**, and runs beside an exclusive check. → the owner: `--no-lock`. |
-| M76 | A record of a clean run | `backup --stdin-from-command --stdin-filename hotserve-clean-<app> --tag hotserve-clean --tag vouches:<id> -- /bin/true` → **exit 3** ("no data read") and a snapshot all the same. `-- /usr/bin/echo <id>`: exit 0 in 0.8 s, 409 bytes packed; paths `["/hotserve-clean-<app>"]`; `snapshots --tag app:<app>` leaves it out; a command that fails → exit 1 and no snapshot. |
+| M76 | A record of a clean run | `backup --stdin-from-command --stdin-filename motel-clean-<app> --tag motel-clean --tag vouches:<id> -- /bin/true` → **exit 3** ("no data read") and a snapshot all the same. `-- /usr/bin/echo <id>`: exit 0 in 0.8 s, 409 bytes packed; paths `["/motel-clean-<app>"]`; `snapshots --tag app:<app>` leaves it out; a command that fails → exit 1 and no snapshot. |
 | M77 | The tens-of-GB repository [H §6, plan §5] | 28.5 GB raw (27 GB on disk), 224,840 blobs, 1,506 snapshots (five 5 GiB streams, a 200,000-file tree, 3 × 500 hourly snapshots of small apps). Local network: `cat config` 0.5–0.8 s · `snapshots` of all 1,506 0.6–1.4 s (cold cache 1.35 s, 2 MiB fetched, cache 7 MiB after) · `ls` of a 200-child directory 2.5–3.1 s, 23 MiB fetched cold · structure-only `check --no-lock` 2.3–2.9 s · `check --no-lock --read-data-subset=n/52` 3–5 s, **571–647 MiB fetched (1/52 of the data)**, peak RSS 181 MiB · the temporary cache a check makes: 47 MiB (left behind on SIGKILL) · persistent cache 48 MiB. (A first check after the fixture restarts took 62 s: rclone's own cold listing of ~30,000 objects, not restic's; repeated, 2.3 s.) Over an emulated remote link: see M78. |
 | M78 | The same over 25 ms each way and a 50 Mbit/s download cap (`tc netem` on the fixture and the client) | `cat config` 0.9 s · `snapshots` of 1,506 **19.6 s cold**, 1.3 s warm · `ls` **24.6 s cold**, 3.2 s warm · structure-only check 59 s · `check --no-lock --read-data-subset=n/52` **155–217 s**, 583–660 MiB read, peak RSS 168 MiB. |
 | M79 | `--cleanup-cache` and a killed check's temporary cache | A fresh `restic-check-cache-*` is left; backdated 31 days, the next command with `--cleanup-cache` removes it. → the check passes `--cleanup-cache`: what hard kills leave is bounded to a month's. |
@@ -55,7 +55,7 @@ state a drill can begin from.
 | c8 | exit 0 | exit 10 / 12 (changed since the probe) | — | `no repository` / `wrong password` |
 | c9 | the unit could not be set up (2xx), ended by a signal, any other exit, or the runner lost it | or the same of the check | — | `failed`, in `resticFailure`'s words |
 | c10 | an interrupt (the drill's context) during either | | | **no verdict**: `last_check` stays as it was |
-| c11 | exit 0 | killed hard (SIGKILL, power) | — | no verdict (the command died with it); **nothing is left that blocks a backup** (M75, `--no-lock`); its temporary cache (~47 MiB at 28 GB) stays in `/var/cache/hotserve-backup` |
+| c11 | exit 0 | killed hard (SIGKILL, power) | — | no verdict (the command died with it); **nothing is left that blocks a backup** (M75, `--no-lock`); its temporary cache (~47 MiB at 28 GB) stays in `/var/cache/motel-backup` |
 | c12 | exit 0 | exit 11 | — | cannot happen under `--no-lock`; were it to: `failed`, `resticFailure`'s words |
 
 **Rows — where a drill begins, and what that changes:**
@@ -77,7 +77,7 @@ state a drill can begin from.
 
 ## 3. A failure row for every new call to another program
 
-| Call (unit, as `hotserve-backup`, network, the credential file, the cache) | Fails how | What is done |
+| Call (unit, as `motel-backup`, network, the credential file, the cache) | Fails how | What is done |
 |---|---|---|
 | `restic cat config --no-lock` (probe) | restic not installed | `begin` refuses first (programsInstalled): r7 |
 | | exit 10 / 12 / 1 / clock / 2xx / signal / runner error | c4 / c5 / c6 / c6 / c9 / c9 / c9 |
@@ -89,10 +89,10 @@ state a drill can begin from.
 | | killed hard | c11 |
 | | interrupt | c10 |
 | `restic cat config --no-lock` (probe after) | anything but exit 0 | c3 |
-| `restic backup --quiet --json --retry-lock 2h --host hotserve --tag hotserve-clean --tag vouches:<id> --stdin-from-command --stdin-filename hotserve-clean-<app> -- /usr/bin/echo <id>` (the record) | `/usr/bin/echo` missing (coreutils is Essential) → restic exit 1 "command failed", no snapshot | a warning on the run: "<app>: the record that this run ended ok could not be written into the repository …"; **the app stays `ok`** — the backup is sound; only a rebuilt box loses the word |
+| `restic backup --quiet --json --retry-lock 2h --host motel --tag motel-clean --tag vouches:<id> --stdin-from-command --stdin-filename motel-clean-<app> -- /usr/bin/echo <id>` (the record) | `/usr/bin/echo` missing (coreutils is Essential) → restic exit 1 "command failed", no snapshot | a warning on the run: "<app>: the record that this run ended ok could not be written into the repository …"; **the app stays `ok`** — the backup is sound; only a rebuilt box loses the word |
 | | any exit but 0, no summary id, 2xx, signal, runner error | as above |
 | | interrupt | nothing more of the run is done (as after any unit) |
-| `restic snapshots --no-lock --json --host hotserve --tag hotserve-clean` (restore on a rebuilt box) | any failure | a warning on the restore ("whether a clean run vouches for snapshot … could not be asked: …"); the restore goes on, choosing as it would have |
+| `restic snapshots --no-lock --json --host motel --tag motel-clean` (restore on a rebuilt box) | any failure | a warning on the restore ("whether a clean run vouches for snapshot … could not be asked: …"); the restore goes on, choosing as it would have |
 | | answered, and nothing vouches for any snapshot of the app | said: "nothing in the repository says how the run that made … ended" |
 | | answered, the pick not vouched, an older one vouched | said with the words a box's own record gives today (`notLastOK`), naming the vouched one and `--snapshot` |
 | | answered, the pick vouched | nothing said |
@@ -116,7 +116,7 @@ state a drill can begin from.
 - `engine/restore.go`: `Drill` checks after its apps; `Restore` asks the
   repository's records where the box's own has no last ok.
 - `status`: the check's line and its part in health.
-- `cmd/hotserve-backup`: `drill` says the check's verdict and fails on
+- `cmd/motel-backup`: `drill` says the check's verdict and fails on
   any but `clean`; `restore`'s question and report say what vouches.
 - README: the check, the record, what a rebuilt box can now tell,
   status's rules, the backstop.
@@ -186,10 +186,10 @@ amended, no leaks · `make test-integration` 79 passes · `make package` ·
 suite's retention scenario counted every snapshot (6 → 12 with the six
 records), the status suite looked for a forgotten id anywhere in the
 listing (a record's `vouches:` tag still names it). Fixed to ask what
-they mean (`--tag hotserve`, `"id":"…"`), and the retention scenario
+they mean (`--tag motel`, `"id":"…"`), and the retention scenario
 now holds the records to a group per app too — seen failing against
 records sharing one name (`records: 6 before; after:
-"paths":["/hotserve-clean"]`). At `ffbb36a`: `make test`, `secretscan`,
+"paths":["/motel-clean"]`). At `ffbb36a`: `make test`, `secretscan`,
 and `make e2e-backup` whole: six suites, all passed (setup 180 s,
 backup 93, units 121, status 85, restore 199, check 125).
 
@@ -211,7 +211,7 @@ All fifteen judged against the code. Fourteen genuine, all fixed (the owner's ba
 | 7 | damage beside a met lock says so | `&{… Class:damaged Detail:restic check found 1 error; …}` without it; its "not said where nothing did" half against a note always added |
 | 8 | "no check" unhealthy only with no drill in 8 days | against the old rule: `healthy = false, want true` |
 | 9 | e2e: the count as a pattern | loosening — nothing to fail |
-| 10 | listing `--tag hotserve` | `the listing: [… "--host" "hotserve"]` |
+| 10 | listing `--tag motel` | `the listing: [… "--host" "motel"]` |
 | 11 | warning names the snapshot first | `the warning: "aaaa…aaa: the record that this run ended ok could not be written …` (id past the cut) |
 | 12–15 | `resticUnit`, `snapshots` with a tag, `CheckOldAfter = ProvenOldAfter`, the subtest's `t` | refactors: the whole suite, unchanged, is what holds them |
 

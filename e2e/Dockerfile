@@ -1,10 +1,10 @@
-# Builds the exact artifact an operator ships: the hotserve binary from
-# cmd/hotserve (caddy standard + liveswap + penaltybox + Souin + Otter).
-# The e2e-hotserve container then plays the production VPS: systemd as
-# PID 1 running the packaged hotserve.service as the hotserve user,
+# Builds the exact artifact an operator ships: the motel binary from
+# cmd/motel (caddy standard + liveswap + penaltybox + Souin + Otter).
+# The e2e-motel container then plays the production VPS: systemd as
+# PID 1 running the packaged motel.service as the motel user,
 # with deployed apps as transient units under that user's own systemd
 # manager — exactly the layout the .deb's postinstall produces.
-# (e2e-upstream reuses the image as a plain `hotserve run` container.)
+# (e2e-upstream reuses the image as a plain `motel run` container.)
 
 # The Deno runtime for the examples/deno lane, installed under
 # /usr/local, inside every app's sandbox view. A FROM, so Dependabot
@@ -15,8 +15,8 @@ FROM denoland/deno:bin-2.9.8 AS deno
 FROM golang:1.27-trixie AS builder
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 GOFLAGS=-buildvcs=false go build -trimpath -o /hotserve ./cmd/hotserve \
-	&& cd backups && CGO_ENABLED=0 GOFLAGS=-buildvcs=false go build -trimpath -o /hotserve-backup ./cmd/hotserve-backup
+RUN CGO_ENABLED=0 GOFLAGS=-buildvcs=false go build -trimpath -o /motel ./cmd/motel \
+	&& cd backups && CGO_ENABLED=0 GOFLAGS=-buildvcs=false go build -trimpath -o /motel-backup ./cmd/motel-backup
 
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
@@ -42,10 +42,10 @@ RUN systemctl mask \
 	console-getty.service \
 	|| true
 
-COPY --from=builder /hotserve /usr/bin/hotserve
+COPY --from=builder /motel /usr/bin/motel
 # The box channel's step 6 asks it whether a backup run could plan
 # from the Caddyfile being pushed; nothing here runs a backup.
-COPY --from=builder /hotserve-backup /usr/bin/hotserve-backup
+COPY --from=builder /motel-backup /usr/bin/motel-backup
 COPY --from=deno /deno /usr/local/bin/deno
 # The example pins the Deno its workflow builds with in .deno-version;
 # the FROM above is Dependabot's to bump. Refuse to build when the two
@@ -57,46 +57,46 @@ RUN [ "$(deno --version | sed -n 's/^deno \([0-9.]*\).*/\1/p')" = "$(cat /tmp/.d
 # Fail the build outright if any module didn't link in. (Otter is
 # additionally proven at startup: the `otter` cache option makes config
 # load fail if the storage module is absent.)
-RUN hotserve list-modules | grep -qx liveswap \
-	&& hotserve list-modules | grep -qx http.handlers.liveswap_webhook \
-	&& hotserve list-modules | grep -qx http.reverse_proxy.upstreams.liveswap \
-	&& hotserve list-modules | grep -qx http.handlers.hint_penaltybox \
-	&& hotserve list-modules | grep -qx http.handlers.cache \
-	&& hotserve list-modules | grep -qx storages.cache.otter
+RUN motel list-modules | grep -qx liveswap \
+	&& motel list-modules | grep -qx http.handlers.liveswap_webhook \
+	&& motel list-modules | grep -qx http.reverse_proxy.upstreams.liveswap \
+	&& motel list-modules | grep -qx http.handlers.hint_penaltybox \
+	&& motel list-modules | grep -qx http.handlers.cache \
+	&& motel list-modules | grep -qx storages.cache.otter
 
 # The production layout, produced by the package's own postinstall
 # (user, data dirs, lingering, the user@<uid> drop-ins) so the e2e
 # container is what a .deb install is — never a re-implementation.
 # systemd is not running at build time; postinstall tolerates that
 # (linger-file fallback, daemon-reload/try-restart ignored).
-COPY packaging/hotserve.service /etc/systemd/system/hotserve.service
+COPY packaging/motel.service /etc/systemd/system/motel.service
 # The box applier's units and exchange tree, where the package puts
 # them (packaging/nfpm.yaml); postinstall makes the tree.
-COPY packaging/hotserve-box-apply.path packaging/hotserve-box-apply.service /lib/systemd/system/
-COPY packaging/hotserve-box.tmpfiles /usr/lib/tmpfiles.d/hotserve-box.conf
+COPY packaging/motel-box-apply.path packaging/motel-box-apply.service /lib/systemd/system/
+COPY packaging/motel-box.tmpfiles /usr/lib/tmpfiles.d/motel-box.conf
 # The starter and the directories the package ships for it; postinstall
 # installs it and its record (e2e/Caddyfile replaces it below).
-COPY packaging/Caddyfile /usr/share/hotserve/Caddyfile
+COPY packaging/Caddyfile /usr/share/motel/Caddyfile
 COPY packaging/postinstall.sh /tmp/postinstall.sh
-RUN mkdir -p /var/lib/hotserve /var/lib/liveswap /etc/hotserve /var/lib/hotserve-package \
-	&& chmod 750 /var/lib/hotserve /var/lib/liveswap \
-	&& chmod 755 /etc/hotserve && chmod 700 /var/lib/hotserve-package \
+RUN mkdir -p /var/lib/motel /var/lib/liveswap /etc/motel /var/lib/motel-package \
+	&& chmod 750 /var/lib/motel /var/lib/liveswap \
+	&& chmod 755 /etc/motel && chmod 700 /var/lib/motel-package \
 	&& sh /tmp/postinstall.sh && rm /tmp/postinstall.sh
-COPY e2e/systemd/e2e.conf /etc/systemd/system/hotserve.service.d/e2e.conf
+COPY e2e/systemd/e2e.conf /etc/systemd/system/motel.service.d/e2e.conf
 COPY e2e/systemd/e2e-token.service /etc/systemd/system/e2e-token.service
 # postinstall enables the path unit only through deb-systemd-helper,
 # which needs a dpkg install to remember; enabled here as it would be.
-RUN systemctl enable hotserve.service e2e-token.service hotserve-box-apply.path
-COPY e2e/Caddyfile /etc/hotserve/Caddyfile
+RUN systemctl enable motel.service e2e-token.service motel-box-apply.path
+COPY e2e/Caddyfile /etc/motel/Caddyfile
 # The demo app's env file, as the box README says to make one: root
-# and the hotserve user can read it, nothing else. The crash scenario
+# and the motel user can read it, nothing else. The crash scenario
 # deploys a release that prints SECRET and exits.
-RUN printf 'SECRET=e2e-secret-value-1234\n' > /etc/hotserve/demo.env \
-	&& chown root:hotserve /etc/hotserve/demo.env && chmod 0640 /etc/hotserve/demo.env
+RUN printf 'SECRET=e2e-secret-value-1234\n' > /etc/motel/demo.env \
+	&& chown root:motel /etc/motel/demo.env && chmod 0640 /etc/motel/demo.env
 # The Deno example's app-block lines, imported by e2e/Caddyfile: the
 # lines its README says to copy onto the box are the lines tested.
-COPY examples/deno/hotserve.caddy /etc/hotserve/deno-example.caddy
-COPY examples/node/hotserve.caddy /etc/hotserve/node-example.caddy
+COPY examples/deno/motel.caddy /etc/motel/deno-example.caddy
+COPY examples/node/motel.caddy /etc/motel/node-example.caddy
 COPY e2e/mint-token.sh /usr/local/bin/mint-token.sh
 RUN chmod +x /usr/local/bin/mint-token.sh
 

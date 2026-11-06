@@ -26,7 +26,7 @@ import (
 // rules; every function here holds them, and the filter's own rules
 // (redact.go) hold the second and third.
 //
-//  1. A record is bytes hotserve wrote once, through the filter, into
+//  1. A record is bytes motel wrote once, through the filter, into
 //     a directory it verified as its own. Anything read back is text
 //     from disk: it may be served only through the filter, and it is
 //     trusted for nothing else — not as a name, not as a retention
@@ -248,7 +248,7 @@ func (ma *managedApp) recordRedactor(c collaborators, result deployResult) (*Red
 // recordsDir is the records directory as the directory it names
 // (rule 4): with create, made if absent; refused when the app dir or it
 // is a link, is not a directory, or cannot be checked for one
-// (appDirs.linkAt, the rule every dir hotserve deletes in is held to) —
+// (appDirs.linkAt, the rule every dir motel deletes in is held to) —
 // `<root>/blog -> <root>/shop` would have blog's deploys list, serve
 // and prune shop's records. An alias on the liveswap root itself is
 // the one difference allowed. Without create — every read — a missing
@@ -308,7 +308,7 @@ func recordHead(b []byte, name string) (deploySummary, bool) {
 // under a random name (O_EXCL, never a path something could have
 // planted), then a rename over the record's name. Mode 0600 like
 // state.json: a record carries the app's own lines, filtered but
-// still the app's, and nothing but hotserve reads records — the
+// still the app's, and nothing but motel reads records — the
 // webhook is the interface.
 func writeDeployRecord(d appDirs, version string, filtered []byte) error {
 	dir, err := recordsDir(d, true)
@@ -363,7 +363,7 @@ func recordedPin(d appDirs, version string) string {
 	return s.pin()
 }
 
-// recordedDeploy is when hotserve last wrote version's record in
+// recordedDeploy is when motel last wrote version's record in
 // records (a directory recordsDir vouched for; "" for none) — the
 // version's deploy time, which orders the releases (state.go) — and
 // whether that deploy failed. ok is false when there is no record that

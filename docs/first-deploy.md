@@ -1,7 +1,7 @@
 # Your first deploy
 
 From a fresh server to an app you deploy by pushing to `main`, in four
-steps. At the end you have hotserve serving one app over HTTPS, the
+steps. At the end you have motel serving one app over HTTPS, the
 box's config in a repository of its own that the box applies when you
 push a signed commit, a GitHub Actions workflow that deploys every
 push of the app with no stored secret, and the shape you copy for
@@ -53,7 +53,7 @@ You need a real virtual machine, not a container. Providers call the
 kind you want **KVM**; at Hetzner, say, the cheapest KVM tier is enough
 for a few small apps. Offers described as LXC or "container VPS" will
 not work: each app runs in its own sandbox, which those hosts cannot
-provide, and hotserve refuses to run your apps without it. If you are
+provide, and motel refuses to run your apps without it. If you are
 unsure what you have, step 2 checks for the common cases within a
 minute. At the provider:
 
@@ -64,53 +64,53 @@ minute. At the provider:
    provider has a firewall, allow both from anywhere. If it has none,
    there is nothing to do.
 3. Point two DNS names at the server's address: `example.com` and
-   `deploy.example.com`. hotserve gets certificates for both itself,
+   `deploy.example.com`. motel gets certificates for both itself,
    once the names resolve and the ports are open.
 
-## 2. Install hotserve
+## 2. Install motel
 
 Logged in as root, fetch the `.deb` for the box's architecture from
-the latest of the [releases](https://github.com/smallhoursorg/hotserve/releases),
+the latest of the [releases](https://github.com/smallhoursorg/motel/releases),
 check it, and install it:
 
 ```sh
 v=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
-  https://github.com/smallhoursorg/hotserve/releases/latest)
+  https://github.com/smallhoursorg/motel/releases/latest)
 v=${v##*/v}                         # the latest release's tag, without the v
 arch=$(dpkg --print-architecture)   # amd64 or arm64
-base=https://github.com/smallhoursorg/hotserve/releases/download/v$v
-mkdir -p /var/local/hotserve && cd /var/local/hotserve
-curl -fsSLO "$base/hotserve_${v}_${arch}.deb" && curl -fsSLO "$base/checksums.txt" &&
+base=https://github.com/smallhoursorg/motel/releases/download/v$v
+mkdir -p /var/local/motel && cd /var/local/motel
+curl -fsSLO "$base/motel_${v}_${arch}.deb" && curl -fsSLO "$base/checksums.txt" &&
   sha256sum -c --ignore-missing checksums.txt &&
-  apt install ./hotserve_${v}_${arch}.deb
-systemctl enable --now hotserve
+  apt install ./motel_${v}_${arch}.deb
+systemctl enable --now motel
 ```
 
 <details>
 <summary><b>To install a release candidate</b></summary>
 
 A release candidate's `.deb` has a dot where its tag has a hyphen —
-`hotserve_X.Y.Z.rcN_arm64.deb` under `vX.Y.Z-rcN` — so the block above
+`motel_X.Y.Z.rcN_arm64.deb` under `vX.Y.Z-rcN` — so the block above
 does not fit it as it stands. This one does, with `<tag>` replaced by
 the tag the maintainer announced, without its `v`:
 
 ```sh
 v='<tag>'                           # the announced tag, without the v
 arch=$(dpkg --print-architecture)   # amd64 or arm64
-deb=hotserve_$(echo "$v" | tr - .)_${arch}.deb
-base=https://github.com/smallhoursorg/hotserve/releases/download/v$v
-mkdir -p /var/local/hotserve && cd /var/local/hotserve
+deb=motel_$(echo "$v" | tr - .)_${arch}.deb
+base=https://github.com/smallhoursorg/motel/releases/download/v$v
+mkdir -p /var/local/motel && cd /var/local/motel
 curl -fsSLO "$base/$deb" && curl -fsSLO "$base/checksums.txt" &&
   sha256sum -c --ignore-missing checksums.txt &&
   apt install "./$deb"
-systemctl enable --now hotserve
+systemctl enable --now motel
 ```
 
 The box's repository (step 3) then needs its Actions variable
-`HOTSERVE_VERSION` set to the same `<tag>`: its workflow
+`MOTEL_VERSION` set to the same `<tag>`: its workflow
 checks with the latest stable release unless told otherwise, and a
 release candidate is never that. (With more than one box, a
-`HOTSERVE_VERSION` file beside this box's Caddyfile pins this box
+`MOTEL_VERSION` file beside this box's Caddyfile pins this box
 alone: the template's README, "A box on another release".)
 
 </details>
@@ -120,27 +120,27 @@ upgrade is on the box already; `/tmp` would not survive a reboot.
 `enable --now` prints only `Created symlink …`; that is success.)
 
 On a release older than Debian 13, `apt install` stops with
-`hotserve : Depends: systemd (>= 257)`, and the `systemctl` line after
-it finds no hotserve unit. Each app's sandbox is built on systemd 257,
+`motel : Depends: systemd (>= 257)`, and the `systemctl` line after
+it finds no motel unit. Each app's sandbox is built on systemd 257,
 so the fix is a Debian 13 image, not a setting. That is the first half
 of the step 1 check.
 
 Check it:
 
 ```sh
-systemctl status hotserve          # active (running); press q to exit
-curl -s localhost                  # "hotserve is running. To serve your apps: hotserve init …"
+systemctl status motel          # active (running); press q to exit
+curl -s localhost                  # "motel is running. To serve your apps: motel init …"
 systemd-detect-virt --container    # none
 ```
 
-If it is not running, `journalctl -u hotserve -n 50 --no-pager` says
+If it is not running, `journalctl -u motel -n 50 --no-pager` says
 why.
 
 The block's last line, `systemd-detect-virt`, is the other half of the
 step 1 check, the part apt cannot see. `none` means no container. A
 name such as `lxc` or `openvz` means a container, the kind of host
 step 1 warns about: most cannot give the sandbox, and step 3 is where
-hotserve finds out for sure.
+motel finds out for sure.
 
 (The deploy side, liveswap, is not running yet: the starter config
 leaves it commented out. It starts, and says so in the journal, in
@@ -149,7 +149,7 @@ where the sandbox is first tried for real.)
 
 ## 3. The box's config, in git
 
-The box's config is one file, `/etc/hotserve/Caddyfile`, and it is
+The box's config is one file, `/etc/motel/Caddyfile`, and it is
 where the box's policy lives: which repository may deploy each app,
 each Deno app's permission flags, and who may change the file itself.
 You write it in a private repository of its own, separate from the
@@ -159,12 +159,12 @@ and the box applies the file only if a key on its own list signed the
 commit. Nothing on the box is edited by hand.
 
 **Make the repository** from the box template,
-[hotserve-example-box](https://github.com/smallhoursorg/hotserve-example-box):
+[motel-example-box](https://github.com/smallhoursorg/motel-example-box):
 press **Use this template** → **Create a new repository**, make it
 private, and clone it. With the GitHub CLI that is one line:
 
 ```sh
-gh repo create your-org/boxes --template smallhoursorg/hotserve-example-box --private --clone
+gh repo create your-org/boxes --template smallhoursorg/motel-example-box --private --clone
 cd boxes
 ```
 
@@ -216,7 +216,7 @@ one it has verified for your account.
 **Make the file yours.** `deploy.example.com/Caddyfile` is the box's
 whole config: who may change it, the app it will run and who may
 deploy that app, the app's site, and the deploy host. The app is
-hotserve's example Node app, named `example`. A box runs only the apps
+motel's example Node app, named `example`. A box runs only the apps
 its config names, so the app is named here, before anything deploys
 it; step 4 makes its repository and deploys it. The file's comments
 say what each line does. Replace `example.com`, `deploy.example.com`
@@ -236,11 +236,11 @@ What is new beside the app is at the top and the bottom:
 
 ```caddyfile
 {
-	admin unix//run/hotserve/admin.sock
+	admin unix//run/motel/admin.sock
 
 	box {
 		deploy_trust github {
-			audience hotserve
+			audience motel
 			claim repository your-org/boxes
 			claim ref refs/heads/main
 		}
@@ -249,7 +249,7 @@ What is new beside the app is at the top and the bottom:
 	}
 
 	liveswap {
-		# … the app, from examples/node/hotserve.caddy, and who may deploy it
+		# … the app, from examples/node/motel.caddy, and who may deploy it
 	}
 }
 
@@ -262,7 +262,7 @@ deploy.example.com {
 ```
 
 `box_webhook` is where the workflow sends the box its config. The
-workflow asks hotserve which site carries it, so there is no address
+workflow asks motel which site carries it, so there is no address
 to copy anywhere.
 
 <details>
@@ -290,7 +290,7 @@ the above:
 
 2. In the `app example` block, replace the four lines from the Node
    example with the ones in
-   [examples/deno/hotserve.caddy](../examples/deno/hotserve.caddy):
+   [examples/deno/motel.caddy](../examples/deno/motel.caddy):
 
    ```caddyfile
    command deno run --cached-only \
@@ -311,8 +311,8 @@ the above:
    ```
 
 When you reach step 4, make the app's repository from
-[hotserve-example-deno](https://github.com/smallhoursorg/hotserve-example-deno) instead — the same **Use this
-template** — and leave out the `HOTSERVE_RUNS_ON` variable that step
+[motel-example-deno](https://github.com/smallhoursorg/motel-example-deno) instead — the same **Use this
+template** — and leave out the `MOTEL_RUNS_ON` variable that step
 asks an amd64 box for: the tarball has no native code, so any runner
 builds it.
 
@@ -335,7 +335,7 @@ git add -A && git commit -m "$host: the box's config"
 ```
 
 **Tell the box which repository it belongs to.** Copy the box's
-directory to it, as the commit has it, and run `hotserve init` there
+directory to it, as the commit has it, and run `motel init` there
 as root with that commit. The first two lines check the commit: that
 it has `$host/Caddyfile`, and then the placeholder check above. While
 one is left it prints its line and sends nothing, so change it,
@@ -345,13 +345,13 @@ commit, and run the four lines again.
 git cat-file -e HEAD:${host%/}/Caddyfile &&
   ! git show HEAD:${host%/}/Caddyfile | grep -En '^([^#]*[^#A-Za-z0-9-])?(your-org|example\.com)([^A-Za-z0-9.-]|$)' &&
   git archive HEAD $host | ssh root@box.example.com tar -xf - &&
-  ssh root@box.example.com "cd $host && hotserve init $(git rev-parse HEAD)"
+  ssh root@box.example.com "cd $host && motel init $(git rev-parse HEAD)"
 ```
 
 ```
 init: box_webhook on deploy.example.com; 1 app (example); 1 signer (alice@example.com)
 init: this box's file is deploy.example.com/Caddyfile in the repository
-init: installed /etc/hotserve/Caddyfile
+init: installed /etc/motel/Caddyfile
 init: this box applies commits descending from 4f1c2a9
 init: reloaded. From here, this box takes config only as signed commits sent by your repository's workflow.
 ```
@@ -360,8 +360,8 @@ It refuses, writing nothing, a file with no `box` block, no signer or
 no site carrying `box_webhook` — any of them would leave the box
 unreachable by its own channel — and a directory not named for that
 site. Otherwise it installs the file over the starter config and
-reloads hotserve. A file that does not load is put back, the starter
-keeps serving, and `init` says so; `journalctl -u hotserve -n 50
+reloads motel. A file that does not load is put back, the starter
+keeps serving, and `init` says so; `journalctl -u motel -n 50
 --no-pager` on the box says why. Fix it, commit, and run the four
 lines again. The reload is also liveswap's first start, which tries the
 sandbox: on a host that cannot give one, the journal names what is
@@ -375,7 +375,7 @@ has to provide).
 git push origin main
 ```
 
-The workflow checks the file with the latest hotserve release, and
+The workflow checks the file with the latest motel release, and
 sends the commit to the box, which checks the run's token and that the file is
 the one in that commit, and answers that it already runs it:
 
@@ -403,14 +403,14 @@ has how. With nothing deployed yet, a correct box looks like this:
   `{"error":"invalid or missing deploy token …"}`, in a browser or with
   `curl -i`. That is the webhook working: a deploy carries a token, and
   nothing without one gets further than this.
-- `journalctl -u hotserve | grep 'liveswap started'`, on the box, gains
+- `journalctl -u motel | grep 'liveswap started'`, on the box, gains
   a line with `"apps":1,"app_names":["example"]`.
 - The workflow run is green.
 
 ## 4. The app
 
 The Node app is published as a template repository,
-[hotserve-example-node](https://github.com/smallhoursorg/hotserve-example-node) — the `examples/node` directory of
+[motel-example-node](https://github.com/smallhoursorg/motel-example-node) — the `examples/node` directory of
 this repo, as of its latest stable release. Open it, press **Use this
 template** → **Create a new repository**, and name it
 `your-org/example`. Private is fine: the box fetches the release asset
@@ -419,7 +419,7 @@ by its API URL with the workflow's own token, and the
 CLI that is:
 
 ```sh
-gh repo create your-org/example --template smallhoursorg/hotserve-example-node --private
+gh repo create your-org/example --template smallhoursorg/motel-example-node --private
 ```
 
 The new repository runs the deploy workflow as soon as it is created,
@@ -430,19 +430,19 @@ step — no file is edited, ever.
 In the new repository's Settings → Secrets and variables → Actions →
 Variables, add:
 
-- `HOTSERVE_URL`, set to `https://deploy.example.com/example`. A
+- `MOTEL_URL`, set to `https://deploy.example.com/example`. A
   run without it stops at its first step, saying so, and publishes
   nothing. It must be `https://`: the deploy request carries the
   run's token, so the deploy step refuses any other scheme before it
   mints one.
-- On an amd64 box, `HOTSERVE_RUNS_ON`, set to `ubuntu-24.04`. The
+- On an amd64 box, `MOTEL_RUNS_ON`, set to `ubuntu-24.04`. The
   workflow builds on an arm64 runner otherwise, and the executable is
   the runner's own Node binary, so this has to match the box; a
   mismatch is refused at deploy time with a message naming the right
   value.
 
 Or from a laptop:
-`gh variable set HOTSERVE_URL -R your-org/example --body https://deploy.example.com/example`.
+`gh variable set MOTEL_URL -R your-org/example --body https://deploy.example.com/example`.
 
 **On an arm64 box, one more command as root.** The Node example's
 executable is a copy of Node, and Node's arm64 build links one library
@@ -470,7 +470,7 @@ What a first deploy that worked looks like:
   `"current_version":"<the commit's first 12 characters>"`.
 - `curl https://example.com/` answers `hello from <that version>
   (schema v1)`; the 503 from step 3 is gone.
-- On the box, `journalctl -t hotserve-example` shows the app's own
+- On the box, `journalctl -t motel-example` shows the app's own
   output — the migration's line, then whatever `server.js` prints.
 
 If the deploy step is red, its output says which stage refused it and
@@ -478,17 +478,17 @@ why — a token the box would not accept, a URL outside the allowlist, a
 health check that never passed. A 401 means the box's `deploy_trust`
 for this app does not accept the run: most often the `claim
 repository` or `claim ref` names another repository or branch, or the
-audience differs: the job asks for `hotserve`, so a block with another
-`audience` needs the same name as `HOTSERVE_AUDIENCE` in the job's
-`env:`, beside `HOTSERVE_URL`, so the rollback step gets it too (a
+audience differs: the job asks for `motel`, so a block with another
+`audience` needs the same name as `MOTEL_AUDIENCE` in the job's
+`env:`, beside `MOTEL_URL`, so the rollback step gets it too (a
 repository variable alone does not reach the script). A `box` block's
 goes in the `env:` at the top of `apply.yml`.
 It also means an app the box does not know — a
-typo in `HOTSERVE_URL` — since an unknown app answers the same 401
+typo in `MOTEL_URL` — since an unknown app answers the same 401
 unless a global `deploy_trust` accepts the token. The step prints the
 values the run minted its token with, so you can hold them against
 the app block; the box's answer deliberately says no more, and
-`journalctl -u hotserve` on the box names the app that was asked for
+`journalctl -u motel` on the box names the app that was asked for
 and the check that refused it — within the box's budget for failed
 authentications: ten a minute from one address and a hundred a minute
 in all; past either, the answer is the same 401 and the failure is
@@ -502,7 +502,7 @@ app's side under
 `detail`: the exit status, what the health endpoint answered, and the
 last lines the app wrote (40 by default; `deploy_log_lines` in the
 app block changes that, `0` keeps them on the box). The full journal
-is `journalctl -t hotserve-example` on the box. Nothing was serving
+is `journalctl -t motel-example` on the box. Nothing was serving
 before, so nothing changed.
 
 A re-run of the same workflow run rebuilds the tarball, and the box
@@ -528,7 +528,7 @@ example's README says [more](../examples/node/README.md#rolling-back).
 The next app is a commit to the box's repository — another `app`
 block and site in its Caddyfile, signed and pushed — then step 4
 again: another repository from the template, with its own
-`HOTSERVE_URL`.
+`MOTEL_URL`.
 
 [After the first deploy](after-first-deploy.md) is next: changing the
 config and adding secrets. [Hardening the box](hardening.md) is for

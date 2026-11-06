@@ -98,7 +98,7 @@ func (i item) validate() error {
 		return fmt.Errorf("%s: the path contains a control character", i)
 	case strings.ContainsAny(p, "{}"):
 		// Not resolved, and not resolvable: whatever reads the
-		// declaration has neither a deploy in progress nor hotserve's
+		// declaration has neither a deploy in progress nor motel's
 		// environment to resolve one with.
 		return fmt.Errorf("%s: the path contains a placeholder ({ or }), and a backup path takes none; it is relative to the app's shared dir already, so `{shared_dir}/app.db` is written `app.db`", i)
 	case strings.HasPrefix(p, "/"):

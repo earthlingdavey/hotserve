@@ -9,10 +9,10 @@ Outputs live in the scratchpad (`runs/`), pasted here as observed.
 
 ## 1. Procedures × box × output
 
-The fresh boxes are the install-test image (`hotserve-install-test-debian-13`,
+The fresh boxes are the install-test image (`motel-install-test-debian-13`,
 Debian 13, systemd 257.13-1~deb13u1, arm64, built from `packaging/test`
 at `2f613e8`), started by hand with the `.deb` from `make package` at
-`2f613e8` (`hotserve_0.0.0~dev_arm64.deb`, 07:44 CEST), the root mount
+`2f613e8` (`motel_0.0.0~dev_arm64.deb`, 07:44 CEST), the root mount
 made shared as the smoke does. Beside them:
 
 - `hsb-docs-s3`: the e2e fixture image (`rclone serve s3`), **over TLS**
@@ -25,19 +25,19 @@ made shared as the smoke does. Beside them:
 
 Administrators on the boxes: `alice`, made exactly as
 `docs/after-first-deploy.md` step 2 makes her (`examples/box/sudoers`,
-groups `adm,hotserve-admin`); `bob`, in Debian's `sudo` group,
+groups `adm,motel-admin`); `bob`, in Debian's `sudo` group,
 `NOPASSWD: ALL`. Each line is typed at a real terminal (`script(1)`'s
 pty, `e2e/backup/tty.sh`'s `converse`).
 
 | # | Procedure | Box | As | Output (`runs/`) | Result |
 |---|---|---|---|---|---|
-| P1 | first-deploy.md step 2: `apt install ./hotserve_…deb`, `systemctl enable --now hotserve`; an app `demo` deployed, a WAL database and `uploads/` under its `shared/` | box1 | root | `P01-install.out` | as written; postinstall says the timers wait for `setup` |
-| P2 | README "On a fresh box", every line | box1 | **alice** | `P02-alice.out`, `P02b-alice-pw.out` | **fails as written (F1)**: every `sudo` line but `systemctl reload hotserve` is "Sorry, user alice is not allowed to execute …"; `hotserve-backup validate` without `sudo` works |
-| P3 | `sudo hotserve-backup validate …`, `sudo systemctl reload hotserve`, `sudo hotserve-backup setup s3:https://…/box1` (a bucket not there yet), `systemctl list-timers` | box1 | bob | `P03-bob-setup.out` | as written, over TLS; 13.0 s; the 10 s look gives up on the missing bucket, init makes it |
-| P4 | `hotserve-backup status` before any run (bob, and under sudo) | box1 | bob | `P04-status-before-run.out` | `no run yet: pending first run`, exit 0 |
+| P1 | first-deploy.md step 2: `apt install ./motel_…deb`, `systemctl enable --now motel`; an app `demo` deployed, a WAL database and `uploads/` under its `shared/` | box1 | root | `P01-install.out` | as written; postinstall says the timers wait for `setup` |
+| P2 | README "On a fresh box", every line | box1 | **alice** | `P02-alice.out`, `P02b-alice-pw.out` | **fails as written (F1)**: every `sudo` line but `systemctl reload motel` is "Sorry, user alice is not allowed to execute …"; `motel-backup validate` without `sudo` works |
+| P3 | `sudo motel-backup validate …`, `sudo systemctl reload motel`, `sudo motel-backup setup s3:https://…/box1` (a bucket not there yet), `systemctl list-timers` | box1 | bob | `P03-bob-setup.out` | as written, over TLS; 13.0 s; the 10 s look gives up on the missing bucket, init makes it |
+| P4 | `motel-backup status` before any run (bob, and under sudo) | box1 | bob | `P04-status-before-run.out` | `no run yet: pending first run`, exit 0 |
 | P5 | the hourly timer firing, untouched: elapse 07:01:34 UTC (the box's fixed offset), journal, `list-timers`, `status` | box1 | bob | `P05-timer-fired.out` | ran 5 s, `ok`; the run's first drill proved the snapshot |
-| P6 | `sudo systemctl start hotserve-backup.service`; `restore demo --to /root/demo-restored`; `restore demo` into place, typing `demo` | box1 | bob | `P06-run-restore.out` | as written; `backed up first: snapshot 66e09572 (restore --snapshot 66e09572 puts back what was there)` |
-| P7 | the undo: `restore demo --snapshot 66e09572`; `sudo hotserve-backup drill`; `sudo systemctl start hotserve-backup-drill.service`; `status` | box1 | bob | `P07-undo-drill.out` | as written; the undo names the last ok snapshot twice (question and report, by design); check groups 40/52, 41/52 |
+| P6 | `sudo systemctl start motel-backup.service`; `restore demo --to /root/demo-restored`; `restore demo` into place, typing `demo` | box1 | bob | `P06-run-restore.out` | as written; `backed up first: snapshot 66e09572 (restore --snapshot 66e09572 puts back what was there)` |
+| P7 | the undo: `restore demo --snapshot 66e09572`; `sudo motel-backup drill`; `sudo systemctl start motel-backup-drill.service`; `status` | box1 | bob | `P07-undo-drill.out` | as written; the undo names the last ok snapshot twice (question and report, by design); check groups 40/52, 41/52 |
 | P8 | off-box: `restic snapshots`, the README Retention policy `--dry-run`, then variants | laptop | the prune key | `P08a…`, `P08b…`, `P08c…` | **F2**: the README's policy removes the last complete (and last proven) backup `39021de9` and keeps the newer `pre-restore` `570b52dd` as that hour's |
 | P9 | the candidate recipe for real (two `forget`s, `prune`, `check`), then a run and `status` on the box | laptop, box1 | prune key, bob | `P09-prune-recipe.out`, `P09b-prune.out`, `P09c-after-prune.out` | removes the two middle run snapshots and their records, keeps both `pre-restore`; `status` after the next run: `demo: snapshot 39021de9 is no longer in the repository (last seen there …); the restore proven was of it`, exit 0; the next drill clean |
 | P10 | §7.3 on the fixture: `restic list locks --no-lock`, `restic unlock` after runs and drills | laptop | prune key | `P73-locks.out` | no locks, both silent, exit 0 |
@@ -46,7 +46,7 @@ pty, `e2e/backup/tty.sh`'s `converse`).
 | P13 | README "By hand": the file written, `systemd-run … restic init`, a run, `status` | box1 | bob | `P13-by-hand.out` | as written; init 3.7 s |
 | P71 | §7.1 on the fixture: `setup` with a wrong secret, three times | box2 | bob | `P71a-wrong-secret.out` | 30.6 s, exit 1, nothing written, "keep the password shown above" |
 | P74 | §7.4 on the fixture: `restic forget <id>` with the box's key, by hand | box2 | bob | `P74-box-key-forget.out` | the fixture deletes the snapshot file (its key may do anything) |
-| P77 | §7.7 on the fixture: box2 (`hotserve` uid 993; box1's 996): `setup` onto box1's repository (asks its password), `restore demo` before the first deploy, the deploy, a run, `status` | box2 | bob | `P77-rebuilt-box.out`, `P77b-deploy.out` | as written; files owned 993, the database reads 2 rows; first run `ok`, proven |
+| P77 | §7.7 on the fixture: box2 (`motel` uid 993; box1's 996): `setup` onto box1's repository (asks its password), `restore demo` before the first deploy, the deploy, a run, `status` | box2 | bob | `P77-rebuilt-box.out`, `P77b-deploy.out` | as written; files owned 993, the database reads 2 rows; first run `ok`, proven |
 
 ## 2. Findings from the literal runs (each to the owner before anything is fixed)
 
@@ -58,13 +58,13 @@ files, nothing else (`docs/after-first-deploy.md:60-66` says so). Run
 as `alice`, made as that page makes her (P2):
 
 ```
-alice$ sudo hotserve-backup setup s3:https://s3.docs.test:9000/box1
+alice$ sudo motel-backup setup s3:https://s3.docs.test:9000/box1
 [sudo] password for alice:
-Sorry, user alice is not allowed to execute '/usr/bin/hotserve-backup setup s3:https://s3.docs.test:9000/box1' as root on box1.
+Sorry, user alice is not allowed to execute '/usr/bin/motel-backup setup s3:https://s3.docs.test:9000/box1' as root on box1.
 ```
 
 The same for `validate` under `sudo`, `systemctl start
-hotserve-backup.service`, both restores and `drill`. `hotserve-backup
+motel-backup.service`, both restores and `drill`. `motel-backup
 validate` without `sudo` works (`a run would back up demo, under
 /var/lib/liveswap`), as `bin/push` runs it; `status` needs no `sudo`.
 `after-first-deploy.md:127-128` sends anything root needs to "the
@@ -82,11 +82,11 @@ restore and its undo:
 
 ```
 keep 2 snapshots:
-c4f0d7c1  2026-10-03 07:01:35  hotserve    hotserve,app:demo              oldest hourly snapshot …
-570b52dd  2026-10-03 07:02:08  hotserve    hotserve,app:demo,pre-restore  hourly snapshot …
+c4f0d7c1  2026-10-03 07:01:35  motel    motel,app:demo              oldest hourly snapshot …
+570b52dd  2026-10-03 07:02:08  motel    motel,app:demo,pre-restore  hourly snapshot …
 remove 2 snapshots:
-39021de9  2026-10-03 07:01:51  hotserve    hotserve,app:demo              /backup/demo
-66e09572  2026-10-03 07:01:57  hotserve    hotserve,app:demo,pre-restore  /backup/demo
+39021de9  2026-10-03 07:01:51  motel    motel,app:demo              /backup/demo
+66e09572  2026-10-03 07:01:57  motel    motel,app:demo,pre-restore  /backup/demo
 ```
 
 `39021de9` was `status`'s last complete backup and its last proven
@@ -97,9 +97,9 @@ run: the day is then kept as what was restored over. Measured fixes:
 - `--group-by host,paths,tags` separates them, and makes **every
   clean-run record a group of its own** (`vouches:<id>` differs), so
   records are never thinned (README Retention: 120,000 a year at 7 apps);
-- **two commands** — `forget --tag hotserve --group-by host,paths,tags`
-  (the apps' snapshots: records carry `hotserve-clean`, not `hotserve`)
-  and `forget --tag hotserve-clean` (the records, by `(host, paths)`) —
+- **two commands** — `forget --tag motel --group-by host,paths,tags`
+  (the apps' snapshots: records carry `motel-clean`, not `motel`)
+  and `forget --tag motel-clean` (the records, by `(host, paths)`) —
   keep `39021de9`'s place right: P8c, P9 (for real: the two middle run
   snapshots and their records removed, both `pre-restore` kept, `check`
   clean, the next drill clean).
@@ -108,7 +108,7 @@ run: the day is then kept as what was restored over. Measured fixes:
 (measured, `runs/F1-restore-to-root.out`).** With `files uploads
 probe.conf` declared and the app's `probe.conf` holding
 `[Service]\nEnvironment=HSB_PROBE=written-by-the-app`, `sudo
-hotserve-backup restore demo --to /etc/systemd/system/hsb-probe.service.d`
+motel-backup restore demo --to /etc/systemd/system/hsb-probe.service.d`
 passed the `--to` rule (every directory on the way root's own), and
 after `daemon-reload`: `Environment=HSB_PROBE=written-by-the-app`,
 `DropInPaths=/etc/systemd/system/hsb-probe.service.d/probe.conf`. An
@@ -122,13 +122,13 @@ while restore is root's; never delegable through sudo.
   sudo is root's; `validate` and `status` need neither (the `sudo`
   before `validate` goes). `examples/box/sudoers` unchanged. The
   sentence: `restore --to` is root's alone and never to be granted
-  through sudo (F3). Discussed first: an AI agent fits `hotserve-admin`
+  through sudo (F3). Discussed first: an AI agent fits `motel-admin`
   (status, journal, validate), never the operator (`setup` shows the
   repository password on its terminal; an agent's terminal is a
   transcript); a two-tier sudoers (app administrator, backups operator
   with pinned lines) is a security-model change and a PR of its own if
-  ever. A matches PLAN §1.1 (operator with sudo = TCB; `hotserve-admin`
-  = hotserve's reach) and §1.6.
+  ever. A matches PLAN §1.1 (operator with sudo = TCB; `motel-admin`
+  = motel's reach) and §1.6.
 - **Proposed, for the owner's word:** `DESIGN-threat-model.md` gains a
   Backups section (the credential as an asset, the principals, §1.6, the
   residuals, F3) in a PR of its own after §7 and before `backup` merges
@@ -148,7 +148,7 @@ while restore is root's; never delegable through sudo.
 
 | Claim | Where | Held by |
 |---|---|---|
-| hourly run, offset ≤ 10 min of the box's own; drill Sun 03:30–03:40, box time | B, R | `packaging/hotserve-backup.timer:13-16`, `-drill.timer:14-17` (no zone: local); P5 (07:01:34) |
+| hourly run, offset ≤ 10 min of the box's own; drill Sun 03:30–03:40, box time | B, R | `packaging/motel-backup.timer:13-16`, `-drill.timer:14-17` (no zone: local); P5 (07:01:34) |
 | `sudo` lines are root's; the after-first-deploy administrator cannot | B, R, after-first-deploy | `examples/box/sudoers:17-39`; P2 |
 | that administrator runs `validate`, `status`, reads the journal | B, R | P2 (validate, status); `after-first-deploy.md:63` (`adm`) |
 | `setup` shows the password on its terminal; the three things to keep | B | `engine/setup.go:587-588`; P3 |
@@ -203,13 +203,13 @@ the smoke's lines read as `docs/backups.md: …`, `validate` without
 | Rank | # | Finding | Verdict | Fix |
 |---|---|---|---|---|
 | 1 | R2 | "Give the box's key no right to delete": restic refreshes its lock every 5 min by writing a new one and **deleting** the old (`internal/restic/lock.go:309-329` at v0.18.0); a failed delete is a failed refresh, and after ~22.5 min (`internal/repository/lock.go:37,162,216-239`) the stale-lock refresh, which deletes too (`lock.go:379`), fails and restic stops: `Fatal: failed to refresh lock in time`. On S3 with `DeleteObject` denied every locking command past ~22 min stops — a large first upload, a long fetch. H §3.2 already says restic must delete its own lock files. RC check 3 runs only short commands | **genuine** (read in restic's source; not run against a provider) — could turn backups off | **to the owner** (key policy wording) |
-| 2 | R1 | Step 1 edits `/etc/hotserve/Caddyfile` on the box; on a box run from a box repo the next `make push` removes the block, the run warns once and drops the app; a rebuilt box gets the repo's Caddyfile, without it | **genuine** — silently stops an app's backups | the block goes in the box repo's Caddyfile and `make push` (which runs `validate`); say what removing it does |
+| 2 | R1 | Step 1 edits `/etc/motel/Caddyfile` on the box; on a box run from a box repo the next `make push` removes the block, the run warns once and drops the app; a rebuilt box gets the repo's Caddyfile, without it | **genuine** — silently stops an app's backups | the block goes in the box repo's Caddyfile and `make push` (which runs `validate`); say what removing it does |
 | 3 | R5 | The password is typed at a console that cannot copy out; nothing checks the stored copy until the box is gone | **genuine** — data loss | a step: from your own machine, `restic -r <url> cat config` with the stored password (run literally) |
 | 4 | R3 | Retention sets only `AWS_*`; a `b2:` repository needs `B2_ACCOUNT_ID`/`B2_ACCOUNT_KEY` (`engine/setup.go`, README Setup 4) | **genuine** | the B2 pair beside it, in the snippet and RC |
-| 5 | R8 | A prune during the drill leaves `damaged` until the next drill (a week); a run waiting ≤ 2 h for a prune holds the run lock, so the hours after fail | **genuine** | say both; `sudo hotserve-backup drill` checks again at once |
-| 6 | R6 | A first backup over 1 GiB: `status` exits 1 (`restore not proven`, `restore.go:1139-1141`, `status.go:201-207`) until a drill | **genuine** | say it, and `sudo hotserve-backup drill` |
+| 5 | R8 | A prune during the drill leaves `damaged` until the next drill (a week); a run waiting ≤ 2 h for a prune holds the run lock, so the hours after fail | **genuine** | say both; `sudo motel-backup drill` checks again at once |
+| 6 | R6 | A first backup over 1 GiB: `status` exits 1 (`restore not proven`, `restore.go:1139-1141`, `status.go:201-207`) until a drill | **genuine** | say it, and `sudo motel-backup drill` |
 | 7 | R4 | Two `forget`s keep each set's newest per period; where a period's newest backup has no record (exit 3, a record not written) the record kept vouches for a backup that goes | **genuine** as an unstated limit (records and backups were separate groups before this PR too) | say it |
-| 8 | R7 | `sudo systemctl reload hotserve` is `alice`'s (`examples/box/sudoers:25`) — "every `sudo` line is root's" is wrong for it, here and in after-first-deploy | **genuine** | "every `sudo` line but the reload" |
+| 8 | R7 | `sudo systemctl reload motel` is `alice`'s (`examples/box/sudoers:25`) — "every `sudo` line is root's" is wrong for it, here and in after-first-deploy | **genuine** | "every `sudo` line but the reload" |
 | 9 | R10 | `read -rs` in a block fenced `sh`: dash has no `-s` | **genuine** | fence `bash`, say bash |
 | 10 | R9 | `status` shows `c4f0d7c1` as last complete, the restore restores `39021de9`: a run in between is not shown | **genuine**, minor | say the second run |
 | 11 | R12 | The `--to` warning and the two-`forget` reasoning are in both pages | **genuine**, minor | the guide says each in a sentence and links the README |
@@ -296,14 +296,14 @@ naming `arn:aws:iam:::user/p<project_id>:<access_key>`.
 | R3 | B2's `B2_ACCOUNT_ID`/`B2_ACCOUNT_KEY` beside the look and retention | — |
 | R4 | the two `forget`s' drift, said | — |
 | R5 | "then look from your own machine" after setup's transcript | D12 |
-| R6 | > 1 GiB: `status` exits 1 until `sudo hotserve-backup drill` | — |
+| R6 | > 1 GiB: `status` exits 1 until `sudo motel-backup drill` | — |
 | R7 | "under `sudo` but the reload", in the guide, after-first-deploy, the README | — |
-| R8 | a prune holds the hours after it; `damaged` → `sudo hotserve-backup drill` | — |
+| R8 | a prune holds the hours after it; `damaged` → `sudo motel-backup drill` | — |
 | R9 | the second run named before the restore | — |
 | R10 | fenced `bash`, "in `bash`" | — |
 | R11 | `e2e/backup/tty.sh`'s comment | — |
 | R12 | the guide links the README for `--to` and the two `forget`s' reasons | — |
-| R13 | `smoke.sh`: the block must be exactly its seven lines | **seen failing** with `hotserve-backup status` dropped: `FAIL: the guide's smoke block is not the seven lines this stage runs and checks; it holds: …` (`runs/R13-pin-fails.log`) |
+| R13 | `smoke.sh`: the block must be exactly its seven lines | **seen failing** with `motel-backup status` dropped: `FAIL: the guide's smoke block is not the seven lines this stage runs and checks; it holds: …` (`runs/R13-pin-fails.log`) |
 
 D14: with the box's key, `rclone delete store:<bucket>` exit 0, nothing current; `rclone delete --s3-versions` `AccessDenied` per version, 48 versions remain (`runs/D14-rclone-attack.out`). rclone 1.60.1's help: `--b2-hard-delete` "Permanently delete files on remote removal, otherwise hide files."
 
@@ -336,8 +336,8 @@ Measured or read first:
 
 | # | What | Output | Result |
 |---|---|---|---|
-| D22 | a silent attack: the box's key overwrites box2's largest pack (11:47:29); runs; status; drill | `runs/D22-silent-attack-status.out` | the runs end `ok`: `status` "last complete backup 11:47", then **"11:48" — after the attack**; the drill: `restore not proven … restic could not restore all of it (exit 1): /var/lib/hotserve-backup may be out of room … or the storage stopped answering` (**misleading for tampering** — product output, not this PR's), check `damaged: … 1 damaged pack` |
-| D23 | the look after a restore; forget/prune against a held lock; hidden `keys/` | `runs/D23-review2-measures.out` | `--group-by host,paths,tags` alone lists every record (each its own group); with `--tag hotserve` it shows the newest backup and the newest `pre-restore` apart. forget and prune: **exit 11 after 1 s** ("repository is already locked"); `forget --retry-lock 5m`: waited 35 s, exit 0. Hidden `keys/`, right password: `Fatal: wrong password or no key found`, exit 12 |
+| D22 | a silent attack: the box's key overwrites box2's largest pack (11:47:29); runs; status; drill | `runs/D22-silent-attack-status.out` | the runs end `ok`: `status` "last complete backup 11:47", then **"11:48" — after the attack**; the drill: `restore not proven … restic could not restore all of it (exit 1): /var/lib/motel-backup may be out of room … or the storage stopped answering` (**misleading for tampering** — product output, not this PR's), check `damaged: … 1 damaged pack` |
+| D23 | the look after a restore; forget/prune against a held lock; hidden `keys/` | `runs/D23-review2-measures.out` | `--group-by host,paths,tags` alone lists every record (each its own group); with `--tag motel` it shows the newest backup and the newest `pre-restore` apart. forget and prune: **exit 11 after 1 s** ("repository is already locked"); `forget --retry-lock 5m`: waited 35 s, exit 0. Hidden `keys/`, right password: `Fatal: wrong password or no key found`, exit 12 |
 
 rclone 1.60's help: `--b2-versions` "no file write operations are permitted"; `--b2-version-at` exists. restic's design reference: "Changing the master key can currently only be done using the `copy` command … or by making a completely new repository."
 
@@ -351,7 +351,7 @@ rclone 1.60's help: `--b2-versions` "no file write operations are permitted"; `-
 | 6 | 5 | recovery only for AWS (no endpoint) | **genuine** | `PROVIDER=Other` + `ENDPOINT`, `--endpoint-url` for others |
 | 7 | 6 | RC check 1's successful setup leaves the box on an unversioned bucket for checks 2+ | **genuine** | check 1 on a bucket of its own; checks 2+ on the guide's |
 | 8 | 10 | forget/prune exit 11 at once beside a box run | **genuine** (D23) | `--retry-lock 1h` |
-| 9 | 11 | the look's `--latest 1` shows a `pre-restore` snapshot after a restore | **genuine** | `--tag hotserve --group-by host,paths,tags` (D23) |
+| 9 | 11 | the look's `--latest 1` shows a `pre-restore` snapshot after a restore | **genuine** | `--tag motel --group-by host,paths,tags` (D23) |
 | 10 | 8 | exit 12 is also hidden `keys/` | **genuine** (D23) | say so |
 | 11 | 9 | "nothing on the box removes anything" vs the keys must delete | **genuine** (wording) | "nothing on the box forgets, prunes or repairs" |
 | 12 | 14 | RC check 3 counts locks while the box's timer runs | **genuine** | stop the box's timers for the probe |

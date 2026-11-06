@@ -3,10 +3,10 @@ body:
     attributes:
       value: |
         A security problem? Please do not post it here — follow
-        [SECURITY.md](https://github.com/smallhoursorg/hotserve/blob/main/SECURITY.md).
+        [SECURITY.md](https://github.com/smallhoursorg/motel/blob/main/SECURITY.md).
   - type: textarea
     attributes:
       label: The idea
-      description: What you would like hotserve to do, and the problem it solves for you.
+      description: What you would like motel to do, and the problem it solves for you.
     validations:
       required: true

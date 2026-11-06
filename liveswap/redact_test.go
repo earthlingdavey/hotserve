@@ -64,7 +64,7 @@ func TestRedactorSafeList(t *testing.T) {
 	// generated segment is safe wherever it appears on its own.
 	dotted := "2026.09.14." + sha
 	r = NewRedactor(nil, []string{dotted})
-	if out, _ := r.Redact(`"current_version":"` + dotted + `","unit":"hotserve-x.` + dotted + `.0a1b2c3d0a1b2c3d.service"`); strings.Contains(out, "[masked") {
+	if out, _ := r.Redact(`"current_version":"` + dotted + `","unit":"motel-x.` + dotted + `.0a1b2c3d0a1b2c3d.service"`); strings.Contains(out, "[masked") {
 		t.Errorf("a dotted safe version was masked: %q", out)
 	}
 	// A safe string equal to an env_file value exempts nothing (rule
@@ -136,7 +136,7 @@ func TestOutcomeWordsSurviveEverywhere(t *testing.T) {
 			t.Errorf("value %q inside a word: %s", v, out)
 		}
 	}
-	// A pair a record planted where hotserve writes none is a pair in
+	// A pair a record planted where motel writes none is a pair in
 	// the count before and after alike, so it cannot mask a damaged
 	// one; and with no value to redact in it, it is left as it is.
 	planted := `{"version":"v1","status":"succeeded","x":{"name":"succeeded"}}`
@@ -256,7 +256,7 @@ func TestRedactorSafeSpansSurviveShapes(t *testing.T) {
 	// comes through the shape rules untouched, everywhere it appears.
 	v := "ghp_" + strings.Repeat("a1B2", 9)
 	r := NewRedactor(nil, []string{v})
-	in := `{"current_version":"` + v + `","unit":"hotserve-x.` + v + `.0a1b2c3d0a1b2c3d.service"}`
+	in := `{"current_version":"` + v + `","unit":"motel-x.` + v + `.0a1b2c3d0a1b2c3d.service"}`
 	if out, _ := r.Redact(in); out != in {
 		t.Errorf("a safe version was rewritten by a shape rule:\n got %s\nwant %s", out, in)
 	}
@@ -267,7 +267,7 @@ func TestRedactorSafeSpansSurviveShapes(t *testing.T) {
 
 func TestRedactJSONWithholdsWhenTheEnvFileIsUnread(t *testing.T) {
 	r := NewRedactor(nil, nil)
-	r.withhold = `the app's env_file could not be read (open /etc/hotserve/we"ird\path.env: no such file)`
+	r.withhold = `the app's env_file could not be read (open /etc/motel/we"ird\path.env: no such file)`
 	out := r.redactJSON([]byte(`{"app":"x","error":"anything at all"}`))
 	if !json.Valid([]byte(out)) || strings.Contains(out, "anything at all") || !strings.Contains(out, "withheld") {
 		t.Errorf("body not withheld: %s", out)
@@ -280,7 +280,7 @@ func TestRedactJSONWithholdsWhenTheEnvFileIsUnread(t *testing.T) {
 	}
 	// And the diagnostic is filtered like any body: a token-shaped
 	// segment in the path, or a line the parse error quotes, is masked.
-	r.withhold = `/etc/hotserve/app.env:3: "TOKEN ghp_` + strings.Repeat("a1B2", 9) + `" is not KEY=VALUE`
+	r.withhold = `/etc/motel/app.env:3: "TOKEN ghp_` + strings.Repeat("a1B2", 9) + `" is not KEY=VALUE`
 	out = r.redactJSON([]byte(`{}`))
 	if !json.Valid([]byte(out)) || strings.Contains(out, "ghp_") || !strings.Contains(out, "[redacted:") {
 		t.Errorf("withhold diagnostic not filtered: %s", out)
@@ -317,7 +317,7 @@ func TestRedactorShapes(t *testing.T) {
 		{"aws secret key", "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "AWS_SECRET_ACCESS_KEY=[redacted:credential]"}, // gitleaks:allow
 		{"json quoted", `{"password":"correct-horse-battery","x":1}`, `{"password":"[redacted:credential]","x":1}`},
 		{"single quoted", `password='correct-horse-battery' next`, `password='[redacted:credential]' next`},
-		{"a path is not a credential", "--api-key=/etc/hotserve/app.key", "--api-key=/etc/hotserve/app.key"},
+		{"a path is not a credential", "--api-key=/etc/motel/app.key", "--api-key=/etc/motel/app.key"},
 		{"a placeholder is not a credential", "api_key={shared_dir}/key", "api_key={shared_dir}/key"},
 		{"a marker is not re-redacted", "API_KEY=[redacted:API_KEY] next", "API_KEY=[redacted:API_KEY] next"},
 		{"prose is not an assignment", "secrets: the examples do not", "secrets: the examples do not"},
@@ -340,7 +340,7 @@ func TestRedactorEntropy(t *testing.T) {
 		{"identifier", "not_healthy_within_deadline_reached", false},
 		{"upper identifier", "SOME_VERY_LONG_ENV_KEY_NAME_HERE", false},
 		{"path", "/var/lib/liveswap/example/releases/dx1/server", false},
-		{"unit name", "hotserve-example.dx1.0a1b2c3d0a1b2c3d.service", false},
+		{"unit name", "motel-example.dx1.0a1b2c3d0a1b2c3d.service", false},
 		{"timestamp", "2026-09-14T07:15:33.123456789Z", false},
 		{"deploy subject", "repo:smallhoursorg/example:ref:refs/heads/main", false},
 		{"commit version", "0a1b2c3d4e5f", false},

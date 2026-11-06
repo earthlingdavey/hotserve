@@ -11,7 +11,7 @@ import (
 )
 
 func validSpec() Spec {
-	return Spec{Name: "hotserve_backup_test_x.service", Argv: []string{"/bin/true"}, User: "hotserve"}
+	return Spec{Name: "motel_backup_test_x.service", Argv: []string{"/bin/true"}, User: "motel"}
 }
 
 func TestPropertiesRefusesASpecThatIsNotFullySaid(t *testing.T) {
@@ -23,8 +23,8 @@ func TestPropertiesRefusesASpecThatIsNotFullySaid(t *testing.T) {
 		mutate func(*Spec)
 		want   string
 	}{
-		{"a name an app's unit could have", func(s *Spec) { s.Name = "hotserve-backup.1.abc.service" }, "does not match"},
-		{"a name with a glob in it", func(s *Spec) { s.Name = "hotserve_backup_*.service" }, "does not match"},
+		{"a name an app's unit could have", func(s *Spec) { s.Name = "motel-backup.1.abc.service" }, "does not match"},
+		{"a name with a glob in it", func(s *Spec) { s.Name = "motel_backup_*.service" }, "does not match"},
 		{"a relative command", func(s *Spec) { s.Argv = []string{"restic"} }, "absolute path"},
 		{"no command", func(s *Spec) { s.Argv = nil }, "absolute path"},
 		{"nobody to run as", func(s *Spec) { s.User = "" }, "exactly one of"},
@@ -90,7 +90,7 @@ func TestOpenByHandleAtIsDeniedExactlyWhereTheCapabilityIsHeld(t *testing.T) {
 		}
 		return nil, false
 	}
-	with, err := Spec{Name: "hotserve_backup_x.service", Argv: []string{"/bin/true"}, User: "u", Capabilities: []Capability{CapDACReadSearch}}.properties()
+	with, err := Spec{Name: "motel_backup_x.service", Argv: []string{"/bin/true"}, User: "u", Capabilities: []Capability{CapDACReadSearch}}.properties()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestOpenByHandleAtIsDeniedExactlyWhereTheCapabilityIsHeld(t *testing.T) {
 	}
 	// A unit without the capability carries no system-call filter: it
 	// would otherwise be a filter to keep working for no reason.
-	without, err := Spec{Name: "hotserve_backup_y.service", Argv: []string{"/bin/true"}, User: "u", Capabilities: []Capability{CapChown}}.properties()
+	without, err := Spec{Name: "motel_backup_y.service", Argv: []string{"/bin/true"}, User: "u", Capabilities: []Capability{CapChown}}.properties()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,14 +145,14 @@ func TestStderrGoesToTheJournalOrToAFile(t *testing.T) {
 // [the integration lane holds these to systemd-escape itself].
 func TestAMountUnitIsNamedAsTheManagerNamesIt(t *testing.T) {
 	for path, want := range map[string]string{
-		"/run/hotserve-backup/0a1b2c3d4e5f/seen":  `run-hotserve\x2dbackup-0a1b2c3d4e5f-seen.mount`,
-		"/run/hotserve-backup/0a1b2c3d4e5f/seen/": `run-hotserve\x2dbackup-0a1b2c3d4e5f-seen.mount`,
-		"/":                  "-.mount",
-		"/var/lib/a b":       `var-lib-a\x20b.mount`,
-		"/.hidden/x.y":       `\x2ehidden-x.y.mount`,
-		"/srv//data/./disk1": "srv-data-disk1.mount",
-		"/mnt/é":             `mnt-\xc3\xa9.mount`,
-		"/a_b:c":             "a_b:c.mount",
+		"/run/motel-backup/0a1b2c3d4e5f/seen":  `run-motel\x2dbackup-0a1b2c3d4e5f-seen.mount`,
+		"/run/motel-backup/0a1b2c3d4e5f/seen/": `run-motel\x2dbackup-0a1b2c3d4e5f-seen.mount`,
+		"/":                                    "-.mount",
+		"/var/lib/a b":                         `var-lib-a\x20b.mount`,
+		"/.hidden/x.y":                         `\x2ehidden-x.y.mount`,
+		"/srv//data/./disk1":                   "srv-data-disk1.mount",
+		"/mnt/é":                               `mnt-\xc3\xa9.mount`,
+		"/a_b:c":                               "a_b:c.mount",
 	} {
 		if got := MountUnit(path); got != want {
 			t.Errorf("MountUnit(%q) = %q, want %q", path, got, want)
@@ -170,7 +170,7 @@ func TestSeesIsBoundedWhenTheManagerDoesNotAnswer(t *testing.T) {
 	t.Cleanup(func() { seesWithin = old })
 	r := fakeRunner(&fakeConn{silent: true})
 	done := make(chan error, 1)
-	go func() { _, err := r.Sees(context.Background(), "/run/hotserve-backup/0123456789ab/seen"); done <- err }()
+	go func() { _, err := r.Sees(context.Background(), "/run/motel-backup/0123456789ab/seen"); done <- err }()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "did not answer within") {
@@ -189,7 +189,7 @@ func TestSeesSaysNotSeenWhenTheManagerAnswersUntilTheBound(t *testing.T) {
 	seesWithin = 200 * time.Millisecond
 	t.Cleanup(func() { seesWithin = old })
 	r := fakeRunner(&fakeConn{readErr: godbus.Error{Name: "org.freedesktop.systemd1.NoSuchUnit"}})
-	seen, err := r.Sees(context.Background(), "/run/hotserve-backup/0123456789ab/seen")
+	seen, err := r.Sees(context.Background(), "/run/motel-backup/0123456789ab/seen")
 	if err != nil || seen {
 		t.Fatalf("seen = %v, err = %v", seen, err)
 	}

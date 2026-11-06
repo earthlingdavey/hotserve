@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // pushOne drops files and runs once; it returns the result.
@@ -74,7 +74,7 @@ func TestApplyTrustChain(t *testing.T) {
 				return b.repo.bundleFiles(b.repo.commit(f, &b.alice, b.base), b.base)
 			}},
 		{name: "11: another path", phase: phaseRefused, msg: func(*testBox, map[string][]byte) string {
-			return "this box's file is box2/Caddyfile; the bundle is box1/Caddyfile — a box's file is deploy.example.com/Caddyfile at the top of the repository: hotserve init, run again from that directory, records it"
+			return "this box's file is box2/Caddyfile; the bundle is box1/Caddyfile — a box's file is deploy.example.com/Caddyfile at the top of the repository: motel init, run again from that directory, records it"
 		},
 			setup: func(b *testBox) map[string][]byte {
 				a := b.applied()
@@ -93,7 +93,7 @@ func TestApplyTrustChain(t *testing.T) {
 			}},
 		{name: "11: the new file is not a box's", phase: phaseRefused, msg: func(*testBox, map[string][]byte) string { return "the new Caddyfile has no deploy_trust" },
 			setup: func(b *testBox) map[string][]byte {
-				f := bytes.Replace(boxFile(2, b.alice), []byte("\t\tdeploy_trust github {\n\t\t\taudience hotserve\n\t\t\tclaim repository your-org/boxes\n\t\t}\n"), nil, 1)
+				f := bytes.Replace(boxFile(2, b.alice), []byte("\t\tdeploy_trust github {\n\t\t\taudience motel\n\t\t\tclaim repository your-org/boxes\n\t\t}\n"), nil, 1)
 				return b.repo.bundleFiles(b.repo.commit(f, &b.alice, b.base), b.base)
 			}},
 		{name: "12: HEAD signed by an unlisted key", phase: phaseRefused, msg: func(b *testBox, f map[string][]byte) string {

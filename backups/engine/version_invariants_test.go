@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // A command and the helpers it starts are one version, or the helper
@@ -81,11 +81,11 @@ func TestACommandThatCannotReadItselfStartsNothing(t *testing.T) {
 			b, m := cmd.box(t)
 			old := programOf
 			programOf = func(string) (string, error) {
-				return "", fmt.Errorf("open /usr/bin/hotserve-backup: permission denied")
+				return "", fmt.Errorf("open /usr/bin/motel-backup: permission denied")
 			}
 			t.Cleanup(func() { programOf = old })
 			err := cmd.do(t, b, m)
-			if err == nil || !strings.Contains(err.Error(), "which version of hotserve-backup this is could not be read: open /usr/bin/hotserve-backup: permission denied") {
+			if err == nil || !strings.Contains(err.Error(), "which version of motel-backup this is could not be read: open /usr/bin/motel-backup: permission denied") {
 				t.Fatalf("err = %v", err)
 			}
 			if len(b.specs) != 0 {
@@ -118,7 +118,7 @@ func TestWhichProgramThisIs(t *testing.T) {
 func TestACommandTellsItsHelpersTheFileTheyAreStartedFrom(t *testing.T) {
 	b := restoreBox(t)
 	dir := t.TempDir()
-	b.cfg.Self = filepath.Join(dir, "hotserve-backup")
+	b.cfg.Self = filepath.Join(dir, "motel-backup")
 	must(t, os.WriteFile(b.cfg.Self, []byte("the installed program"), 0o755))
 	sum := sha256.Sum256([]byte("the installed program"))
 	if _, _, err := Drill(context.Background(), b.cfg, b); err != nil {
@@ -323,13 +323,13 @@ func TestAHelperOfAnotherVersionEndsTheCommand(t *testing.T) {
 // the installed program.
 func TestACommandHashesTheProgramItIs(t *testing.T) {
 	for _, tc := range []struct{ exe, want string }{
-		{"/usr/bin/hotserve-backup", "/proc/self/exe"},
-		{"/usr/bin/hotserve-backup (deleted)", "/proc/self/exe"},
-		{"/home/dev/hotserve/build/hotserve-backup", "/usr/bin/hotserve-backup"},
-		{"/usr/local/bin/hotserve-backup", "/usr/bin/hotserve-backup"},
-		{"", "/usr/bin/hotserve-backup"},
+		{"/usr/bin/motel-backup", "/proc/self/exe"},
+		{"/usr/bin/motel-backup (deleted)", "/proc/self/exe"},
+		{"/home/dev/motel/build/motel-backup", "/usr/bin/motel-backup"},
+		{"/usr/local/bin/motel-backup", "/usr/bin/motel-backup"},
+		{"", "/usr/bin/motel-backup"},
 	} {
-		if got := programPath("/usr/bin/hotserve-backup", tc.exe); got != tc.want {
+		if got := programPath("/usr/bin/motel-backup", tc.exe); got != tc.want {
 			t.Errorf("running %q: hashes %q, want %q", tc.exe, got, tc.want)
 		}
 	}

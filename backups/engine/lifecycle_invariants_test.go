@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/unit"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/unit"
 )
 
 // The invariants of unit lifecycle across every command, as tables — the
@@ -59,17 +59,17 @@ func plainBox(t *testing.T) (*box, *term) { return restoreBox(t), nil }
 // and a restore each refuse naming the path — and the old path, where a
 // file from before this version is still there, saying it is not read —
 // start no unit and write no record. The unit file's own condition on
-// the file (units_test, cmd/hotserve-backup) stands in front of this;
+// the file (units_test, cmd/motel-backup) stands in front of this;
 // this is what holds when the file goes between that check and the
 // run's own.
 func TestNothingStartsBeforeSetup(t *testing.T) {
-	note := " is from before this version and is not read: run `hotserve-backup setup <its RESTIC_REPOSITORY>` as root, which asks for its RESTIC_PASSWORD; then remove it"
+	note := " is from before this version and is not read: run `motel-backup setup <its RESTIC_REPOSITORY>` as root, which asks for its RESTIC_PASSWORD; then remove it"
 	for _, cmd := range runDrillRestore {
 		for _, old := range []string{"", ", with the old file beside"} {
 			t.Run(cmd.name+old, func(t *testing.T) {
 				b, m := cmd.box(t)
 				must(t, os.Remove(b.cfg.EnvFile))
-				b.cfg.OldEnvFile = filepath.Join(filepath.Dir(b.cfg.EnvFile), "hotserve", "backup.env")
+				b.cfg.OldEnvFile = filepath.Join(filepath.Dir(b.cfg.EnvFile), "motel", "backup.env")
 				if old != "" {
 					must(t, os.MkdirAll(filepath.Dir(b.cfg.OldEnvFile), 0o755))
 					must(t, os.WriteFile(b.cfg.OldEnvFile, []byte("RESTIC_PASSWORD=old\n"), 0o600))
@@ -101,7 +101,7 @@ func TestNothingStartsBeforeSetup(t *testing.T) {
 // moments.
 func TestEveryUnitOfACommandIsBoundToItsService(t *testing.T) {
 	for _, cmd := range append(runDrillRestore, setupCommand) {
-		for _, own := range []string{"hotserve-backup.service", ""} {
+		for _, own := range []string{"motel-backup.service", ""} {
 			t.Run(cmd.name+" bound to "+own, func(t *testing.T) {
 				b, m := cmd.box(t)
 				b.cfg.BindsTo = own
@@ -172,7 +172,7 @@ func neverStarted(t *testing.T, b *box, m *term) {
 }
 
 // What setup refuses, a run refuses, in setup's words and before any
-// unit: a missing restic, sqlite3 or hotserve (a unit whose command is
+// unit: a missing restic, sqlite3 or motel (a unit whose command is
 // not there ends 203/EXEC, which says nothing of what to install), and
 // the account restic runs as — not there, or one someone else can be
 // (Copilot on #153: the credential reaches restic's environment on
@@ -188,17 +188,17 @@ func TestARunRefusesWhatSetupRefusesWithSetupsWords(t *testing.T) {
 		set  func(b *box)
 		want string
 	}{
-		{"restic", func(b *box) { b.haveProgram = func(path string) bool { return path != "/usr/bin/restic" } }, "restic, the backup program hotserve-backup runs, is not installed at /usr/bin/restic: apt install restic"},
+		{"restic", func(b *box) { b.haveProgram = func(path string) bool { return path != "/usr/bin/restic" } }, "restic, the backup program motel-backup runs, is not installed at /usr/bin/restic: apt install restic"},
 		{"sqlite3", func(b *box) { b.haveProgram = func(path string) bool { return path != "/usr/bin/sqlite3" } }, "sqlite3 is not installed at /usr/bin/sqlite3: apt install sqlite3"},
-		{"hotserve", func(b *box) { b.haveProgram = func(path string) bool { return path != "/usr/bin/hotserve" } }, "hotserve is not installed at /usr/bin/hotserve"},
-		{"hotserve-backup", func(b *box) { b.haveProgram = func(path string) bool { return path != "/usr/bin/hotserve-backup" } }, "hotserve-backup is not installed at /usr/bin/hotserve-backup, where the units run it"},
-		{"the account", func(b *box) { b.account = false }, "the hotserve-backup account is not there: hotserve-backup setup <repository>, as root, makes it (" + useraddArgv() + ")"},
+		{"motel", func(b *box) { b.haveProgram = func(path string) bool { return path != "/usr/bin/motel" } }, "motel is not installed at /usr/bin/motel"},
+		{"motel-backup", func(b *box) { b.haveProgram = func(path string) bool { return path != "/usr/bin/motel-backup" } }, "motel-backup is not installed at /usr/bin/motel-backup, where the units run it"},
+		{"the account", func(b *box) { b.account = false }, "the motel-backup account is not there: motel-backup setup <repository>, as root, makes it (" + useraddArgv() + ")"},
 		// A b2: repository, which setup refuses: one written by hand, or
 		// set up before setup refused it. Every unit would run restic's
 		// own B2 backend (#177).
 		{"a repository other than b2:", func(b *box) {
 			writeOrPanic(b.cfg.EnvFile, "RESTIC_REPOSITORY=b2:hs-backups:dev\nRESTIC_PASSWORD=the-secret\nB2_ACCOUNT_ID=K001\nB2_ACCOUNT_KEY=k\n")
-		}, "the repository is b2:, which is not supported: as root, hotserve-backup setup 's3:https://s3.<region>.backblazeb2.com/hs-backups/dev' moves it to B2's S3-compatible endpoint, with an application key; restic's own B2 backend retries a failed upload without end"},
+		}, "the repository is b2:, which is not supported: as root, motel-backup setup 's3:https://s3.<region>.backblazeb2.com/hs-backups/dev' moves it to B2's S3-compatible endpoint, with an application key; restic's own B2 backend retries a failed upload without end"},
 		// A file the manager could not read either: said, in place of
 		// every unit failing to start.
 		{"a credential file that can be read", func(b *box) {
@@ -219,7 +219,7 @@ func TestARunRefusesWhatSetupRefusesWithSetupsWords(t *testing.T) {
 				panic(err)
 			}
 		}, "the credential file " + "%ENVFILE%" + " could not be read: it is not a regular file (p---------)"},
-		{"an account hotserve did not make", func(b *box) { b.comment = "" }, "the hotserve-backup account on this box was not made by hotserve"},
+		{"an account motel did not make", func(b *box) { b.comment = "" }, "the motel-backup account on this box was not made by motel"},
 		// The manager binds what it sees: where it does not see this
 		// command's mounts it would show every unit a bare mount point
 		// in an app's data's place [M54], so the command refuses before
@@ -229,15 +229,15 @@ func TestARunRefusesWhatSetupRefusesWithSetupsWords(t *testing.T) {
 		// The data user's lookup is every command's to fail on, in the
 		// lookup's own words: kept for whoever asked first, it was never
 		// said where no app was reached, and where one was it came out
-		// as "does not belong to the hotserve user" (Copilot on #155).
-		{"the hotserve account", func(b *box) {
-			dataOwner = func(context.Context) (int, int, error) { return 0, 0, errors.New("the hotserve account is not there") }
-		}, "the hotserve account is not there"},
-		{"an answer about the hotserve account", func(b *box) {
+		// as "does not belong to the motel user" (Copilot on #155).
+		{"the motel account", func(b *box) {
+			dataOwner = func(context.Context) (int, int, error) { return 0, 0, errors.New("the motel account is not there") }
+		}, "the motel account is not there"},
+		{"an answer about the motel account", func(b *box) {
 			dataOwner = func(context.Context) (int, int, error) {
-				return 0, 0, errors.New("/usr/bin/getent passwd hotserve did not answer within 10s")
+				return 0, 0, errors.New("/usr/bin/getent passwd motel did not answer within 10s")
 			}
-		}, "/usr/bin/getent passwd hotserve did not answer within 10s"},
+		}, "/usr/bin/getent passwd motel did not answer within 10s"},
 	} {
 		for _, cmd := range runDrillRestore {
 			t.Run(cmd.name+" without "+p.name, func(t *testing.T) {
@@ -287,7 +287,7 @@ func TestADrillStoppedWhileItWaitsIsNoVerdict(t *testing.T) {
 	must(t, os.MkdirAll(b.cfg.StateDir, 0o755))
 	must(t, record.Write(filepath.Join(b.cfg.StateDir, "status.json"), &record.Status{LastDrill: last, Apps: map[string]*record.App{}}))
 	must(t, os.MkdirAll(b.cfg.RunDir, 0o700))
-	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "init-unit"), []byte("hotserve_backup_init_0123456789ab.service\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "init-unit"), []byte("motel_backup_init_0123456789ab.service\n"), 0o600))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, _, err := Drill(ctx, b.cfg, b); !errors.Is(err, context.Canceled) {
@@ -335,7 +335,7 @@ func TestADrillStoppedWhileItWaitsIsNoVerdict(t *testing.T) {
 	}
 	st, err = record.Read(filepath.Join(b.cfg.StateDir, "status.json"))
 	must(t, err)
-	if st.LastDrill == nil || !strings.Contains(st.LastDrill.Detail, "restic, the backup program hotserve-backup runs, is not installed") || !strings.Contains(st.Warning, "could not be read and was replaced") {
+	if st.LastDrill == nil || !strings.Contains(st.LastDrill.Detail, "restic, the backup program motel-backup runs, is not installed") || !strings.Contains(st.Warning, "could not be read and was replaced") {
 		t.Fatalf("the record: last drill %+v, warning %q", st.LastDrill, st.Warning)
 	}
 }
@@ -357,21 +357,21 @@ func TestPostinstallMakesTheAccountAsSetupDoes(t *testing.T) {
 	}
 }
 
-// An existing hotserve-backup account is not trusted by its name:
-// hotserve uses only an account it made, which carries its mark, and
+// An existing motel-backup account is not trusted by its name:
+// motel uses only an account it made, which carries its mark, and
 // refuses any other — made by hand, by another package, by an earlier
 // version of this branch — before any prompt, changing nothing, and
 // naming the remedy (the owner, 2026-09-27: a clear refusal, where the
 // account was judged by its shell, home, password, uid and groups).
-func TestAnAccountHotserveDidNotMakeIsRefused(t *testing.T) {
+func TestAnAccountMotelDidNotMakeIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name, comment string
 		refused       bool
 	}{
-		{"as hotserve makes it", accountMark, false},
+		{"as motel makes it", accountMark, false},
 		{"no comment: plain useradd, or this branch before the mark", "", true},
 		{"another package's", "Debian backup account", true},
-		// The remedy for an account made by hand for hotserve is the mark,
+		// The remedy for an account made by hand for motel is the mark,
 		// which keeps the credential file: said beside userdel.
 		{"a comment that holds the mark", "not " + accountMark, true},
 		{"the mark with a space after", accountMark + " ", true},
@@ -382,14 +382,14 @@ func TestAnAccountHotserveDidNotMakeIsRefused(t *testing.T) {
 			rep, err := b.setup(t, m, testRepo)
 			if !tc.refused {
 				if err != nil || rep.Account != "present" {
-					t.Fatalf("hotserve's account refused: %+v, %v", rep, err)
+					t.Fatalf("motel's account refused: %+v, %v", rep, err)
 				}
 				return
 			}
 			if err == nil {
 				t.Fatalf("not refused: %+v", rep)
 			}
-			for _, w := range []string{"the hotserve-backup account on this box was not made by hotserve", "as root, remove it (userdel hotserve-backup) and run hotserve-backup setup <repository>", useraddArgv(), "if it is one you made for hotserve, mark it: usermod --comment made-by-hotserve hotserve-backup"} {
+			for _, w := range []string{"the motel-backup account on this box was not made by motel", "as root, remove it (userdel motel-backup) and run motel-backup setup <repository>", useraddArgv(), "if it is one you made for motel, mark it: usermod --comment made-by-motel motel-backup"} {
 				if !strings.Contains(err.Error(), w) {
 					t.Errorf("err = %v\nwant it to say %q", err, w)
 				}
@@ -429,8 +429,8 @@ func TestOursIsTheLocalAccount(t *testing.T) {
 		// resolves the directory's line, not /etc/passwd's (Copilot on
 		// #155). The whole line is held to the local one.
 		{"a directory's, with the mark and the uid, and a login shell", func(b *box) {
-			b.localLine = "hotserve-backup:x:995:995:made-by-hotserve:/nonexistent:/usr/sbin/nologin"
-			b.nssLine = "hotserve-backup:*:995:995:made-by-hotserve:/home/hotserve-backup:/bin/bash"
+			b.localLine = "motel-backup:x:995:995:made-by-motel:/nonexistent:/usr/sbin/nologin"
+			b.nssLine = "motel-backup:*:995:995:made-by-motel:/home/motel-backup:/bin/bash"
 		}, "is not the one in /etc/passwd"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -458,8 +458,8 @@ func TestSweepTakesAwayWhatAKilledCommandLeft(t *testing.T) {
 	b := restoreBox(t)
 	must(t, os.MkdirAll(filepath.Join(b.cfg.RunDir, "0123456789ab"), 0o700))
 	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "units"), []byte(
-		"hotserve_backup_upload_blog_0123456789ab.service\nsmoke-bystander.service\nhotserve_backup_bystander.service\n"), 0o600))
-	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "init-unit"), []byte("hotserve_backup_init_0123456789ab.service\n"), 0o600))
+		"motel_backup_upload_blog_0123456789ab.service\nsmoke-bystander.service\nmotel_backup_bystander.service\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "init-unit"), []byte("motel_backup_init_0123456789ab.service\n"), 0o600))
 	top := filepath.Join(b.cfg.RunDir, "0123456789ab", "mount-1")
 	nested := filepath.Join(top, "uploads", "disk")
 	b.leftMounts = []string{nested, top}
@@ -469,7 +469,7 @@ func TestSweepTakesAwayWhatAKilledCommandLeft(t *testing.T) {
 	// By the names the engine writes, and no other: the file is root's
 	// own, and still a name it did not write is not the manager's to be
 	// asked to stop.
-	if len(b.stopped) != 1 || b.stopped[0] != "hotserve_backup_upload_blog_0123456789ab.service" {
+	if len(b.stopped) != 1 || b.stopped[0] != "motel_backup_upload_blog_0123456789ab.service" {
 		t.Errorf("stopped %q", b.stopped)
 	}
 	// The engine's own mount point alone, made private with all beneath
@@ -499,7 +499,7 @@ func TestSweepTakesAwayWhatAKilledCommandLeft(t *testing.T) {
 	unlock, err := lock(filepath.Join(b.cfg.RunDir, "lock"))
 	must(t, err)
 	defer unlock()
-	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "units"), []byte("hotserve_backup_upload_blog_0123456789ab.service\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(b.cfg.RunDir, "units"), []byte("motel_backup_upload_blog_0123456789ab.service\n"), 0o600))
 	if err := Sweep(context.Background(), b.cfg, b); !errors.Is(err, ErrBusy) || !strings.Contains(err.Error(), "pid ") {
 		t.Fatalf("err = %v", err)
 	}
@@ -553,24 +553,24 @@ func TestAMountOnTheRunDirectoryIsRefused(t *testing.T) {
 func TestPostremoveStopsOnlyNamesTheEngineWrites(t *testing.T) {
 	raw, err := os.ReadFile("../../packaging/postremove.sh")
 	must(t, err)
-	m := regexp.MustCompile(`grep -Eq '(\^hotserve_backup_[^']+)'`).FindStringSubmatch(string(raw))
+	m := regexp.MustCompile(`grep -Eq '(\^motel_backup_[^']+)'`).FindStringSubmatch(string(raw))
 	if m == nil {
 		t.Fatal("postremove holds no pattern of the engine's unit names")
 	}
 	shell := regexp.MustCompilePOSIX(m[1])
 	for _, name := range []string{
-		"hotserve_backup_upload_demo_0123456789ab.service",
-		"hotserve_backup_plan_0123456789ab.service",
-		"hotserve_backup_listing_0123456789ab.service",
-		"hotserve_backup_upload_my-app2_0123456789ab.service",
-		"hotserve_backup_bystander.service",
-		"hotserve_backup_upload_demo_0123456789a.service",
-		"hotserve_backup_upload_demo_0123456789AB.service",
-		"hotserve_backup_upload_Demo_0123456789ab.service",
-		"hotserve_backup__0123456789ab.service",
+		"motel_backup_upload_demo_0123456789ab.service",
+		"motel_backup_plan_0123456789ab.service",
+		"motel_backup_listing_0123456789ab.service",
+		"motel_backup_upload_my-app2_0123456789ab.service",
+		"motel_backup_bystander.service",
+		"motel_backup_upload_demo_0123456789a.service",
+		"motel_backup_upload_demo_0123456789AB.service",
+		"motel_backup_upload_Demo_0123456789ab.service",
+		"motel_backup__0123456789ab.service",
 		"smoke-bystander.service",
-		"hotserve_backup_upload_demo_0123456789ab.timer",
-		"hotserve_backup_upload_demo_0123456789ab.service.d",
+		"motel_backup_upload_demo_0123456789ab.timer",
+		"motel_backup_upload_demo_0123456789ab.service.d",
 	} {
 		_, _, engine := ParseUnitName(name)
 		if got := shell.MatchString(name); got != engine {

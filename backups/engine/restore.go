@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smallhoursorg/hotserve/backups/record"
-	"github.com/smallhoursorg/hotserve/backups/restore"
-	"github.com/smallhoursorg/hotserve/backups/unit"
-	"github.com/smallhoursorg/hotserve/liveswap/backupdecl"
+	"github.com/smallhoursorg/motel/backups/record"
+	"github.com/smallhoursorg/motel/backups/restore"
+	"github.com/smallhoursorg/motel/backups/unit"
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
 	"golang.org/x/sys/unix"
 )
 
@@ -389,7 +389,7 @@ func (x *run) unmakeShared(ctx context.Context, root, app string) {
 	}
 	defer unmount()
 	_, _ = x.start(ctx, unit.Spec{
-		Name: x.name("unmake", app), Description: "hotserve backup: take away " + app + "'s empty shared dir",
+		Name: x.name("unmake", app), Description: "motel backup: take away " + app + "'s empty shared dir",
 		Argv: []string{"/usr/bin/rmdir", "/liveswap/" + app + "/shared", "/liveswap/" + app},
 		User: dataUser, SameUIDNamespaces: true,
 		Binds: []unit.Bind{{Source: source, Dest: "/liveswap", Writable: true}},
@@ -544,7 +544,7 @@ func (x *run) makeShared(ctx context.Context, rootPin pin, app string) error {
 	}
 	defer unmount()
 	o, err := x.start(ctx, unit.Spec{
-		Name: x.name("mkshared", app), Description: "hotserve backup: make " + app + "'s shared dir",
+		Name: x.name("mkshared", app), Description: "motel backup: make " + app + "'s shared dir",
 		Argv: []string{"/usr/bin/install", "-d", "-m", "0750", "/liveswap/" + app, "/liveswap/" + app + "/shared"},
 		User: dataUser, SameUIDNamespaces: true,
 		Binds: []unit.Bind{{Source: source, Dest: "/liveswap", Writable: true}},
@@ -778,7 +778,7 @@ var freeUnder = func(dir string) (uint64, error) {
 // exits 0 [measured]: only one snapshot, counted, is an answer.
 func (x *run) snapshotSize(ctx context.Context, app, id string) (uint64, error) {
 	out := filepath.Join(x.dir, app+".size.json")
-	o, err := x.startWithin(ctx, x.readClock(), resticUnit(x.name("size", app), "hotserve backup: ask how large a snapshot of "+app+" is", x.cfg.EnvFile,
+	o, err := x.startWithin(ctx, x.readClock(), resticUnit(x.name("size", app), "motel backup: ask how large a snapshot of "+app+" is", x.cfg.EnvFile,
 		[]string{x.cfg.Restic, "stats", "--quiet", "--json", "--no-lock", "--mode", "restore-size", id}, out))
 	if err != nil {
 		return 0, fmt.Errorf("the size unit: %w", err)
@@ -887,7 +887,7 @@ func (x *run) fetch(ctx context.Context, app, id, fetched string) error {
 	// <id>:<path>, never --include: asked for a path the snapshot does
 	// not hold, the first exits 1 and the second exits 0 having restored
 	// nothing [measured].
-	s := resticUnit(x.name("fetch", app), "hotserve backup: fetch a snapshot of "+app, x.cfg.EnvFile,
+	s := resticUnit(x.name("fetch", app), "motel backup: fetch a snapshot of "+app, x.cfg.EnvFile,
 		append(append([]string{x.cfg.Restic, "restore", "--quiet", "--json", "--retry-lock", retryLock}, oneTry...), id+":/backup/"+app, "--target", "/restore"), out)
 	s.Binds = []unit.Bind{{Source: fetched, Dest: "/restore", Writable: true}}
 	o, err := x.start(ctx, s)
@@ -969,7 +969,7 @@ func fetchedAll(file, id string) error {
 
 func (x *run) handover(ctx context.Context, app, fetched string) error {
 	o, err := x.start(ctx, unit.Spec{
-		Name: x.name("handover", app), Description: "hotserve backup: hand what was fetched of " + app + " to the " + dataUser + " user",
+		Name: x.name("handover", app), Description: "motel backup: hand what was fetched of " + app + " to the " + dataUser + " user",
 		// -h: a link in the snapshot is chowned itself, never what it
 		// points at. "user:" is that user and its own group.
 		Argv:   []string{"/usr/bin/chown", "-hR", dataUser + ":", "/restore"},
@@ -999,7 +999,7 @@ func (x *run) settle(ctx context.Context, app, role, fetched, target string) (*r
 	}
 	out := filepath.Join(x.dir, app+"."+role+".json")
 	o, err := x.start(ctx, unit.Spec{
-		Name: x.name(role, app), Description: "hotserve backup: " + role + " a snapshot of " + app,
+		Name: x.name(role, app), Description: "motel backup: " + role + " a snapshot of " + app,
 		Argv: []string{x.cfg.Self, role},
 		User: dataUser, SameUIDNamespaces: true,
 		Binds: binds, StdoutFile: out,
@@ -1136,7 +1136,7 @@ func (x *run) drillApp(ctx context.Context, app string, snap record.Snapshot, si
 // firstDrillLimit is the largest snapshot a run fetches back to prove
 // its own first backup: above it, the whole app back in plaintext on a
 // timer — egress, the app's size in free disk, the lock held — is an
-// operator's deliberate act, `hotserve-backup drill`, not the hour's.
+// operator's deliberate act, `motel-backup drill`, not the hour's.
 const firstDrillLimit = 1 << 30
 
 // firstDrill is a run's drill of an app's first good backup. It says
@@ -1153,7 +1153,7 @@ func (x *run) firstDrill(ctx context.Context, app string, rec *record.App) (repo
 	}
 	if size > firstDrillLimit {
 		rec.RestoreDrill = &record.Drill{Snapshot: *rec.Snapshot, Time: time.Now().UTC(),
-			Detail: fmt.Sprintf("not drilled by the run: the snapshot is %s restored, above the %s a run fetches back on its own; `hotserve-backup drill` proves it", mib(size), mib(firstDrillLimit))}
+			Detail: fmt.Sprintf("not drilled by the run: the snapshot is %s restored, above the %s a run fetches back on its own; `motel-backup drill` proves it", mib(size), mib(firstDrillLimit))}
 		return false
 	}
 	return x.drillApp(ctx, app, *rec.Snapshot, size, rec)

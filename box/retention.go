@@ -9,7 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
+	"github.com/smallhoursorg/motel/box/proof"
 )
 
 // Retention (DESIGN-box.md, "Retention"): root is the only sweeper of
@@ -103,7 +103,7 @@ func (a *Applier) sweep() {
 	for id, s := range ids {
 		switch {
 		case s.result:
-			// A result is aged by root's own write, which the hotserve
+			// A result is aged by root's own write, which the motel
 			// uid cannot touch; one dated past the clock (the clock
 			// stepped back since) counts as written now.
 			s.key = minTime(s.written, now)

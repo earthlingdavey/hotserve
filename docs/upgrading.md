@@ -1,22 +1,22 @@
-# Upgrading hotserve
+# Upgrading motel
 
 A release is a new `.deb`; installing it over the old one is the
 upgrade. Everything on this page runs as root on the box
 (`ssh root@box.example.com`). This fetches the `.deb` for the box's
 architecture from the latest of the
-[releases](https://github.com/smallhoursorg/hotserve/releases), beside
+[releases](https://github.com/smallhoursorg/motel/releases), beside
 the one you are upgrading from, checks it, and installs it:
 
 ```sh
 v=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
-  https://github.com/smallhoursorg/hotserve/releases/latest)
+  https://github.com/smallhoursorg/motel/releases/latest)
 v=${v##*/v}                         # the latest release's tag, without the v
 arch=$(dpkg --print-architecture)   # amd64 or arm64
-base=https://github.com/smallhoursorg/hotserve/releases/download/v$v
-cd /var/local/hotserve              # next to the release you are upgrading from
-curl -fsSLO "$base/hotserve_${v}_${arch}.deb" && curl -fsSLO "$base/checksums.txt" &&
+base=https://github.com/smallhoursorg/motel/releases/download/v$v
+cd /var/local/motel              # next to the release you are upgrading from
+curl -fsSLO "$base/motel_${v}_${arch}.deb" && curl -fsSLO "$base/checksums.txt" &&
   sha256sum -c --ignore-missing checksums.txt &&
-  apt install ./hotserve_${v}_${arch}.deb
+  apt install ./motel_${v}_${arch}.deb
 ```
 
 The `&&`s stop the block at the first step that fails. Without them, a
@@ -28,46 +28,46 @@ install unchecked.
 <summary><b>To upgrade to a release candidate</b></summary>
 
 A release candidate's `.deb` has a dot where its tag has a hyphen —
-`hotserve_X.Y.Z.rcN_arm64.deb` under `vX.Y.Z-rcN` — so the block above
+`motel_X.Y.Z.rcN_arm64.deb` under `vX.Y.Z-rcN` — so the block above
 does not fit it as it stands. This one does, with `<tag>` replaced by
 the tag the maintainer announced, without its `v`:
 
 ```sh
 v='<tag>'                           # the announced tag, without the v
 arch=$(dpkg --print-architecture)   # amd64 or arm64
-deb=hotserve_$(echo "$v" | tr - .)_${arch}.deb
-base=https://github.com/smallhoursorg/hotserve/releases/download/v$v
-cd /var/local/hotserve              # next to the release you are upgrading from
+deb=motel_$(echo "$v" | tr - .)_${arch}.deb
+base=https://github.com/smallhoursorg/motel/releases/download/v$v
+cd /var/local/motel              # next to the release you are upgrading from
 curl -fsSLO "$base/$deb" && curl -fsSLO "$base/checksums.txt" &&
   sha256sum -c --ignore-missing checksums.txt &&
   apt install "./$deb"
 ```
 
 A candidate sorts below the release it leads to, so if `apt` says it
-will downgrade hotserve, answer `n` and stop here: the box already runs
+will downgrade motel, answer `n` and stop here: the box already runs
 that release or a later one.
 
 The box's repository then needs its Actions variable
-`HOTSERVE_VERSION` set to the same `<tag>`: its workflow
+`MOTEL_VERSION` set to the same `<tag>`: its workflow
 checks with the latest stable release unless told otherwise, and a
 release candidate is never that. On the laptop:
-`gh variable set HOTSERVE_VERSION -R your-org/boxes --body <tag>`.
+`gh variable set MOTEL_VERSION -R your-org/boxes --body <tag>`.
 Once the release is out, upgrade to it with the first block on this
 page, and delete the variable so the workflow follows the latest
-stable release again: `gh variable delete HOTSERVE_VERSION -R your-org/boxes`.
+stable release again: `gh variable delete MOTEL_VERSION -R your-org/boxes`.
 
 </details>
 
-The package keeps your `/etc/hotserve/Caddyfile` and restarts hotserve
+The package keeps your `/etc/motel/Caddyfile` and restarts motel
 into the new binary. An upgrade never asks about that file. The
 package installs its starter config there only when nothing is there,
 and replaces it only while it is byte-for-byte the starter the package
-itself last wrote. Any other file — one you edited, or one `hotserve
+itself last wrote. Any other file — one you edited, or one `motel
 init` or a push wrote — is never touched, and neither is a symlink.
 The test is the bytes, not who wrote them: a copy of the starter you
 put there yourself counts as the starter. A fresh copy of the starter
-is always at `/usr/share/hotserve/Caddyfile`. Your apps are not restarted: they run under
-hotserve's user manager rather than inside hotserve, so the new process
+is always at `/usr/share/motel/Caddyfile`. Your apps are not restarted: they run under
+motel's user manager rather than inside motel, so the new process
 finds each one in `state.json` and picks it up as it is — same process,
 no relaunch, no redeploy.
 
@@ -76,7 +76,7 @@ for about a tenth of a second, or longer while a slow request finishes:
 the old process gets up to 5 seconds to stop before the new one starts.
 So upgrade at a quiet moment. A
 config change does not need a restart: a reload — what an applied push
-from the box's repository does, or `systemctl reload hotserve` after a
+from the box's repository does, or `systemctl reload motel` after a
 hand edit — swaps the config inside the running process, drops no requests, and
 never restarts a running app (an edited app definition applies the
 next time the app starts: its next deploy or rollback, or a relaunch
@@ -85,7 +85,7 @@ after a crash, a sustained health failure, or a reboot).
 <details>
 <summary><b>What visitors see during the restart</b> — and how to pick a quiet moment</summary>
 
-Deploys are zero-downtime; upgrading hotserve is not, because the
+Deploys are zero-downtime; upgrading motel is not, because the
 process listening on 80 and 443 is the one being replaced. On stop it
 closes its listeners at once and lets the requests already in flight
 finish, and the new process cannot listen until the old one has
@@ -93,7 +93,7 @@ exited. New visitors get connection refused for that whole window,
 sometimes followed by a few dozen milliseconds of 503s while the new
 process picks the apps back up. A crash has a window of its own:
 whatever was in flight is cut off, systemd waits a second
-(`RestartSec=1s`) and starts hotserve again, and the apps are picked
+(`RestartSec=1s`) and starts motel again, and the apps are picked
 back up the same way — a little over a second, plus the start itself.
 How long a planned restart's window lasts:
 
@@ -113,7 +113,7 @@ How long a planned restart's window lasts:
 
 This is how Caddy itself upgrades: its official Debian package restarts
 the service the same way, with the same 5-second stop timeout, and the
-shutdown is Caddy's own. The 503s are the one part that is hotserve's —
+shutdown is Caddy's own. The 503s are the one part that is motel's —
 the moment before liveswap has picked your apps back up.
 
 To check for a quiet moment, add `metrics` to the Caddyfile's global
@@ -121,7 +121,7 @@ options (a push from the box's repository, which reloads), and read
 how many requests are in flight:
 
 ```sh
-curl -fsS --unix-socket /run/hotserve/admin.sock http://localhost/metrics \
+curl -fsS --unix-socket /run/motel/admin.sock http://localhost/metrics \
   | grep '^caddy_http_requests_in_flight'
 ```
 
@@ -137,16 +137,16 @@ Before you upgrade:
 
 - **Check the new version accepts your config.** The `.tar.gz` on the
   release page holds the bare binary, and
-  `./hotserve validate --config /etc/hotserve/Caddyfile` runs its
+  `./motel validate --config /etc/motel/Caddyfile` runs its
   config check without touching anything that is running. A config it
-  rejects would stop the upgraded hotserve from starting, and the site
+  rejects would stop the upgraded motel from starting, and the site
   would stay down until you fixed the config or went back (systemd
   retries a crash, not a refusal).
-- **The `.deb` you are upgrading from is still in `/var/local/hotserve`.**
-  `apt install --allow-downgrades ./hotserve_<old>_$(dpkg --print-architecture).deb`
+- **The `.deb` you are upgrading from is still in `/var/local/motel`.**
+  `apt install --allow-downgrades ./motel_<old>_$(dpkg --print-architecture).deb`
   puts it back — the same restart, in reverse, and nothing to download
   first. On a VPS, a snapshot taken first is the fuller way back.
-- **Upgrade hotserve and the host separately.** hotserve measures what
+- **Upgrade motel and the host separately.** motel measures what
   the host can sandbox at every start and refuses to start on a host
   that cannot deliver it ([liveswap/README.md](../liveswap/README.md#sandbox)),
   so a kernel update or reboot bundled with an upgrade leaves you
@@ -154,10 +154,10 @@ Before you upgrade:
 
 The box repository's workflow checks config with the latest stable
 release, so it needs nothing after an upgrade — unless its
-`HOTSERVE_VERSION` repository variable pins a release, which then
+`MOTEL_VERSION` repository variable pins a release, which then
 wants the new one.
 
-There is no APT repository yet, so nothing upgrades hotserve behind
+There is no APT repository yet, so nothing upgrades motel behind
 your back; the hosted repository on the [roadmap](../README.md#roadmap) is what
 will change that.
 
@@ -167,7 +167,7 @@ Apps run on the box's own `/usr`, so `apt upgrade` reaches an app at
 its next launch — its next deploy or rollback, or a relaunch after a
 crash, a sustained health failure, or a reboot — never the one
 running, which keeps the runtime and libraries it has already loaded.
-Upgrading hotserve does not relaunch apps either: it picks them up as
+Upgrading motel does not relaunch apps either: it picks them up as
 they are.
 
 What a patch reaches depends on where the app's runtime came from:

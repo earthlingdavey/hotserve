@@ -68,13 +68,13 @@ const (
 // box cannot verify anything right now.
 const (
 	controlPrincipal = "control"
-	controlPayload   = "hotserve box verifier control\n"
-	controlAllowed   = controlPrincipal + ` namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdMJ0Oxfpgsaaqt+xg4HPptSWfkEqcYKc5ZXY0a19zQ` + "\n"
+	controlPayload   = "motel box verifier control\n"
+	controlAllowed   = controlPrincipal + ` namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJgVR/DoA+Ne0nhzolIs26CsxrXX9y5Hu+kO1UKW0ycX` + "\n"
 	controlSignature = `-----BEGIN SSH SIGNATURE-----
-U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgl0wnQ7F+mCxpqq37GDgc+m1JZ+
-QSpxgpzlldjRrX3NAAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
-AAAAQJAdqp0Lh8ioeESTHi9TvSCr7PV4b0ESrIKsJVkGzJgzjgeE3SszsHIcnWQL7WEq2A
-/HT/++7LaSbZF/F3qpCw8=
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgmBVH8OgD417SeHOiUizboKzGtd
+f3Lke76Q7VQpbTJxcAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+AAAAQHkMQpFqVN43gkhdnOjkd7G15YX6+SsiovCVDptRr63yBAskwJlslWoLDwA8jX00h7
+q1QDBv+eQsBsiv1ghP1gA=
 -----END SSH SIGNATURE-----
 `
 )

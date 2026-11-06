@@ -2,46 +2,46 @@
   "path": "box1/Caddyfile",
   "cases": {
     "after_unsigned": {
-      "commit": "a288f4057eded166837dc093f981287d71f32090",
-      "file": "a1d1f34008a9fd89604b5e18256127c4b1c67343"
+      "commit": "d4032b140f5096ffc9b1b811669e23c59419f317",
+      "file": "7d95091ac5c5d0c215faffac9ec7c61a8c406ac8"
     },
     "base": {
-      "commit": "3531ba7157944e249799054035e2461bcb6908c3",
-      "file": "7711ba8a51e0a1af742a432f9969933a6c2ad7ed"
+      "commit": "2722d705517c03df84a82b8379ae35d0addb849e",
+      "file": "dc98d28bf70d0425d575379bba222b8315665edb"
     },
     "bob": {
-      "commit": "64f1be95ba2750b96cecdf1f09639ecf1237ced5",
-      "file": "16f350b05a1651e6759cca07dac5aa52ad772538"
+      "commit": "e4488a5cf2b560a6652b5e9570b6a1ae2772f7d0",
+      "file": "b6834a71b2c367c6bf215c5f4430e3efd7329a8f"
     },
     "head": {
-      "commit": "6081c22b49691d7bbac1f97062e8f33507ffabf1",
-      "file": "16d57aba41156e9819319744b657422f0d6819f7"
+      "commit": "e6a736a22c7aab75241ce689acbd0ffc72fcc0b3",
+      "file": "dbc836c774c7a154b0d88559ebf32cb4881ab897"
     },
     "mallory": {
-      "commit": "ca80182085d6eb0b44247f0098f1f96f728b9ed4",
-      "file": "16f350b05a1651e6759cca07dac5aa52ad772538"
+      "commit": "364124e656ba8292086776bb07a9afc7cc8ff238",
+      "file": "b6834a71b2c367c6bf215c5f4430e3efd7329a8f"
     },
     "mid": {
-      "commit": "4b8d04c985ce053cf4f5cb89fffaee290495adcc",
-      "file": "87c59878d576c4cabf21aff5216834b17728bcd3"
+      "commit": "1519bb16cf0dab39f193d096dfe149a5d59b52aa",
+      "file": "07bfe6615f75172db8c1df669d29e84e0929c016"
     },
     "orphan": {
-      "commit": "8b1fb879c9c84bf8be38242b1fd1ed93995ba9b7",
-      "file": "7711ba8a51e0a1af742a432f9969933a6c2ad7ed"
+      "commit": "9b6a880b05bea837f0192d185a1dc349cf52915e",
+      "file": "dc98d28bf70d0425d575379bba222b8315665edb"
     },
     "special": {
-      "commit": "395b9aeabc3a12a80bba236a0a871fe2475ba04c",
-      "file": "16d57aba41156e9819319744b657422f0d6819f7"
+      "commit": "70488193b91187889c5bdd0e179503e7a517ed29",
+      "file": "dbc836c774c7a154b0d88559ebf32cb4881ab897"
     },
     "unsigned": {
-      "commit": "f6e206a54adf0dedc6f580d6fba4f0cd03ff267a",
-      "file": "16f350b05a1651e6759cca07dac5aa52ad772538"
+      "commit": "dbad1767239c98284a814f69d70f1d7d8628a841",
+      "file": "b6834a71b2c367c6bf215c5f4430e3efd7329a8f"
     }
   },
   "signers": [
-    "alice@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGnxX1/CzAt3ODKXeAoXzB55DjSp6gn/t9ePD/begkeA",
-    "bob@example.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBD2wjlLrf+IErIvxQD29roSFpDD5fdJAUpPvHgwU+zIRDORxHMWxc/D93GM5ZrxGznSmqwANTijlUzIKG55VoEc="
+    "alice@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBIc1a1YCEmkXrJ51H62C0puBLdPgQ4rVcwfKPAWx4ed",
+    "bob@example.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBLejbrjcxiJEJ59GqApEnnLefblClf6wIuIfAsgqGSznm6+WWMzru8/COh+s6o7gh4SOtHPDBWmkjI30oTLPXx4="
   ],
-  "mallory": "mallory@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINSYi1hsY5rafwddK1x29o0t3P6S2FvWVve5WeeLONa3",
+  "mallory": "mallory@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJE6oFzW7AzNBnFz5tedgTCpHW/z+N06hxx0i2P+T85c",
   "sha256": "sha256-commit"
 }

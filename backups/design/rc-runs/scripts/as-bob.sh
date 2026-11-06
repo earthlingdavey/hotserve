@@ -2,8 +2,8 @@
 # Run inside hsb-docs-box as root: each argument is one line bob types,
 # run as bob (full sudo) at a real terminal (script(1)'s pty); a line
 # that asks is given its answers as "prompt=answer" pairs after "::".
-#   bash /root/as-bob.sh 'sudo hotserve-backup drill'
-#   bash /root/as-bob.sh 'sudo hotserve-backup restore demo' :: 'go on: =demo'
+#   bash /root/as-bob.sh 'sudo motel-backup drill'
+#   bash /root/as-bob.sh 'sudo motel-backup restore demo' :: 'go on: =demo'
 . /tty.sh
 OUT=/root/bob.out
 line=$1; shift

@@ -1,7 +1,7 @@
 # Security policy
 
-hotserve terminates TLS for your sites, holds the keys, and supervises
-your application processes. It runs unprivileged — `User=hotserve`,
+motel terminates TLS for your sites, holds the keys, and supervises
+your application processes. It runs unprivileged — `User=motel`,
 with `CAP_NET_BIND_SERVICE` and nothing else — but a compromise still
 reaches everything it serves, so security reports are taken seriously
 and handled with priority.
@@ -10,7 +10,7 @@ and handled with priority.
 
 Please use GitHub's private vulnerability reporting:
 
-**[Report a vulnerability](https://github.com/smallhoursorg/hotserve/security/advisories/new)**
+**[Report a vulnerability](https://github.com/smallhoursorg/motel/security/advisories/new)**
 
 This opens a private draft advisory that only you and the maintainer
 can see. Please do not post anything you believe is a security
@@ -18,8 +18,8 @@ problem in a public issue or discussion — a public report on a deploy
 server puts every operator at risk before a fix exists.
 
 What helps: the config that reproduces it (redact your secrets), the
-version (`hotserve version`; up to v0.3.1 it names only the Caddy it
-was built with, so name your hotserve release too), and what an
+version (`motel version`; up to v0.3.1 it names only the Caddy it
+was built with, so name your motel release too), and what an
 attacker gains. Proof-of-concept payloads are welcome inside the
 private advisory.
 
@@ -35,7 +35,7 @@ private advisory.
 
 Pre-1.0: only the latest release receives security fixes. Upgrading is
 a package install and a service restart: deployed apps keep running
-through it, but new visitors get errors while hotserve restarts, about
+through it, but new visitors get errors while motel restarts, about
 a tenth of a second, or up to about 5 seconds while a slow request
 finishes ([docs/upgrading.md](docs/upgrading.md)). So a fix costs a
 quiet moment, and little more.

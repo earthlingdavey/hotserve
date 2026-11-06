@@ -6,7 +6,7 @@ file of its own in the box's repository, encrypted on your laptop with
 reader's key: the signers' SSH keys, or an age key of a person's own.
 The workflow carries the ciphertext to the box with the Caddyfile. The
 box checks the commit's signatures, then decrypts the values with its
-own key and writes one env file per app, which hotserve reads each time
+own key and writes one env file per app, which motel reads each time
 the app launches. GitHub and the workflow only ever hold ciphertext,
 and nothing is typed onto the box.
 
@@ -26,12 +26,12 @@ deploy.example.com/
       STRIPE_KEY.age
 ```
 
-The box writes the app's values to `/etc/hotserve/secrets/example.env`,
-which only root and hotserve can read and no app's sandbox contains.
+The box writes the app's values to `/etc/motel/secrets/example.env`,
+which only root and motel can read and no app's sandbox contains.
 The app's block reads it with:
 
 ```
-env_file /etc/hotserve/secrets/example.env
+env_file /etc/motel/secrets/example.env
 ```
 
 On the laptop you need `age` (`brew install age`, or `apt install
@@ -43,17 +43,17 @@ one you mean: `BOX=deploy.example.com`.
 ## The box's key
 
 The package makes the box's key when it is installed or upgraded on a
-running system, and `hotserve init` makes it if it is missing. Root on
+running system, and `motel init` makes it if it is missing. Root on
 the box prints it:
 
 ```sh
-ssh root@box.example.com hotserve box key
+ssh root@box.example.com motel box key
 ```
 
 The output is the key alone, one `age1…` line, so `BOX_KEY=$(ssh
-root@box.example.com hotserve box key)` passes it to a command. It is
+root@box.example.com motel box key)` passes it to a command. It is
 public: the first line of `recipients` that is not a comment is this
-key. The private half is `/etc/hotserve/age/identity`, readable by root
+key. The private half is `/etc/motel/age/identity`, readable by root
 alone; it never leaves the box, and losing it loses nothing a reader
 cannot encrypt again.
 
@@ -65,7 +65,7 @@ The box's first secret also needs the box's key, so that `make secret`
 can write `recipients`:
 
 ```sh
-make secret APP=example VAR=DATABASE_URL BOX_KEY=$(ssh root@box.example.com hotserve box key)
+make secret APP=example VAR=DATABASE_URL BOX_KEY=$(ssh root@box.example.com motel box key)
 ```
 
 After that, `BOX_KEY` is not needed:
@@ -151,7 +151,7 @@ make secrets-import APP=example < example.env
 ```
 
 sets one secret for each `KEY=VALUE` line, reading the file the way
-hotserve reads an env file: `#` comments and blank lines skipped, an
+motel reads an env file: `#` comments and blank lines skipped, an
 optional `export ` dropped, one pair of quotes around a value taken off.
 For a file that is already on the box, see [Move a hand-made env file
 in](#move-a-hand-made-env-file-in).
@@ -196,24 +196,24 @@ what Secure Enclave tools make), or a key an agent holds with no file
 beside it. A signer with one of those reads with an age key of their
 own instead:
 
-1. Make one: `age-keygen -o ~/.config/age/hotserve.txt` prints its
+1. Make one: `age-keygen -o ~/.config/age/motel.txt` prints its
    public `age1…` line. For one held in hardware, `age-plugin-yubikey`
    or `age-plugin-se` makes it instead.
 2. Put that line in each box's `recipients`, under a `#` line naming
    you, and commit it.
 3. A reader runs `make rekey BOX=…` for each box, and pushes.
-4. Read with `make secret-show APP=… VAR=… IDENTITY=~/.config/age/hotserve.txt`.
+4. Read with `make secret-show APP=… VAR=… IDENTITY=~/.config/age/motel.txt`.
 
 A plugin's key needs that plugin installed wherever someone encrypts to
 it, so every reader who runs `make secret` or `make rekey` needs it too.
 
 ### A rebuilt box
 
-A new box has a new key. Install hotserve and run `hotserve init` from
+A new box has a new key. Install motel and run `motel init` from
 the box's directory, as the first deploy did; then, as a reader:
 
 ```sh
-make rekey BOX=deploy.example.com BOX_KEY=$(ssh root@box.example.com hotserve box key)
+make rekey BOX=deploy.example.com BOX_KEY=$(ssh root@box.example.com motel box key)
 ```
 
 encrypts every value again, to the new key in place of the old one.
@@ -234,11 +234,11 @@ original's place and the original is gone, nothing needs doing. If it
 becomes a second box:
 
 1. Give it a key of its own, as root on it:
-   `rm /etc/hotserve/age/identity && hotserve box key`.
+   `rm /etc/motel/age/identity && motel box key`.
 2. Remove the env files of the apps it will not run, under
-   `/etc/hotserve/secrets/`.
+   `/etc/motel/secrets/`.
 3. Set it up as any new box, with a directory of its own and
-   `hotserve init` from it. Its first secret takes its new key:
+   `motel init` from it. Its first secret takes its new key:
    `make secret APP=… VAR=… BOX=<its host> BOX_KEY=…`.
 
 ### A lost laptop
@@ -253,7 +253,7 @@ known.
    each app.
 
 If the lost key was the only signer, the way back is root on the box:
-put a new key in the Caddyfile and run `hotserve init` again from the
+put a new key in the Caddyfile and run `motel init` again from the
 box's directory, copied over (the box README's
 [At 3am](../examples/box/README.md#at-3am)). If it was also the only
 reader, nobody can run `make rekey`, and nothing needs it: remove the
@@ -264,30 +264,30 @@ lost key still reads the old ones in the repository's history.
 
 ### Move a hand-made env file in
 
-An env file made on the box by hand, say `/etc/hotserve/example.env`,
+An env file made on the box by hand, say `/etc/motel/example.env`,
 comes into the repository without passing through the laptop's disk:
 
 ```sh
-ssh root@box.example.com cat /etc/hotserve/example.env | make secrets-import APP=example
+ssh root@box.example.com cat /etc/motel/example.env | make secrets-import APP=example
 ```
 
-(with `BOX_KEY=$(ssh root@box.example.com hotserve box key)` too, if it
+(with `BOX_KEY=$(ssh root@box.example.com motel box key)` too, if it
 is the box's first secret). Then:
 
-1. Change the app's block to `env_file /etc/hotserve/secrets/example.env`,
+1. Change the app's block to `env_file /etc/motel/secrets/example.env`,
    commit and push. The run names the variables as added.
 2. Once that run is green, no launch reads the old file. Remove it, as
-   root on the box: `rm /etc/hotserve/example.env`.
+   root on the box: `rm /etc/motel/example.env`.
 
 An env file made by hand keeps working where it is, for as long as you
 like: `env_file` is a path, and the box writes only under
-`/etc/hotserve/secrets/`. A file made there by hand, for an app the
+`/etc/motel/secrets/`. A file made there by hand, for an app the
 repository has secrets for, is taken over and overwritten by the next
 push.
 
 ## When a value reaches the app
 
-hotserve reads an app's env file each time the app launches: a
+motel reads an app's env file each time the app launches: a
 deploy, a rollback, or a relaunch after a crash or a reboot. A push
 never restarts a running app, and a push of secrets alone reloads
 nothing. So a value that must change now — a leaked key, say — is
@@ -336,13 +336,13 @@ reason. Each is in
   grammar;
 - secrets for an app the Caddyfile does not declare;
 - an app with secrets whose `env_file` is not
-  `/etc/hotserve/secrets/<app>.env`, or one whose `env_file` is that
+  `/etc/motel/secrets/<app>.env`, or one whose `env_file` is that
   path with no secrets;
 - an app whose `env_file` is another app's file, or anywhere else in
-  `/etc/hotserve/secrets`;
+  `/etc/motel/secrets`;
 - a variable an `env` line in the app's block also sets (the `env` line
   would win, so the secret would never reach the app), and one named
-  `SOCKET`, which hotserve sets itself;
+  `SOCKET`, which motel sets itself;
 - a value that is not an age file the box reads (an ASCII-armored one,
   say);
 - values with no `recipients` file beside them, or a `recipients` whose
@@ -369,14 +369,14 @@ first line of `recipients`, and stops, with nothing sent, on:
 
 - another key on the box: `the box's key is <age1…>, but the first
   recipient in <host>/secrets/recipients is <age1…>: a rebuilt box has
-  a new key. Confirm it with ssh root@<host> hotserve box key, then
+  a new key. Confirm it with ssh root@<host> motel box key, then
   make rekey BOX_KEY=<age1…>, commit and push; nothing was sent`
   ([A rebuilt box](#a-rebuilt-box));
 - no key on the box: `the box names no key for secrets (no recipient in
-  GET /): run hotserve box key as root on it; nothing was sent`;
+  GET /): run motel box key as root on it; nothing was sent`;
 - values with no recipients file: `<host>/secrets holds values but no
   recipients file names a key: make secret APP=… VAR=… BOX_KEY=$(ssh
-  root@<host> hotserve box key) makes one; nothing was sent`.
+  root@<host> motel box key) makes one; nothing was sent`.
 
 ## Who can read what
 
@@ -384,9 +384,9 @@ first line of `recipients`, and stops, with nothing sent, on:
 |---|---|---|
 | Root on the box | Yes | The box's key, and the env files it writes |
 | A reader: each key in `recipients` | Every value encrypted to that key, in all of the repository's history | `make secret-show`, or `age -d` on any clone |
-| A signer | Yes, whatever `recipients` says | One signed commit can add a site that serves any file the `hotserve` user reads, env files included, so a signer's key is every app's secrets ([box README](../examples/box/README.md#secrets)). The template makes every signer whose key age can use a reader too |
-| The `hotserve` user, and so a compromised hotserve | The env files | It reads them at each launch, as it always has; it cannot read the box's key |
-| An app | Its own values, in its environment | hotserve passes them at launch; `/etc/hotserve` is in no app's sandbox |
+| A signer | Yes, whatever `recipients` says | One signed commit can add a site that serves any file the `motel` user reads, env files included, so a signer's key is every app's secrets ([box README](../examples/box/README.md#secrets)). The template makes every signer whose key age can use a reader too |
+| The `motel` user, and so a compromised motel | The env files | It reads them at each launch, as it always has; it cannot read the box's key |
+| An app | Its own values, in its environment | motel passes them at launch; `/etc/motel` is in no app's sandbox |
 | GitHub, the workflow, any token or app with read access to the repository, a fork | Never a value | Ciphertext only; see the next section |
 | An administrator in the `adm` group ([Hardening](hardening.md#3-an-administrator-if-you-want-one)) | No, unless an app writes one to its own output | The journal only, which holds every app's output |
 

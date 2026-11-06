@@ -14,13 +14,13 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/smallhoursorg/hotserve/box/proof"
-	"github.com/smallhoursorg/hotserve/liveswap"
+	"github.com/smallhoursorg/motel/box/proof"
+	"github.com/smallhoursorg/motel/liveswap"
 )
 
 // The env files of the set (DESIGN-box.md, "Values and the env file",
 // "The install transaction"): what step 15a decides root writes or
-// removes under /etc/hotserve/secrets, and the reads and writes the
+// removes under /etc/motel/secrets, and the reads and writes the
 // transaction makes of them. The store's rules, which every function
 // here keeps:
 //
@@ -37,9 +37,9 @@ import (
 //     and the caps a record and a result are read back with, so every
 //     record root writes reads back.
 //  3. A file root writes is the rendered bytes, 0640, born group
-//     hotserve in the setgid directory (Paths): the unit has no
+//     motel in the setgid directory (Paths): the unit has no
 //     CAP_CHOWN. Before anything is written, the directory must be the
-//     one tmpfiles.d makes, so that a file root writes is one hotserve
+//     one tmpfiles.d makes, so that a file root writes is one motel
 //     can read at the app's next launch.
 //  4. Nothing here decrypts before check has passed (I6): planSecrets
 //     runs after it, in the applier alone.
@@ -48,8 +48,8 @@ import (
 
 // Paths of the box's key (DESIGN-box.md, "The box's key").
 const (
-	identityFile = "/etc/hotserve/age/identity"
-	agePubFile   = "/etc/hotserve/age.pub"
+	identityFile = "/etc/motel/age/identity"
+	agePubFile   = "/etc/motel/age.pub"
 )
 
 // Read caps (DESIGN-box.md, "Caps").
@@ -70,11 +70,11 @@ const envNeither = "-"
 // The applier's texts for secrets, from DESIGN-box.md's Message
 // catalogue; <app> is filled in by fill.
 const (
-	msgNoKey       = "this box has no key for secrets (/etc/hotserve/age/identity): hotserve box key, as root, makes one; then make rekey BOX_KEY=<the key it prints> in the repository, and push; nothing changed"
-	msgSecretsDir  = "/etc/hotserve/secrets is not the setgid root:hotserve directory tmpfiles.d makes: systemd-tmpfiles --create hotserve-box.conf, as root, puts it back; nothing changed" //nolint:gosec // a message naming a directory, not a credential
-	msgEnvTooLarge = "/etc/hotserve/secrets/<app>.env is larger than 66560 bytes, which no push writes: move it aside, as root, and push again; nothing changed"
+	msgNoKey       = "this box has no key for secrets (/etc/motel/age/identity): motel box key, as root, makes one; then make rekey BOX_KEY=<the key it prints> in the repository, and push; nothing changed"
+	msgSecretsDir  = "/etc/motel/secrets is not the setgid root:motel directory tmpfiles.d makes: systemd-tmpfiles --create motel-box.conf, as root, puts it back; nothing changed" //nolint:gosec // a message naming a directory, not a credential
+	msgEnvTooLarge = "/etc/motel/secrets/<app>.env is larger than 66560 bytes, which no push writes: move it aside, as root, and push again; nothing changed"
 	// A directory, a FIFO or a socket at the name: no rename replaces it.
-	msgEnvNotRegular = "/etc/hotserve/secrets/<app>.env is not a regular file, which no push writes: move it aside, as root, and push again; nothing changed"
+	msgEnvNotRegular = "/etc/motel/secrets/<app>.env is not a regular file, which no push writes: move it aside, as root, and push again; nothing changed"
 )
 
 // fill is a catalogue text with its app named.
@@ -97,8 +97,8 @@ func (a *Applier) envTmp(app, id string) string {
 }
 
 // fileOwner is who owns what root writes in secretsDir: root, and the
-// hotserve group, read off the exchange tree's base directory, which
-// tmpfiles.d makes root:hotserve (Paths) — no name is looked up.
+// motel group, read off the exchange tree's base directory, which
+// tmpfiles.d makes root:motel (Paths) — no name is looked up.
 type fileOwner struct{ uid, gid uint32 }
 
 func (a *Applier) secretsOwner() (*fileOwner, error) {
@@ -116,7 +116,7 @@ func (a *Applier) secretsOwner() (*fileOwner, error) {
 // checkSecretsDir holds secretsDir to what tmpfiles.d makes: a directory,
 // 2750, owned as the exchange tree is. Anything else is the box's error,
 // `failed` (step 15a): a file root wrote there could otherwise be one
-// hotserve cannot read, which would surface at the app's next launch.
+// motel cannot read, which would surface at the app's next launch.
 func (a *Applier) checkSecretsDir(o *fileOwner) error {
 	fi, err := os.Lstat(a.secretsPath())
 	if err != nil {

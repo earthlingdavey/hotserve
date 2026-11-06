@@ -275,7 +275,7 @@ func waitDone(t *testing.T, r *systemdRunner, h handle) {
 	}
 }
 
-var unitNamePattern = regexp.MustCompile(`^hotserve-demo\.v1\.2\.0a1b2c3d0a1b2c3d\.service$`)
+var unitNamePattern = regexp.MustCompile(`^motel-demo\.v1\.2\.0a1b2c3d0a1b2c3d\.service$`)
 
 func TestSystemdRunnerStartBuildsUnit(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
@@ -296,7 +296,7 @@ func TestSystemdRunnerStartBuildsUnit(t *testing.T) {
 	if !filepath.IsAbs(u.ExecStart[0]) || got != want || u.ExecStart[1] != "--flag" {
 		t.Fatalf("ExecStart must be the absolute resolved command, got %v", u.ExecStart)
 	}
-	if u.WorkingDirectory != spec.dir || u.SyslogIdentifier != "hotserve-demo" || u.StopTimeout != 3*time.Second {
+	if u.WorkingDirectory != spec.dir || u.SyslogIdentifier != "motel-demo" || u.StopTimeout != 3*time.Second {
 		t.Fatalf("unit spec: %+v", u)
 	}
 	if strings.Join(u.Environment, ",") != "SOCKET=/var/lib/liveswap/demo/run/0a1b2c3d0a1b2c3d.sock" {
@@ -409,7 +409,7 @@ func TestUnitPropertiesApplyHardening(t *testing.T) {
 	_ = godbus.MakeVariant // keep the import honest: properties are godbus variants
 }
 
-// Promise: the argv a unit execs is the argv hotserve handed the
+// Promise: the argv a unit execs is the argv motel handed the
 // manager, byte for byte. The plain ExecStart property carries no
 // flags, and through it systemd substitutes the unit's environment
 // (env_file values included) into every word at exec time: "$VAR"
@@ -419,7 +419,7 @@ func TestUnitPropertiesApplyHardening(t *testing.T) {
 // The words are what an operator's command line can carry: an inline
 // script, a regex anchor, a literal dollar.
 func TestUnitExecStartIsByteExact(t *testing.T) {
-	argv := []string{"/usr/bin/node", "-e", `console.log("$HOME", "${HOME}")`, "$HOME", "${HOME}", "$$", "$HOTSERVE_UNSET_IN_EVERY_UNIT", "^a.*$", "a$b"}
+	argv := []string{"/usr/bin/node", "-e", `console.log("$HOME", "${HOME}")`, "$HOME", "${HOME}", "$$", "$MOTEL_UNSET_IN_EVERY_UNIT", "^a.*$", "a$b"}
 	want := slices.Clone(argv)
 	var ex []any
 	for _, p := range unitProperties(unitSpec{Name: "x.service", ExecStart: argv, StopTimeout: time.Second, Sandbox: probeSandboxSpec()}) {
@@ -463,11 +463,11 @@ func TestEveryUnitCarriesASibling(t *testing.T) {
 	argv := []string{"./server", "--flag"}
 	got := withSibling(argv)
 	// The script is pinned to the byte: appArgv recognises the units of
-	// this hotserve by it, so a reworded script would make every unit a
+	// this motel by it, so a reworded script would make every unit a
 	// previous binary started read back as the shell's argv in status
 	// and state.json after an upgrade, with this test still green if
 	// it only looked for the parts.
-	if got[0] != "/bin/sh" || got[1] != "-c" || got[2] != `unset PWD; /usr/bin/sleep 0 || exit 127; /usr/bin/sleep infinity & exec "$@"` || got[3] != "hotserve-app" || !slices.Equal(got[4:], argv) {
+	if got[0] != "/bin/sh" || got[1] != "-c" || got[2] != `unset PWD; /usr/bin/sleep 0 || exit 127; /usr/bin/sleep infinity & exec "$@"` || got[3] != "motel-app" || !slices.Equal(got[4:], argv) {
 		t.Fatalf("withSibling = %q", got)
 	}
 	if !slices.Equal(appArgv(got), argv) {
@@ -745,7 +745,7 @@ func TestSystemdRunnerRunOnce(t *testing.T) {
 	if !u.Oneshot || !strings.HasSuffix(u.Name, ".prestart.service") || !unitBelongsTo(u.Name, "demo") {
 		t.Fatalf("pre_start must be a oneshot unit, got %+v", u)
 	}
-	if u.SyslogIdentifier != "hotserve-demo" || u.StopTimeout != spec.grace {
+	if u.SyslogIdentifier != "motel-demo" || u.StopTimeout != spec.grace {
 		t.Fatalf("pre_start unit shares the app's identity: %+v", u)
 	}
 }
@@ -789,7 +789,7 @@ func TestSystemdRunnerReattach(t *testing.T) {
 	if _, ok, err := r.Reattach(handleState{PID: 1}); ok || err != nil {
 		t.Fatal("no unit recorded ⇒ cannot reattach, not an error")
 	}
-	if _, ok, err := r.Reattach(handleState{Unit: "hotserve-demo.v1.aaaaaaaaaaaaaaaa.service"}); ok || err != nil {
+	if _, ok, err := r.Reattach(handleState{Unit: "motel-demo.v1.aaaaaaaaaaaaaaaa.service"}); ok || err != nil {
 		t.Fatal("unknown unit ⇒ observed not running")
 	}
 
@@ -809,7 +809,7 @@ func TestSystemdRunnerReattach(t *testing.T) {
 		t.Fatalf("a reattached handle must report the unit's command %v, got %v", adopted, st.Command)
 	}
 	// A running unit WITHOUT the sandbox is never adopted: nothing
-	// this hotserve starts lacks it, so it is something else's unit —
+	// this motel starts lacks it, so it is something else's unit —
 	// a development build that still had `sandbox off`, say — and
 	// adopting it would serve an app bare with no signal. It is
 	// stopped here and now, not left for the relaunch's sweep (which
@@ -953,7 +953,7 @@ func TestStatusFromPropsAndStopBudget(t *testing.T) {
 	}
 }
 
-// propExecStart reads a nested D-Bus shape out of a map hotserve does
+// propExecStart reads a nested D-Bus shape out of a map motel does
 // not build, so every way it can be malformed must read as "no command"
 // rather than as a panic or as a half-parsed argv. A missing command is
 // reported as missing; it is never guessed at.
@@ -1026,7 +1026,7 @@ func TestSystemdRunnerSweepLogsTheLeftoverExitItReadOffTheUnit(t *testing.T) {
 	}
 	oom := failedStatus
 	oom.ExecMainCode, oom.ExecMainStatus = 2, 9 // CLD_KILLED by SIGKILL
-	conn.setStatus("hotserve-demo.v0.9.1111111111111111.service", oom)
+	conn.setStatus("motel-demo.v0.9.1111111111111111.service", oom)
 	if err := r.Sweep("demo", keep); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
@@ -1053,7 +1053,7 @@ func TestSystemdRunnerSweepDoesNotStopAStrayThatEndedAfterTheListing(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	const stray = "hotserve-demo.v2.4444444444444444.service"
+	const stray = "motel-demo.v2.4444444444444444.service"
 	conn.setStatus(stray, unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
 	conn.mu.Lock()
 	conn.vanishOnRead = map[string]bool{stray: true}
@@ -1082,9 +1082,9 @@ func TestSystemdRunnerSweep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn.setStatus("hotserve-demo.v0.9.1111111111111111.service", failedStatus) // leftover failed unit of ours
-	conn.setStatus("hotserve-demo-api.v1.2222222222222222.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
-	conn.setStatus("hotserve-demo.v1.notanonce.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	conn.setStatus("motel-demo.v0.9.1111111111111111.service", failedStatus) // leftover failed unit of ours
+	conn.setStatus("motel-demo-api.v1.2222222222222222.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	conn.setStatus("motel-demo.v1.notanonce.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
 
 	if err := r.Sweep("demo", keep); err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -1093,7 +1093,7 @@ func TestSystemdRunnerSweep(t *testing.T) {
 	if len(stops) != 1 || stops[0] != stray.state().Unit {
 		t.Fatalf("exactly the stray unit of this app must be stopped, got %v", stops)
 	}
-	if rs := conn.resets(); len(rs) != 1 || rs[0] != "hotserve-demo.v0.9.1111111111111111.service" {
+	if rs := conn.resets(); len(rs) != 1 || rs[0] != "motel-demo.v0.9.1111111111111111.service" {
 		t.Fatalf("the failed leftover must be reset, got %v", rs)
 	}
 	waitDone(t, r, stray)
@@ -1102,7 +1102,7 @@ func TestSystemdRunnerSweep(t *testing.T) {
 	}
 
 	// A stop that cannot be confirmed is an error: nothing may be GC'd.
-	conn.setStatus("hotserve-demo.v2.3333333333333333.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
+	conn.setStatus("motel-demo.v2.3333333333333333.service", unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true})
 	conn.mu.Lock()
 	conn.stopErr = errors.New("dbus down")
 	conn.mu.Unlock()
@@ -1122,14 +1122,14 @@ func TestSystemdRunnerSweep(t *testing.T) {
 	conn.listErr = nil
 	conn.resetErr = errors.New("dbus down")
 	conn.mu.Unlock()
-	conn.setStatus("hotserve-demo.v3.4444444444444444.service", failedStatus)
+	conn.setStatus("motel-demo.v3.4444444444444444.service", failedStatus)
 	if err := r.Sweep("demo", keep); err == nil {
 		t.Fatal("a reset failure must be reported: the unit is still loaded")
 	}
 }
 
 func TestSystemdRunnerSweepLeavesARunningPreStartToFinish(t *testing.T) {
-	// A hotserve that stopped during a deploy leaves that deploy's
+	// A motel that stopped during a deploy leaves that deploy's
 	// pre_start running under the manager. Stopping it would half-apply
 	// a migration (#317): the sweep leaves it, names it, and reports
 	// itself unconfirmed so no caller starts or deletes anything beside
@@ -1140,8 +1140,8 @@ func TestSystemdRunnerSweepLeavesARunningPreStartToFinish(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const migration = "hotserve-demo.v2.5555555555555555.prestart.service"
-	const ended = "hotserve-demo.v1.6666666666666666.prestart.service"
+	const migration = "motel-demo.v2.5555555555555555.prestart.service"
+	const ended = "motel-demo.v1.6666666666666666.prestart.service"
 	conn.setStatus(migration, unitStatus{LoadState: "loaded", ActiveState: "activating", SubState: "start", Sandboxed: true})
 	conn.setStatus(ended, failedStatus)
 
@@ -1171,7 +1171,7 @@ func TestSystemdRunnerSweepLeavesARunningPreStartToFinish(t *testing.T) {
 }
 
 func TestSystemdRunnerRunOnceCarriesItsOwnDeadline(t *testing.T) {
-	// A pre_start outlives a hotserve that stops during it, and with it
+	// A pre_start outlives a motel that stops during it, and with it
 	// the context that bounded it: the unit's own TimeoutStartSec= is
 	// what still ends it on time.
 	r, conn := newTestSystemdRunner(t)
@@ -1188,7 +1188,7 @@ func TestSystemdRunnerRunOnceCarriesItsOwnDeadline(t *testing.T) {
 func TestSystemdRunnerWatcherBackfillsPIDAndCommand(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
 	// Start succeeds but the immediate MainPID read fails: the unit is
-	// fine, hotserve just could not ask. The watcher repairs the PID
+	// fine, motel just could not ask. The watcher repairs the PID
 	// once the manager answers again.
 	running := unitStatus{LoadState: "loaded", ActiveState: "active", MainPID: 4242, Sandboxed: true}
 	conn.mu.Lock()
@@ -1268,10 +1268,10 @@ func TestSystemdRunnerCommandSurvivesACrashBeforeTheFirstGoodPoll(t *testing.T) 
 
 func TestUnitApp(t *testing.T) {
 	for name, want := range map[string]string{
-		"hotserve-blog.v1.4.2.0a1b2c3d0a1b2c3d.service":          "blog",
-		"hotserve-blog-api.v1.0a1b2c3d0a1b2c3d.prestart.service": "blog-api",
-		"hotserve-blog.service":                                  "",
-		"dbus.service":                                           "",
+		"motel-blog.v1.4.2.0a1b2c3d0a1b2c3d.service":          "blog",
+		"motel-blog-api.v1.0a1b2c3d0a1b2c3d.prestart.service": "blog-api",
+		"motel-blog.service":                                  "",
+		"dbus.service":                                        "",
 	} {
 		got, ok := unitApp(name)
 		if got != want || ok != (want != "") {
@@ -1283,8 +1283,8 @@ func TestUnitApp(t *testing.T) {
 func TestSystemdRunnerSweepStopsStraysConcurrentlyAndHonoursTheGuard(t *testing.T) {
 	r, conn := newTestSystemdRunner(t)
 	running := unitStatus{LoadState: "loaded", ActiveState: "active", Sandboxed: true}
-	conn.setStatus("hotserve-demo.v1.1111111111111111.service", running)
-	conn.setStatus("hotserve-demo.v2.2222222222222222.service", running)
+	conn.setStatus("motel-demo.v1.1111111111111111.service", running)
+	conn.setStatus("motel-demo.v2.2222222222222222.service", running)
 	// A guard that turns false after the listing: nothing may be stopped.
 	if err := r.sweep(context.Background(), "demo", nil, func() bool { return false }, false); err != nil {
 		t.Fatal(err)
@@ -1343,12 +1343,12 @@ func TestUsecDuration(t *testing.T) {
 
 func TestUnitBelongsTo(t *testing.T) {
 	for name, want := range map[string]bool{
-		"hotserve-blog.v1.4.2.0a1b2c3d0a1b2c3d.service":          true,
-		"hotserve-blog.v1.4.2.0a1b2c3d0a1b2c3d.prestart.service": true,
-		"hotserve-blog-api.v1.0a1b2c3d0a1b2c3d.service":          false, // another app
-		"hotserve-blog.v1.service":                               false, // no nonce
-		"hotserve-blogx.v1.0a1b2c3d0a1b2c3d.service":             false,
-		"blog.v1.0a1b2c3d0a1b2c3d.service":                       false,
+		"motel-blog.v1.4.2.0a1b2c3d0a1b2c3d.service":          true,
+		"motel-blog.v1.4.2.0a1b2c3d0a1b2c3d.prestart.service": true,
+		"motel-blog-api.v1.0a1b2c3d0a1b2c3d.service":          false, // another app
+		"motel-blog.v1.service":                               false, // no nonce
+		"motel-blogx.v1.0a1b2c3d0a1b2c3d.service":             false,
+		"blog.v1.0a1b2c3d0a1b2c3d.service":                    false,
 	} {
 		if got := unitBelongsTo(name, "blog"); got != want {
 			t.Errorf("unitBelongsTo(%q, blog) = %v, want %v", name, got, want)
@@ -1472,7 +1472,7 @@ func TestUnitNameCarriesTheSpecNonce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name != "hotserve-blog.v1.deadbeefdeadbeef.service" {
+	if name != "motel-blog.v1.deadbeefdeadbeef.service" {
 		t.Fatalf("unit name = %q", name)
 	}
 	if got, ok := unitNonce(name); !ok || got != "deadbeefdeadbeef" {
@@ -1490,7 +1490,7 @@ func TestUnitNameCarriesTheSpecNonce(t *testing.T) {
 			t.Errorf("nonce %q accepted", bad)
 		}
 	}
-	if _, ok := unitNonce("hotserve-blog.v1.service"); ok {
+	if _, ok := unitNonce("motel-blog.v1.service"); ok {
 		t.Error("a name without a nonce is not one of ours")
 	}
 }
@@ -1505,7 +1505,7 @@ func TestProbeUnitsAreNotAppUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(name, unitPrefix) || !strings.HasSuffix(name, ".service") {
-		t.Fatalf("probe unit name %q is not a hotserve unit", name)
+		t.Fatalf("probe unit name %q is not a motel unit", name)
 	}
 	if app, ok := unitApp(name); ok {
 		t.Fatalf("probe unit %q parses as app %q; a sweep would stop it", name, app)
@@ -1694,7 +1694,7 @@ func TestUnitLineLength(t *testing.T) {
 		}
 		return l
 	}
-	// An entry with no = (nothing of hotserve's makes one) is named as
+	// An entry with no = (nothing of motel's makes one) is named as
 	// such, never printed: the refusal must not carry a value.
 	if err := checkUnitLines(startSpec{app: "a", env: []string{strings.Repeat("v", unitLineBudget)}, command: []string{"./server"}}); err == nil || !strings.Contains(err.Error(), "an entry with no =") || strings.Contains(err.Error(), "vvvv") {
 		t.Fatalf("an =-less entry must be refused without its value: %v", err)

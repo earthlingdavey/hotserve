@@ -1,6 +1,6 @@
 # Working on this app
 
-It is deployed by [hotserve](https://github.com/smallhoursorg/hotserve),
+It is deployed by [motel](https://github.com/smallhoursorg/motel),
 which runs it under rules that do not show up when you run it locally.
 
 - **Listen on the unix socket in `$SOCKET`**, via
@@ -25,9 +25,9 @@ which runs it under rules that do not show up when you run it locally.
   private `/tmp` and the OS runtime under `/usr`. `/opt`, `/srv`, `/home` and host unix sockets (a local
   Postgres's, say) are absent, not merely unreadable.
 - **Permissions are granted on the box, not in this repo.** The app
-  runs with the Deno flags in the box's Caddyfile; `hotserve.caddy`
+  runs with the Deno flags in the box's Caddyfile; `motel.caddy`
   here is a copy that documents what the code needs. If a change needs
-  a new env var, file path or network host, update `hotserve.caddy`
+  a new env var, file path or network host, update `motel.caddy`
   in the same change and say in its description that the box needs
   the same flag *before* it is deployed. Never use `-A`,
   `--allow-all`, `--allow-run` or `--allow-ffi`.

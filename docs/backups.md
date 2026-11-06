@@ -1,14 +1,14 @@
 # Backups
 
-The package ships `hotserve-backup`: an hourly backup of what each
+The package ships `motel-backup`: an hourly backup of what each
 app's Caddyfile block declares — its SQLite databases, copied safely
 while the app runs, and the files under its `shared/` — into one
 [restic](https://restic.net) repository off the box. restic is a backup
-program Debian ships; `hotserve-backup` runs it. A weekly drill proves
+program Debian ships; `motel-backup` runs it. A weekly drill proves
 a restore would work: it fetches every app's newest snapshot, checks it
 as a restore would, and installs nothing. This page is how to set
 backups up, check on them, restore, rebuild a box, keep the repository
-small, and recover from an attack. How `hotserve-backup` works, and
+small, and recover from an attack. How `motel-backup` works, and
 everything it refuses, is [backups/README.md](../backups/README.md).
 
 The transcripts below come from a fresh Debian 13 box with the package
@@ -87,8 +87,8 @@ The easiest: every bucket keeps versions.
    ```sh
    apt-get update && apt-get install -y backblaze-b2
    backblaze-b2 authorize-account     # asks for the master key's id, then the key
-   backblaze-b2 create-key --bucket my-backups hotserve-box listBuckets,listFiles,readFiles,writeFiles
-   backblaze-b2 create-key --bucket my-backups hotserve-laptop listBuckets,listFiles,readFiles,writeFiles
+   backblaze-b2 create-key --bucket my-backups motel-box listBuckets,listFiles,readFiles,writeFiles
+   backblaze-b2 create-key --bucket my-backups motel-laptop listBuckets,listFiles,readFiles,writeFiles
    backblaze-b2 clear-account         # forgets the master key authorize-account stored on this machine
    ```
 
@@ -151,19 +151,19 @@ naming each key — not worked out here.
 
 ## Who runs these
 
-On the box, `hotserve-backup setup`, `restore`, `drill`, `run` and
+On the box, `motel-backup setup`, `restore`, `drill`, `run` and
 `sweep`, and every `systemctl` line that starts, stops, reloads,
 enables or disables a unit, are root's: run them as root over SSH
 (`ssh root@box.example.com`, the way back [Hardening](hardening.md)
 keeps). An administrator of your own whose `sudo` is root's puts the
 word before them. What only reads needs no privilege:
-`hotserve-backup validate` and `status`, `systemctl list-timers` and
+`motel-backup validate` and `status`, `systemctl list-timers` and
 `systemctl --failed`, and the journal through the `adm` group. The
 administrator Hardening makes is in that group alone, with no `sudo`:
 they — or an agent working as one — run those. Run as root, `status`
 also checks the credential file, which only root can read. The
 Caddyfile reaches the box by a signed push from its repository, and the
-box runs `hotserve-backup validate` on each one before it is applied
+box runs `motel-backup validate` on each one before it is applied
 ([examples/box](../examples/box/README.md)). Keep `setup` for a person:
 it shows the repository password on the terminal it runs in, and it
 writes the one credential that reads every backup ever made.
@@ -180,23 +180,23 @@ As root on the box:
 #            files  uploads
 #        }
 #    With a box repo (examples/box), commit and push it: the box asks
-#    hotserve-backup validate before it applies the push, and reloads
+#    motel-backup validate before it applies the push, and reloads
 #    itself, so skip the next two lines. Without one, edit
-#    /etc/hotserve/Caddyfile, then, before it goes live, ask whether a
+#    /etc/motel/Caddyfile, then, before it goes live, ask whether a
 #    run could plan from it:
-hotserve-backup validate /etc/hotserve/Caddyfile
-systemctl reload hotserve
+motel-backup validate /etc/motel/Caddyfile
+systemctl reload motel
 # 2. The repository, once: the storage key is asked for at the terminal,
 #    and a new repository's password is shown once, to store elsewhere.
-hotserve-backup setup s3:https://s3.example.com/my-backups
+motel-backup setup s3:https://s3.example.com/my-backups
 # 3. The first backup runs within the hour and ten minutes
-#    (systemctl list-timers hotserve-backup.timer), or now:
-systemctl start hotserve-backup.service
-hotserve-backup status
+#    (systemctl list-timers motel-backup.timer), or now:
+systemctl start motel-backup.service
+motel-backup status
 # 4. A restore: into a directory of root's own to look at, or into
 #    place — which backs the app up first, tagged pre-restore, and asks.
-hotserve-backup restore demo --to /root/demo-restored
-hotserve-backup restore demo
+motel-backup restore demo --to /root/demo-restored
+motel-backup restore demo
 ```
 <!-- smoke: end -->
 
@@ -212,8 +212,8 @@ Have your password manager open: a new repository's password is shown
 once. `setup`, for a bucket with no repository in it yet:
 
 ```
-$ hotserve-backup setup s3:https://s3.example.com/my-backups
-account hotserve-backup: present
+$ motel-backup setup s3:https://s3.example.com/my-backups
+account motel-backup: present
 a run would back up demo, under /var/lib/liveswap
 Storage key id (AWS_ACCESS_KEY_ID): …
 Storage secret key (AWS_SECRET_ACCESS_KEY):
@@ -224,8 +224,8 @@ Store it off the box now, with the repository URL, s3:https://s3.example.com/my-
 The look could not tell whether a repository is there: store this password beside any you already keep for this repository, never in its place; if one is there, setup says so next and asks for its own.
 Type stored to go on: stored
 repository ready: s3:https://s3.example.com/my-backups (new, id e9157010)
-credentials: /etc/hotserve-backup/repository.env (root, 0600)
-next: the first backup runs within the hour and ten minutes (systemctl list-timers hotserve-backup.timer); to run one now, systemctl start hotserve-backup.service; then hotserve-backup status
+credentials: /etc/motel-backup/repository.env (root, 0600)
+next: the first backup runs within the hour and ten minutes (systemctl list-timers motel-backup.timer); to run one now, systemctl start motel-backup.service; then motel-backup status
 ```
 
 What can stop `setup`, and what it says:
@@ -253,14 +253,14 @@ wrong is otherwise found only when the box is gone.
 
 ## Is it working
 
-`hotserve-backup status`, as anyone, exits 0 when all is well — every
+`motel-backup status`, as anyone, exits 0 when all is well — every
 app backed up within 3 hours, a restore of it proven within 8 days, the
 repository's last check clean ([the whole rule](../backups/README.md#status))
 — 1 when not, and 3 when it could not look. Right after `setup` it is
 `no run yet: pending first run`, exit 0. After the timer's first run:
 
 ```
-$ hotserve-backup status
+$ motel-backup status
 last run 2026-10-03 07:01 UTC
 the repository has not been checked yet: the weekly drill checks it
 demo: ok: last complete backup 2026-10-03 07:01 UTC, snapshot c4f0d7c1 (data at /var/lib/liveswap/demo/shared)
@@ -271,14 +271,14 @@ no backup unit running now
 An app's first good backup, up to 1 GiB restored, is drilled by the
 run that made it, as here. A larger one is left to the weekly drill,
 and until then `status` says `restore not proven` and exits 1:
-`hotserve-backup drill` proves it now. A run that fails is a
+`motel-backup drill` proves it now. A run that fails is a
 failed unit until the next one succeeds — `systemctl --failed` lists
-`hotserve-backup.service` — and `journalctl -u hotserve-backup.service`
+`motel-backup.service` — and `journalctl -u motel-backup.service`
 (the `adm` group reads it) has one line per app:
 
 ```
-hotserve-backup[9377]: demo: ok: snapshot c4f0d7c1 holds sqlite app.db, files uploads
-hotserve-backup[9377]: demo: restore proven: snapshot c4f0d7c1 was fetched and checked whole
+motel-backup[9377]: demo: ok: snapshot c4f0d7c1 holds sqlite app.db, files uploads
+motel-backup[9377]: demo: restore proven: snapshot c4f0d7c1 was fetched and checked whole
 ```
 
 What every line of `status` means is under
@@ -303,7 +303,7 @@ export RESTIC_REPOSITORY=s3:https://s3.example.com/my-backups
 read -r AWS_ACCESS_KEY_ID && export AWS_ACCESS_KEY_ID          # your own machine's key
 read -rs AWS_SECRET_ACCESS_KEY && export AWS_SECRET_ACCESS_KEY
 # restic asks for the repository's password, for each.
-restic snapshots --latest 1 --tag hotserve --group-by host,paths,tags
+restic snapshots --latest 1 --tag motel --group-by host,paths,tags
 restic check --no-lock --read-data
 ```
 
@@ -324,16 +324,16 @@ restore made of what it restored over (tagged `pre-restore`) is listed
 apart, and is not a backup:
 
 ```
-snapshots for (host [hotserve], tags [app:demo, hotserve], paths [/backup/demo]):
+snapshots for (host [motel], tags [app:demo, motel], paths [/backup/demo]):
 ID        Time                 Host        Tags               Paths         Size
 ---------------------------------------------------------------------------------------
-66724c5e  2026-10-03 11:48:35  hotserve    app:demo,hotserve  /backup/demo  400.008 MiB
+66724c5e  2026-10-03 11:48:35  motel    app:demo,motel  /backup/demo  400.008 MiB
 ---------------------------------------------------------------------------------------
 1 snapshots
-snapshots for (host [hotserve], tags [app:demo, hotserve, pre-restore], paths [/backup/demo]):
+snapshots for (host [motel], tags [app:demo, motel, pre-restore], paths [/backup/demo]):
 ID        Time                 Host        Tags                           Paths         Size
 ---------------------------------------------------------------------------------------------------
-6efa7a46  2026-10-03 08:48:42  hotserve    app:demo,hotserve,pre-restore  /backup/demo  400.008 MiB
+6efa7a46  2026-10-03 08:48:42  motel    app:demo,motel,pre-restore  /backup/demo  400.008 MiB
 ---------------------------------------------------------------------------------------------------
 1 snapshots
 ```
@@ -354,7 +354,7 @@ all: [after an attack](#after-an-attack).
 Into a new directory first, to look before anything changes:
 
 ```
-$ hotserve-backup restore demo --to /root/demo-restored
+$ motel-backup restore demo --to /root/demo-restored
 demo: restored from snapshot 39021de9 of 2026-10-03 07:01 UTC into /root/demo-restored: sqlite app.db, files uploads
 ```
 
@@ -367,7 +367,7 @@ Into place, with the app running. It asks, takes the app's name typed
 back for a yes, and backs the app up first:
 
 ```
-$ hotserve-backup restore demo
+$ motel-backup restore demo
 demo: restore snapshot 39021de9, made 2026-10-03 07:01 UTC, into /var/lib/liveswap/demo/shared?
 What is there is backed up first. Its databases are then replaced and its files overwritten; what the snapshot does not hold is left.
 Type the app's name, demo, to go on: demo
@@ -375,7 +375,7 @@ demo: backed up first: snapshot 66e09572 (restore --snapshot 66e09572 puts back 
 demo: restored from snapshot 39021de9 of 2026-10-03 07:01 UTC into /var/lib/liveswap/demo/shared: sqlite app.db, files uploads
 ```
 
-`hotserve-backup restore demo --snapshot 66e09572` undoes it: the
+`motel-backup restore demo --snapshot 66e09572` undoes it: the
 snapshot tagged `pre-restore` holds what was there. A restore needs the
 snapshot's size free twice over where the fetch and the app share a
 disk, and holds the run lock throughout: an hourly run that comes due
@@ -383,14 +383,14 @@ meanwhile fails, and says why.
 
 ## A rebuilt box
 
-A new box, or the same one reinstalled; the `hotserve` user may get
+A new box, or the same one reinstalled; the `motel` user may get
 another uid, which a restore does not mind:
 
 1. Install the package ([Your first deploy](first-deploy.md), step 2)
-   and give it the box's Caddyfile with `hotserve init` from the box
+   and give it the box's Caddyfile with `motel init` from the box
    repository, as the first deploy did (step 3; with secrets,
    [A rebuilt box](secrets.md#a-rebuilt-box)).
-2. `hotserve-backup setup <the same URL>`, with the box's key. It
+2. `motel-backup setup <the same URL>`, with the box's key. It
    finds the repository and asks for its password instead of making
    one:
 
@@ -401,7 +401,7 @@ another uid, which a restore does not mind:
    repository ready: s3:https://s3.example.com/my-backups (existing, id e9157010)
    ```
 
-3. Before each app's first deploy, `hotserve-backup restore <app>`.
+3. Before each app's first deploy, `motel-backup restore <app>`.
    With nothing in place there is nothing to back up first:
 
    ```
@@ -416,21 +416,21 @@ another uid, which a restore does not mind:
 An hourly run that comes between 2 and 3 finds the data missing, and
 `status` says so and names the restore. A repository is one box's: if
 the old box still runs, turn its timers off first
-(`systemctl disable --now hotserve-backup.timer hotserve-backup-drill.timer`).
+(`systemctl disable --now motel-backup.timer motel-backup-drill.timer`).
 
 **A backup holds what the apps declare under `shared/`, and nothing of
-`/etc/hotserve`**: not the Caddyfile, whose `backup` blocks a restore
+`/etc/motel`**: not the Caddyfile, whose `backup` blocks a restore
 needs before it can run, no env file, and no `deploy_trust local`
 public key file. The Caddyfile and the secrets come back from the box
 repo, which the first deploy makes
 ([examples/box](../examples/box/README.md)): the Caddyfile with
-`hotserve init` in step 1; the secrets with `make rekey`, pushed and
+`motel init` in step 1; the secrets with `make rekey`, pushed and
 applied before step 4, since until then the box has no env file for
 the app ([A rebuilt box](secrets.md#a-rebuilt-box)). A `deploy_trust
 local` public key is a file the Caddyfile names, not a commit, and
-`hotserve init` refuses a Caddyfile whose key file is missing: in
-step 1, after the install and before `hotserve init`, put the `.pub`
-back from where the pair is kept. Or make a new pair with `hotserve
+`motel init` refuses a Caddyfile whose key file is missing: in
+step 1, after the install and before `motel init`, put the `.pub`
+back from where the pair is kept. Or make a new pair with `motel
 deploy-keygen`: its private key then replaces the old one wherever
 tokens are minted — the CI secret, or your own machine — and only the
 `.pub` goes to the box. Until the private key is replaced, a deploy
@@ -440,7 +440,7 @@ minted with the old one is refused: a flat 401, and the journal's
 ([liveswap/README.md](../liveswap/README.md)).
 
 Every other `env_file` the Caddyfile names comes back only if it is in
-the box repo. One made by hand, such as `/etc/hotserve/demo.env`, is in
+the box repo. One made by hand, such as `/etc/motel/demo.env`, is in
 neither the backup nor the repo, and a launch that reads a missing env
 file fails. Move a hand-made one in by
 [Move a hand-made env file in](secrets.md#move-a-hand-made-env-file-in)
@@ -453,10 +453,10 @@ Every Sunday between 03:30 and 03:40, the box's time — an offset of
 this box's own — the drill fetches the newest snapshot of every app
 whole, checks it as a restore would, and installs nothing; then it
 checks the repository's structure and one fifty-second of its data.
-`hotserve-backup drill` runs it now:
+`motel-backup drill` runs it now:
 
 ```
-$ hotserve-backup drill
+$ motel-backup drill
 demo: restore proven: snapshot 39021de9, on 2026-10-03 07:02 UTC
 repository: its structure, and data group 40/52: clean
 ```
@@ -469,15 +469,15 @@ fetched them back 14 s, its check included.
   About 4.3 times the apps' size a month — less for data that
   compresses, which restic does.
 - **Disk:** the largest app's restored size, free under
-  `/var/lib/hotserve-backup`. An app that does not fit is not drilled,
+  `/var/lib/motel-backup`. An app that does not fit is not drilled,
   `status` says `restore not proven` with how much it needs, and stays
   unhealthy until there is room.
 - **Time:** the drill holds the run lock. An hourly run that comes due
   meanwhile fails at once, and is that hour's failed unit:
 
   ```
-  hotserve-backup[3611]: hotserve-backup: another backup run is in progress: pid 3450, since 2026-10-03T07:06:41Z
-  systemd[1]: hotserve-backup.service: Failed with result 'exit-code'.
+  motel-backup[3611]: motel-backup: another backup run is in progress: pid 3450, since 2026-10-03T07:06:41Z
+  systemd[1]: motel-backup.service: Failed with result 'exit-code'.
   ```
 
   On a slow link a long drill fails every run it overlaps, and past 3
@@ -518,9 +518,9 @@ machine, after the first three lines of
 
 ```bash
 # restic asks for the repository's password, for each.
-restic forget --retry-lock 1h --tag hotserve --group-by host,paths,tags \
+restic forget --retry-lock 1h --tag motel --group-by host,paths,tags \
   --keep-hourly 24 --keep-daily 30 --keep-monthly 12
-restic forget --retry-lock 1h --tag hotserve-clean \
+restic forget --retry-lock 1h --tag motel-clean \
   --keep-hourly 24 --keep-daily 30 --keep-monthly 12
 restic prune --retry-lock 1h
 ```
@@ -554,8 +554,8 @@ a stale lock by itself. Two things leave one:
 `restic list locks --no-lock` lists what is there. `restic unlock`
 removes a lock restic judges stale. `restic unlock --remove-all`
 removes every lock, a running command's too, so first stop the box's
-timers and let any run end (`systemctl stop hotserve-backup.timer
-hotserve-backup-drill.timer`; `hotserve-backup status` says whether a
+timers and let any run end (`systemctl stop motel-backup.timer
+motel-backup-drill.timer`; `motel-backup status` says whether a
 unit is running), and have no command of your own running; then start
 the timers again, and prune.
 
@@ -563,7 +563,7 @@ the timers again, and prune.
 upload and a drill's fetch that come due wait for it, up to two hours,
 holding the run lock meanwhile, so the hours after fail too. The
 drill's check takes no lock, and a prune under way can make it say
-`damaged`; `hotserve-backup drill` checks again at once, where the next
+`damaged`; `motel-backup drill` checks again at once, where the next
 drill is a week away. So prune at a quiet hour, away from the drill
 (Sunday from 03:30, the box's time).
 
@@ -651,7 +651,7 @@ earlier. A check can also come back clean on a moment too late: an
 attack that first hides the newest snapshot leaves a copy after that
 hide whole, and short of it. So for a moment taken from the bucket's
 history, the newest snapshot `restic snapshots` lists for each app must
-be the one `hotserve-backup status` named before the attack — the
+be the one `motel-backup status` named before the attack — the
 `snapshot <id>` on its `last complete backup` line; one missing means
 the moment fell after the attack began, and an earlier one is needed.
 (A copy at `status`'s own minute holds the backup before that one, as
@@ -722,7 +722,7 @@ into a new repository (`restic copy`) or starting a new one. Anyone who
 later reads the bucket with them can read the backups.
 
 Whoever had root had the apps' secrets too: every env file the
-Caddyfile names, in clear — those under `/etc/hotserve/secrets` and
+Caddyfile names, in clear — those under `/etc/motel/secrets` and
 any made by hand — and the box's key with them. Then every value of
 every one of them changes — database passwords, third-party keys,
 hand-made files' included — on the rebuilt box in this order: `make
@@ -731,7 +731,7 @@ rekey` first, since `recipients` still names the old box's key and a
 refuse the push ([A rebuilt box](secrets.md#a-rebuilt-box)); then each
 value set anew with `make secret` ([Add a secret](secrets.md#add-a-secret)),
 a hand-made file's too, with the app's block changed to read
-`/etc/hotserve/secrets/<app>.env` — not imported by
+`/etc/motel/secrets/<app>.env` — not imported by
 [the door](secrets.md#move-a-hand-made-env-file-in), which would carry
 the attacker's values in; then the first deploy. `make rekey` alone
 re-encrypts the values the attacker holds.
@@ -757,7 +757,7 @@ protections against MinIO standing in for a provider.
 | Keys that cannot destroy a version; a delete by name only hides | yes | the policy above, on MinIO only | not worked out |
 | An attack with the box's key destroys nothing; recovery from the bucket's history | yes, with the two B2 keys above | on MinIO only; the account's-key copy not run anywhere | not run |
 | Retention off the box, and the box's next run after it | yes | on MinIO only | not run |
-| A rebuilt box, with another uid for `hotserve` | yes | not run | not run |
+| A rebuilt box, with another uid for `motel` | yes | not run | not run |
 | The lifecycle rule removes a hidden version and its marker after the period | through B2's native API; through the S3 endpoint still to be read | not run | not run |
 | The drill's egress on a bill | not yet | not run | not run |
 

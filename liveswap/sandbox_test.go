@@ -60,7 +60,7 @@ func propValues(u unitSpec, name string) []any {
 // (the app's own children join its namespaces as ever, the sibling the
 // shell forks before it execs the app among them, #380): on a user
 // manager a second process the manager spawns cannot join the IPC
-// namespace the first made (#311). The instance's socket is hotserve's
+// namespace the first made (#311). The instance's socket is motel's
 // to remove, with the run dir (socketRef.retire), so a unit names no
 // socket at all.
 func TestUnitHasOneExecCommand(t *testing.T) {
@@ -242,8 +242,8 @@ func TestSandboxViewIsExactlyWhatIsNamed(t *testing.T) {
 	for _, absent := range []string{
 		"/var/lib/liveswap", "/var/lib/liveswap/blog", "/var/lib/liveswap/blog/state.json",
 		"/var/lib/liveswap/blog/tmp", "/var/lib/liveswap/shop",
-		"/var/lib/hotserve", "/run/hotserve", "/etc/hotserve", "/etc/liveswap",
-		"/var/lib/hotserve-box", "/etc/blog/blog.env", "/run/user", "/home", "/opt", "/srv", "/var/lib",
+		"/var/lib/motel", "/run/motel", "/etc/motel", "/etc/liveswap",
+		"/var/lib/motel-box", "/etc/blog/blog.env", "/run/user", "/home", "/opt", "/srv", "/var/lib",
 		// Nothing widens a view any more, so a same-box database
 		// socket dir and an out-of-tree cache are absent like
 		// everything else nobody named.
@@ -313,9 +313,9 @@ func TestSandboxProbeCommand(t *testing.T) {
 	if !strings.Contains(full[2], "uid_map") || !strings.Contains(full[2], `"$$" = 1`) {
 		t.Fatalf("full probe checks both namespaces: %q", full[2])
 	}
-	// And the IPC namespace against the one hotserve passes in, and a
+	// And the IPC namespace against the one motel passes in, and a
 	// write into its /dev/shm named by the probe's nonce (#311).
-	if !strings.Contains(full[2], `"$i" != "$HOTSERVE_IPC_NS"`) || !strings.Contains(full[2], `stat -c %u /dev/mqueue`) || !strings.Contains(full[2], probeShmCanary("0a1b2c3d0a1b2c3d")) {
+	if !strings.Contains(full[2], `"$i" != "$MOTEL_IPC_NS"`) || !strings.Contains(full[2], `stat -c %u /dev/mqueue`) || !strings.Contains(full[2], probeShmCanary("0a1b2c3d0a1b2c3d")) {
 		t.Fatalf("full probe checks the IPC namespace and /dev/shm: %q", full[2])
 	}
 	// And seccomp: the manager skips every seccomp-backed setting where
@@ -420,7 +420,7 @@ func (f *fakeManagerClient) cachedSandboxCapability(measure func() error) error 
 // probeManager and here comes back as "this host cannot deliver the
 // sandbox" — a refusal whose own text says there is no fix in config —
 // instead of the error naming the uid, the socket and the lingering to
-// enable. hotserve refuses to come up either way; only the operator's
+// enable. motel refuses to come up either way; only the operator's
 // next hour differs.
 func TestMeasureSandboxProvesTheManagerBeforeMeasuring(t *testing.T) {
 	newApp := func(probeErr error) (*App, *fakeManagerClient) {
@@ -491,8 +491,8 @@ func TestMeasureSandboxProvesTheManagerBeforeMeasuring(t *testing.T) {
 }
 
 // TestProbeSandboxCapabilityRetriesTimeout pins the one retry, and
-// its shape. The probe's verdict decides whether hotserve starts at
-// all, and a refused start (exit 1) is the one exit hotserve.service
+// its shape. The probe's verdict decides whether motel starts at
+// all, and a refused start (exit 1) is the one exit motel.service
 // never retries — so a transient timeout under boot load must get a
 // second attempt in-process before it becomes a refusal to start.
 // Only a timeout: a probe that FAILED measured the host, and retrying
@@ -533,7 +533,7 @@ func TestProbeSandboxCapability(t *testing.T) {
 		// silently ignores PrivatePIDs=: the probe exits non-zero
 		// because the process is not pid 1. There is no lower tier to
 		// fall to, so this is a refusal — the operator must see why.
-		{"kernel ignores the PID namespace", errors.New("exit status 1"), []string{"sandbox probe unit", "exit status 1", "journalctl -t hotserve-sandbox-probe", "Debian 13", "systemd 257"}},
+		{"kernel ignores the PID namespace", errors.New("exit status 1"), []string{"sandbox probe unit", "exit status 1", "journalctl -t motel-sandbox-probe", "Debian 13", "systemd 257"}},
 		// A container, an LXC VPS, or a kernel built without user
 		// namespaces: the manager refuses the unit outright.
 		{"userns denied", denied, []string{"Permission denied", "Debian 13", "systemd 257"}},
@@ -583,7 +583,7 @@ func TestProbeSandboxCapability(t *testing.T) {
 
 func TestBuildEnvSandboxedHome(t *testing.T) {
 	spec := testSpec(t)
-	t.Setenv("HOME", "/var/lib/hotserve")
+	t.Setenv("HOME", "/var/lib/motel")
 	sandboxed, err := buildEnv(spec, "v1", spec.dirs.socket("0a1b2c3d0a1b2c3d"), spec.dirs.release("v1"))
 	must(t, err)
 	find := func(env []string, key string) (string, int) {
@@ -597,7 +597,7 @@ func TestBuildEnvSandboxedHome(t *testing.T) {
 		}
 		return val, n
 	}
-	// The inherited HOME (hotserve's state dir, absent from the view)
+	// The inherited HOME (motel's state dir, absent from the view)
 	// never reaches the unit: replaced, not merely shadowed.
 	if v, n := find(sandboxed, "HOME"); v != spec.dirs.shared || n != 1 {
 		t.Fatalf("sandboxed HOME = %q (×%d), want %s once", v, n, spec.dirs.shared)
@@ -648,7 +648,7 @@ func TestEveryLaunchIsSandboxed(t *testing.T) {
 
 	// A relaunch from a record is sandboxed like a deploy.
 	rig2 := newTestRig(t)
-	must(t, rig2.store.save(appState{CurrentVersion: "v1", Nonce: "0a1b2c3d0a1b2c3d", Handle: handleState{Unit: "hotserve-demo.v1.0a1b2c3d0a1b2c3d.service"}}))
+	must(t, rig2.store.save(appState{CurrentVersion: "v1", Nonce: "0a1b2c3d0a1b2c3d", Handle: handleState{Unit: "motel-demo.v1.0a1b2c3d0a1b2c3d.service"}}))
 	must(t, mkdirRelease(rig2.spec, "v1"))
 	rig2.runner.reattachOK = false
 	if err := rig2.ma.ensureRunning(); err != nil {
@@ -818,7 +818,7 @@ func TestStartLogsWhatItStarted(t *testing.T) {
 	}
 }
 
-// TestSandboxRootUnderTmpIsAllowed: only hotserve's own state is a
+// TestSandboxRootUnderTmpIsAllowed: only motel's own state is a
 // root worth failing config load over. A root under a path the sandbox
 // replaces (/tmp, /var/tmp — every t.TempDir, and the real-systemd
 // integration lane's own root) still works, because systemd creates
@@ -884,7 +884,7 @@ func TestWarnEnvFileInView(t *testing.T) {
 		envFile string
 		want    int
 	}{
-		{"outside every view", "/etc/hotserve/demo.env", 0},
+		{"outside every view", "/etc/motel/demo.env", 0},
 		{"in shared", filepath.Join(spec.dirs.shared, "demo.env"), 1},
 		{"in releases", filepath.Join(spec.dirs.releases, "v1", "demo.env"), 1},
 		{"no env_file", "", 0},
@@ -991,7 +991,7 @@ func TestValidateSandboxRootRefusesUnitSyntax(t *testing.T) {
 }
 
 // TestResolveBindSourcesRefusesPlantedSymlink: `shared` and the
-// release dirs live under the shared hotserve UID and
+// release dirs live under the shared motel UID and
 // appDirs.ensure's MkdirAll succeeds on a symlink, so a link planted
 // at an app's shared dir — pointing at the user manager's socket
 // directory — would have BindPaths= mount that inside the sandbox on
@@ -1023,7 +1023,7 @@ func TestResolveBindSourcesRefusesPlantedSymlink(t *testing.T) {
 	// by the missing-source case instead — fail-closed either way, but
 	// a different rule than the one under test. Neither is present in
 	// the plain build container.
-	for _, p := range []string{"/run/hotserve", "/run/user"} {
+	for _, p := range []string{"/run/motel", "/run/user"} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			continue
 		}
@@ -1057,7 +1057,7 @@ func TestResolveBindSourcesRefusesPlantedSymlink(t *testing.T) {
 	for _, tc := range []struct{ name, target, wantIn string }{
 		{"a closed tree", "/dev", "not the directory it names"},
 		{"the private tmp", "/tmp", "not the directory it names"},
-		{"hotserve's own state", "/run/hotserve", "not the directory it names"},
+		{"motel's own state", "/run/motel", "not the directory it names"},
 		{"the manager's socket dir", "/run/user", "not the directory it names"},
 		{"a sibling app's data", sibling, "not the directory it names"},
 		{"a sibling's data on another disk", elsewhere, "not the directory it names"},
@@ -1197,14 +1197,14 @@ func TestBindDestinationsAreTheConfiguredPaths(t *testing.T) {
 // TestOverlapIsSymmetric: a path that CONTAINS a protected tree
 // exposes it exactly as surely as one inside it, because the binds are
 // recursive — `shared -> /run` carries /run/user (the manager's
-// socket) and /run/hotserve (the admin socket) in with it, and
+// socket) and /run/motel (the admin socket) in with it, and
 // a root under one of them would carry every app's data in.
 func TestOverlapIsSymmetric(t *testing.T) {
 	if err := refusedAsBindSource("/run"); err == nil {
 		t.Error("a bind source containing /run/user was accepted at launch time")
 	}
 	if err := refusedAsBindSource("/etc"); err == nil {
-		t.Error("a bind source containing hotserve's own config was accepted at launch time")
+		t.Error("a bind source containing motel's own config was accepted at launch time")
 	}
 }
 
@@ -1599,46 +1599,46 @@ func TestBindSourceInsideTheBaseViewRefused(t *testing.T) {
 	}
 }
 
-// TestTheBoxExchangeTreeIsSupervisorState: /var/lib/hotserve-box holds
+// TestTheBoxExchangeTreeIsSupervisorState: /var/lib/motel-box holds
 // the box applier's record, results and baseline, written by root and
 // read by the handler (box/DESIGN-box.md, "Paths, owners, and who may
 // touch what"). An app holding it could read every result or plant a
 // bundle in in/, so it is refused as a bind source and as a root the
-// way hotserve's own state is — by its path components, so a sibling
+// way motel's own state is — by its path components, so a sibling
 // that only shares the prefix is not.
 func TestTheBoxExchangeTreeIsSupervisorState(t *testing.T) {
-	for _, p := range []string{"/var/lib/hotserve-box", "/var/lib/hotserve-box/out", "/var/lib/hotserve-box/in/x"} {
+	for _, p := range []string{"/var/lib/motel-box", "/var/lib/motel-box/out", "/var/lib/motel-box/in/x"} {
 		if err := refusedAsBindSource(p); err == nil {
 			t.Errorf("a mandatory bind source at %s was accepted: the app would hold the box's exchange tree", p)
-		} else if !strings.Contains(err.Error(), "overlaps /var/lib/hotserve-box,") {
+		} else if !strings.Contains(err.Error(), "overlaps /var/lib/motel-box,") {
 			t.Errorf("%s refused for the wrong reason: %v", p, err)
 		}
 	}
-	for _, bad := range []string{"/var/lib/hotserve-box", "/var/lib/hotserve-box/apps"} {
+	for _, bad := range []string{"/var/lib/motel-box", "/var/lib/motel-box/apps"} {
 		if err := validateSandboxRoot(bad); err == nil {
 			t.Errorf("root %s accepted: every app would live in the box's exchange tree", bad)
-		} else if !strings.Contains(err.Error(), "inside /var/lib/hotserve-box,") {
+		} else if !strings.Contains(err.Error(), "inside /var/lib/motel-box,") {
 			t.Errorf("root %s refused for the wrong reason: %v", bad, err)
 		}
 	}
-	if err := refusedAsBindSource("/var/lib/hotserve-boxes/blog"); err != nil {
+	if err := refusedAsBindSource("/var/lib/motel-boxes/blog"); err != nil {
 		t.Errorf("a path that only shares the prefix was refused: %v", err)
 	}
-	if err := validateSandboxRoot("/var/lib/hotserve-boxes"); err != nil {
+	if err := validateSandboxRoot("/var/lib/motel-boxes"); err != nil {
 		t.Errorf("a root that only shares the prefix was refused: %v", err)
 	}
 }
 
 // TestValidateSandboxRootFollowsSymlinks: the root check is lexical, so
-// `/srv/liveswap -> /var/lib/hotserve/apps` would otherwise walk past
-// the hotserve-state refusal entirely.
+// `/srv/liveswap -> /var/lib/motel/apps` would otherwise walk past
+// the motel-state refusal entirely.
 func TestValidateSandboxRootFollowsSymlinks(t *testing.T) {
 	base, err := os.MkdirTemp("/var", "rootalias-")
 	if err != nil {
 		t.Skipf("no writable dir for the alias: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
-	for _, target := range []string{"/var/lib/hotserve", "/usr/local"} {
+	for _, target := range []string{"/var/lib/motel", "/usr/local"} {
 		if _, err := os.Stat(target); os.IsNotExist(err) {
 			if err := os.MkdirAll(target, 0o750); err != nil {
 				t.Skipf("cannot create %s: %v", target, err)
@@ -1714,7 +1714,7 @@ func TestUnitForAcceptsACommandUnderASymlinkedRoot(t *testing.T) {
 // nothing binds it — but a mandatory bind that resolves onto such a
 // path *names* it, and naming is what puts something in the view. So
 // here the list must be both canonical and derived from where this
-// hotserve actually keeps its state, not a set of literals.
+// motel actually keeps its state, not a set of literals.
 func TestPlantedBindOntoTheSupervisorsRealStateRefused(t *testing.T) {
 	base, err := os.MkdirTemp("/var", "supervisor-")
 	if err != nil {
@@ -1723,21 +1723,21 @@ func TestPlantedBindOntoTheSupervisorsRealStateRefused(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 
 	// (a) A protected path reached through its canonical spelling: the
-	// literal is /var/lib/hotserve, the keys are really elsewhere.
-	realState := filepath.Join(base, "srv-hotserve")
+	// literal is /var/lib/motel, the keys are really elsewhere.
+	realState := filepath.Join(base, "srv-motel")
 	if err := os.MkdirAll(realState, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat("/var/lib/hotserve"); os.IsNotExist(err) {
+	if _, err := os.Lstat("/var/lib/motel"); os.IsNotExist(err) {
 		if err := os.MkdirAll("/var/lib", 0o755); err != nil {
 			t.Skipf("cannot prepare /var/lib: %v", err)
 		}
-		if err := os.Symlink(realState, "/var/lib/hotserve"); err != nil {
-			t.Skipf("cannot alias /var/lib/hotserve: %v", err)
+		if err := os.Symlink(realState, "/var/lib/motel"); err != nil {
+			t.Skipf("cannot alias /var/lib/motel: %v", err)
 		}
-		t.Cleanup(func() { _ = os.Remove("/var/lib/hotserve") })
+		t.Cleanup(func() { _ = os.Remove("/var/lib/motel") })
 		if err := refusedAsBindSource(realState); err == nil {
-			t.Errorf("a bind onto %s was accepted, but /var/lib/hotserve resolves there — the supervisor's keys", realState)
+			t.Errorf("a bind onto %s was accepted, but /var/lib/motel resolves there — the supervisor's keys", realState)
 		}
 	}
 
@@ -1753,11 +1753,11 @@ func TestPlantedBindOntoTheSupervisorsRealStateRefused(t *testing.T) {
 		t.Skipf("caddy.AppDataDir() does not follow XDG_DATA_HOME here (%s)", dataDir)
 	}
 	if err := refusedAsBindSource(dataDir); err == nil {
-		t.Errorf("a bind onto %s was accepted: that is where this hotserve keeps its TLS keys", dataDir)
+		t.Errorf("a bind onto %s was accepted: that is where this motel keeps its TLS keys", dataDir)
 	}
 
 	// (c) The admin socket directory as systemd actually made it.
-	runtimeDir := filepath.Join(base, "run-hotserve")
+	runtimeDir := filepath.Join(base, "run-motel")
 	if err := os.MkdirAll(runtimeDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -1997,7 +1997,7 @@ func TestSandboxFailedMeasurementIsNotCached(t *testing.T) {
 		}
 	}
 	if measured != 3 {
-		t.Fatalf("measured %d times, want 3: a failed verdict must not keep hotserve down until a redial", measured)
+		t.Fatalf("measured %d times, want 3: a failed verdict must not keep motel down until a redial", measured)
 	}
 	if c.sandboxGen != 0 {
 		t.Fatal("a failed verdict was cached")

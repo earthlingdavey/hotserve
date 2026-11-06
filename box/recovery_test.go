@@ -70,7 +70,7 @@ func TestRecoveryStates(t *testing.T) {
 		{phase: phaseSwapped, d: dPrev, state: "active", file: dPrev, result: phaseRolledBack, msg: msgRolledBackInterrupted, reloaded: 1},
 		{phase: phaseSwapped, d: dOther, file: dOther, result: phaseUnknown, msg: msgChanged},
 		// init's records recover as the applier's: a swap whose reload
-		// was never confirmed rolls back, whether or not hotserve runs.
+		// was never confirmed rolls back, whether or not motel runs.
 		{phase: phaseSwapped, origin: originInit, d: dNew, state: "inactive", file: dPrev, result: phaseFailed, msg: msgInterruptedStopped},
 		{phase: phaseSwapped, origin: originInit, d: dNew, state: "active", file: dPrev, result: phaseRolledBack, msg: msgRolledBackInterrupted, reloaded: 1},
 		{phase: phaseNoChange, origin: originInit, d: dPrev, file: dPrev, advanced: true, result: phaseNoChange},
@@ -121,7 +121,7 @@ func TestRecoveryStates(t *testing.T) {
 				Error: r.recError,
 			})
 			// A temporary the crash left beside the Caddyfile goes too.
-			if err := os.WriteFile(filepath.Join(b.path("etc/hotserve"), ".Caddyfile.box-"+id), []byte("half"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(b.path("etc/motel"), ".Caddyfile.box-"+id), []byte("half"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			if err := b.run(hooks{}); err != nil {

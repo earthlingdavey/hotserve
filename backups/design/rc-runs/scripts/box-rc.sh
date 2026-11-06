@@ -5,21 +5,21 @@
 # whose sudo is root's. For the RC checks against real B2.
 set -eu
 mount --make-rshared /
-cd /root && cp /rc/hotserve_0.3.0.rc1_arm64.deb .
+cd /root && cp /rc/motel_0.3.0.rc1_arm64.deb .
 apt-get update -qq
-apt-get install -y ./hotserve_0.3.0.rc1_arm64.deb 2>&1 | grep -E "Setting up (hotserve|restic|sqlite3)|Backups:|hotserve-backup setup"
-systemctl enable --now hotserve >/dev/null 2>&1
-hotserve deploy-keygen --out /etc/hotserve/deploy.key >/dev/null
-cat >/etc/hotserve/Caddyfile <<'EOF'
+apt-get install -y ./motel_0.3.0.rc1_arm64.deb 2>&1 | grep -E "Setting up (motel|restic|sqlite3)|Backups:|motel-backup setup"
+systemctl enable --now motel >/dev/null 2>&1
+motel deploy-keygen --out /etc/motel/deploy.key >/dev/null
+cat >/etc/motel/Caddyfile <<'EOF'
 {
-	admin unix//run/hotserve/admin.sock
+	admin unix//run/motel/admin.sock
 	auto_https off
 	liveswap {
 		root /var/lib/liveswap
 		allow_insecure_http
 		artifact_allowlist 127.0.0.1:8200
 		deploy_trust local {
-			public_key /etc/hotserve/deploy.key.pub
+			public_key /etc/motel/deploy.key.pub
 			audience rc
 		}
 		app demo {
@@ -40,19 +40,19 @@ cat >/etc/hotserve/Caddyfile <<'EOF'
 	liveswap_webhook
 }
 EOF
-systemctl restart hotserve
+systemctl restart motel
 w=$(mktemp -d)
-printf '#!/bin/sh\nexec /usr/bin/hotserve respond --listen "unix/$SOCKET" "hello rc"\n' >"$w/server"; chmod +x "$w/server"
+printf '#!/bin/sh\nexec /usr/bin/motel respond --listen "unix/$SOCKET" "hello rc"\n' >"$w/server"; chmod +x "$w/server"
 mkdir -p /srv/art && tar -czf /srv/art/demo.tar.gz -C "$w" server
-nohup /usr/bin/hotserve file-server --listen 127.0.0.1:8200 --root /srv/art >/var/log/artserver.log 2>&1 &
+nohup /usr/bin/motel file-server --listen 127.0.0.1:8200 --root /srv/art >/var/log/artserver.log 2>&1 &
 sleep 2
-TOKEN=$(hotserve deploy-token --key /etc/hotserve/deploy.key --audience rc --ttl 10m)
+TOKEN=$(motel deploy-token --key /etc/motel/deploy.key --audience rc --ttl 10m)
 i=0; until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8081/demo)" = 200 ]; do i=$((i+1)); [ $i -ge 30 ] && exit 1; sleep 1; done
 curl -s -o /dev/null -w 'deploy: %{http_code}\n' --max-time 90 -X POST -H "Authorization: Bearer $TOKEN" \
 	-d '{"url":"http://127.0.0.1:8200/demo.tar.gz","version":"r1"}' http://127.0.0.1:8081/demo
 S=/var/lib/liveswap/demo/shared
-su -s /bin/sh hotserve -c "sqlite3 $S/app.db \"pragma journal_mode=wal; create table notes(id integer primary key, body text); insert into notes(body) values ('first'),('second');\" >/dev/null && mkdir -p $S/uploads && echo 'hello rc' > $S/uploads/hello.txt && head -c 65536 /dev/urandom > $S/uploads/random.bin"
+su -s /bin/sh motel -c "sqlite3 $S/app.db \"pragma journal_mode=wal; create table notes(id integer primary key, body text); insert into notes(body) values ('first'),('second');\" >/dev/null && mkdir -p $S/uploads && echo 'hello rc' > $S/uploads/hello.txt && head -c 65536 /dev/urandom > $S/uploads/random.bin"
 adduser --disabled-password --comment "" bob >/dev/null; usermod -aG sudo,adm bob
 echo 'bob ALL=(ALL:ALL) NOPASSWD: ALL' >/etc/sudoers.d/bob && chmod 0440 /etc/sudoers.d/bob
-hotserve-backup validate /etc/hotserve/Caddyfile
-echo "box ready: $(dpkg -s hotserve | grep '^Version'), restic $(restic version | awk '{print $2}'), hotserve uid $(id -u hotserve)"
+motel-backup validate /etc/motel/Caddyfile
+echo "box ready: $(dpkg -s motel | grep '^Version'), restic $(restic version | awk '{print $2}'), motel uid $(id -u motel)"

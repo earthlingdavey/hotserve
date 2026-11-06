@@ -54,7 +54,7 @@ pinned.
 | R12 | `snapshots --json`: `id`, `time`, `tags`; `--host`/`--tag` filter [H] | `snapshots`, `history`, the records | `ACleanRunRecord…`, `AResticUnitStoresItsTimesInUTC` (structs mirrored) | status 4, check 7 | held |
 | R13 | `snapshots` leaves out a snapshot it cannot load, exits 0, says so on stderr alone [measured] | `besides`: anything on stderr → the listing is not believed | `ResticSnapshotsLeavesOutWhatItCannotLoadAndExitsZero` | — | held; its `Ignoring "<id>"` wording picks only the message (`ignoringRe`) — **tighten** the test to that regex (one line) |
 | R14 | `restore <id>:<absent>` exits 1; `--include` of nothing exits 0; the summary counts every entry; a zero field is left out [M7, M25] | `fetch`, `fetchedAll` | `ResticRestoreSaysWhatItRestored` | restore 0 | held |
-| R15 | Restore as an unprivileged uid: `lchown` EPERM overlooked, exit 0, every entry counted, files the restorer's [M6] | every fetch (restore, drill) runs as `hotserve-backup` with no `CAP_CHOWN` | **none** | restore 8b, 15, every drill | **pin** — the Debian-14 risk (restic 0.19 reworks ownership) |
+| R15 | Restore as an unprivileged uid: `lchown` EPERM overlooked, exit 0, every entry counted, files the restorer's [M6] | every fetch (restore, drill) runs as `motel-backup` with no `CAP_CHOWN` | **none** | restore 8b, 15, every drill | **pin** — the Debian-14 risk (restic 0.19 reworks ownership) |
 | R16 | `stats --mode restore-size --json`: `total_size`, `snapshots_count`; an absent id exits 0 with 0 snapshots [M33] | `snapshotSize` → `room` before every fetch | **none** | restore 13b, 13c | **pin** |
 | R17 | `cat config --no-lock`: 0 and the config's `id`, 10, 12; `init --json` one line with the id; init on an existing repository exits 1 in one of two wordings [M39, M40, M47] | setup's look and init, the probe | `ResticInitSaysWhenTheRepositoryExists` (local wording) | setup 3, 7, 9 (S3 wording) | held |
 | R18 | `check --json`: `num_errors`, `broken_packs`; exit 10 with an error counted; the group is the pack id's first byte mod 52, plus one [M73, M74] | `checkRepository` | `TheCheckFindsARottenPackOnlyInItsGroup` | check 2, 3 | held |
@@ -62,7 +62,7 @@ pinned.
 | R20 | `--cleanup-cache` on `cat config` removes a month-old check cache [M82] | the probe | none | none | housekeeping only (≤ 47 MiB per hard kill): listed |
 | R21 | Exclude file: `\` escapes `* ? [ \`, `$VAR` is expanded, `$$` is `$` [M24] | `excludeFile`: a declared database inside a `files` path is left out, its look-alikes kept | **none** | restore 7 (a plain name only) | **pin** — wrong, a look-alike file is silently not backed up |
 | R22 | A symlink is stored as a link, a FIFO as a node [H, M5] | restore 8 | none | restore 8 | held (e2e) |
-| R23 | `forget` groups by (host, paths) [H] | paths `/backup/<app>`, `/hotserve-clean-<app>` | none | backup 2; check's retention | held (e2e); the box never runs `forget` |
+| R23 | `forget` groups by (host, paths) [H] | paths `/backup/<app>`, `/motel-clean-<app>` | none | backup 2; check's retention | held (e2e); the box never runs `forget` |
 | R24 | A file that vanishes mid-backup: exit 0, nothing said [M11] | not leaned on: `verify` looks regardless | — | — | n/a |
 
 ### sqlite3 3.46
@@ -105,7 +105,7 @@ pinned.
 | Y18 | The shipped units: capabilities and hardening, `ConditionPathExists=`, `After=`, the timers [M54–M57, M60, M61] | none | e2e units 0–5, smoke |
 | Y19 | `deb-systemd-helper`/`-invoke`, `policy-rc.d` [M58, M68, M69] | none | smoke |
 
-### Caddy (this repository's `hotserve adapt`), and the box's own programs
+### Caddy (this repository's `motel adapt`), and the box's own programs
 
 | # | Fact | Integration | Verdict |
 |---|---|---|---|
@@ -184,7 +184,7 @@ build's, kept for the record:
 
 | Call | Fails how | What is done |
 |---|---|---|
-| `useradd …` (setup's `makeAccount`), now with setup's context | exits non-zero | as today: "making the hotserve-backup account: …" with useradd's words |
+| `useradd …` (setup's `makeAccount`), now with setup's context | exits non-zero | as today: "making the motel-backup account: …" with useradd's words |
 | | the context ends (Ctrl-C, SIGTERM to setup) | **interrupted** (SIGINT, what Ctrl-C at the terminal already sends it — useradd writes the account databases, and what it does about an interrupt is its own), killed only if still there 10 s on (`WaitDelay`); setup ends with the context's error — the next setup looks first, as today. A useradd ended half way can leave its group made and its account not (M66: useradd then exits 9, in its own words) — as Ctrl-C at the terminal already could |
 
 ## 4. Tests first — each seen failing, the message written down
@@ -253,7 +253,7 @@ The wrong key, the whole way, in the first topology (two containers on
 the compose network): **exit 1 after 900 s**, "Is there a repository at
 the following location?" — M15 had 864 s; the README says both. A first
 draft named the compose network and image by this checkout's folder
-(`hotserve-backups-v2_default`), which another checkout does not have:
+(`motel-backups-v2_default`), which another checkout does not have:
 the image is tagged, and the fixture shares the client's namespace.
 
 ### Item 3 — the cache key
@@ -288,7 +288,7 @@ owner's answer, on the one that went back on an approved option:
 | 2 | the ctx branch says "context canceled" of a useradd that finished | genuine while the context stayed | gone with 1 | — |
 | 3 | `e2e-backup`'s key on go.sum alone is never saved again after a Go change; the dev image `golang:1.27-trixie` follows patch releases | genuine | the dev image's `go env GOVERSION` (a step before the cache, base compose file, no `.cache` mounts) in the key; restore-keys: the same Go first, any after (the module cache is any Go's) | CI only: checked after the push |
 | 4 | `WaitDelay` on success: a helper holding the pipe makes a made account a failure | genuine while the context stayed | gone with 1 | — |
-| 5 | nothing pins that no restic argv sets `--stuck-request-timeout` | genuine | a row in `TestWhatEveryResticUnitIsGiven` (was `…RunsInUTC`): every restic unit of a run, a drill, a restore | `--stuck-request-timeout 0` in the upload's argv: `hotserve_backup_upload_blog_….service sets restic's own bound on a stuck request` |
+| 5 | nothing pins that no restic argv sets `--stuck-request-timeout` | genuine | a row in `TestWhatEveryResticUnitIsGiven` (was `…RunsInUTC`): every restic unit of a run, a drill, a restore | `--stuck-request-timeout 0` in the upload's argv: `motel_backup_upload_blog_….service sets restic's own bound on a stuck request` |
 | 6 | `validate`'s refusal still said sqlite3 "opens nothing … and does not say so" | genuine | "sqlite3 does not open a path past its own limit as itself", there and in liveswap's README; `TestValidateRejects`'s row holds the reason | `want error containing "at most: sqlite3 does not open a path past its own limit as itself", got …` |
 | 7 | `reportDrill` (and the run's `report`) print record fields uncleaned, where status cleans | genuine by the code's own rule (each field is `record.Text`ed where it is made: no path known) | `say` — a line of a record's words through `record.Clean` — in both; `TestNothingOfARecordReachesTheTerminalUnlookedAt` | `a run's report printed a control character ('\x1b')` · `a drill's report printed a control character ('\x1b')` |
 | 8 | the exclude pin removes a `/backup` it did not make | genuine (test) | removed only where the test made it | test only |
@@ -297,7 +297,7 @@ owner's answer, on the one that went back on an approved option:
 | 11 | the adapter built twice a package run | genuine (~2.5 s) | once, by the first test that asks (`sync.Once`), removed in `TestMain` | test only |
 | 12 | the README procedure leaves out the dev image | **not genuine**: both builds are `CGO_ENABLED=0`, and `make test` needs neither restic nor sqlite3 — the dev image's release reaches nothing a lane holds | answered | — |
 
-A printed line changes (6): `hotserve validate`'s refusal of a path
+A printed line changes (6): `motel validate`'s refusal of a path
 over 400 bytes — for the PR body.
 
 ## 4d. PR #162, and Copilot
@@ -459,7 +459,7 @@ group, #165 pin-watch), with `f646a65` (lint: four Caddyfile stats
 named) and `54f6e84` (the box check matching the logged error too);
 `backups/go.mod` tidied there. Merged into this branch at the owner's
 word: **`27db308`**, no conflict (the one file both changed,
-`backups/cmd/hotserve-backup/main.go`, merged by itself). `make
+`backups/cmd/motel-backup/main.go`, merged by itself). `make
 vulncheck` clean in all four modules; every lane green — the
 integration lane run whole (89 passed, none skipped), secretscan 271
 commits, no leaks, e2e-backup's six suites, e2e's box suite passing;
@@ -475,7 +475,7 @@ change. The owner: a separate PR.
 
 - **Seen:** once, `make test-integration` run uncached at `2ea227d`:
   `runner_systemd_integration_test.go:386: journal tail of
-  hotserve-itest.journaltail.0a1b2c3d0a1b2c3d.prestart.service: [],
+  motel-itest.journaltail.0a1b2c3d0a1b2c3d.prestart.service: [],
   <nil>`, after 5.13 s. Seven full lane runs that day: one failure. CI's
   record of it is mostly replayed results (§4e).
 - **The test:** a transient unit on root's user manager runs `echo
@@ -487,7 +487,7 @@ change. The owner: a separate PR.
   `systemd-journald` stopped (SIGSTOP) for its first 2 s, fails with the
   same message after 5.16 s; the control passes. The journal holds both
   lines, with `MESSAGE`, `PRIORITY`, `SYSLOG_FACILITY`,
-  `SYSLOG_IDENTIFIER=hotserve-itest`, `_GID`, `_HOSTNAME`, `_PID`,
+  `SYSLOG_IDENTIFIER=motel-itest`, `_GID`, `_HOSTNAME`, `_PID`,
   `_RUNTIME_SCOPE`, `_STREAM_ID`, `_TRANSPORT=stdout`, `_UID`, and
   **without** `_SYSTEMD_USER_UNIT`, `_SYSTEMD_UNIT`, `_SYSTEMD_CGROUP`,
   `_SYSTEMD_INVOCATION_ID`, `_SYSTEMD_SLICE`, `_SYSTEMD_USER_SLICE`,
@@ -507,10 +507,10 @@ change. The owner: a separate PR.
   within `journalTailTimeout` (5 s). With the lines stored without unit
   fields, `LogTail` is empty and `LogTailError` is empty: the response
   carries none of the app's output, and no word of why.
-- **Constraints:** the units' `SyslogIdentifier` is `hotserve-<app>`
+- **Constraints:** the units' `SyslogIdentifier` is `motel-<app>`
   (`runner_systemd.go`), one for every unit of an app — the live
   instance writes under it during a deploy too; operators are told to
-  read an app's output with `journalctl -t hotserve-<app>`
+  read an app's output with `journalctl -t motel-<app>`
   (`liveswap/README.md`, `docs/first-deploy.md`,
   `docs/after-first-deploy.md`). liveswap reads a unit's `MainPID`
   (`statusFromProps`), not `ExecMainPID`.
@@ -548,11 +548,11 @@ Where backups lean on Caddy, what each buys, what holds it:
 
 | Coupling | What it buys | Held by | Verdict |
 |---|---|---|---|
-| The plan is `hotserve adapt --adapter caddyfile`: Caddy's own reading of imports, snippets, heredocs and `{$NAME}`, from any depth (`plan.Inspect`) | Exactness. The import reader it replaced (#146) was where that PR's findings clustered | the adapted JSON is liveswap's own schema under `apps.liveswap` (ours); e2e every run | keep |
+| The plan is `motel adapt --adapter caddyfile`: Caddy's own reading of imports, snippets, heredocs and `{$NAME}`, from any depth (`plan.Inspect`) | Exactness. The import reader it replaced (#146) was where that PR's findings clustered | the adapted JSON is liveswap's own schema under `apps.liveswap` (ours); e2e every run | keep |
 | Caddy's empty-glob warning, as JSON on stderr (`emptyGlobs`) | Refusing an import a run's view cannot see — the silent shrink of the plan | C1 | keep |
 | `{$NAME}` substituted in the text before any token; unset with no default is empty; `:default` | Refusing a root or backup path that depends on the server's environment; adapting an ordinary production Caddyfile with no environment | C2 (new), e2e backup 5, 5b | keep |
-| The placeholder trials: one adapt per variable, after the base, every run; the next kind of value chosen by whether Caddy's error quotes the last | as above | Caddy's error quoting a value only speeds the choice — correctness does not rest on it | **measured: ~25 ms an adapt (63 ms the first, cold)**, so (1 + N) × 25 ms a run. Costs nothing worth removing. The one reduction — D10(b), the plan unit given hotserve's own `EnvironmentFile=` so that no trial is needed — puts the server's secrets in that unit's memory: **a change to the security model, the owner's** |
-| `cmd/hotserve`'s check at `validate`/`reload` (#147): `caddycmd.Commands()[name].CobraFunc`, `caddycmd.LoadConfig`, tokens' `File()` | Refusing, before it goes live, a declaration a run would not see | its own tests (the hooks are there), e2e status 8, 8b | keep |
+| The placeholder trials: one adapt per variable, after the base, every run; the next kind of value chosen by whether Caddy's error quotes the last | as above | Caddy's error quoting a value only speeds the choice — correctness does not rest on it | **measured: ~25 ms an adapt (63 ms the first, cold)**, so (1 + N) × 25 ms a run. Costs nothing worth removing. The one reduction — D10(b), the plan unit given motel's own `EnvironmentFile=` so that no trial is needed — puts the server's secrets in that unit's memory: **a change to the security model, the owner's** |
+| `cmd/motel`'s check at `validate`/`reload` (#147): `caddycmd.Commands()[name].CobraFunc`, `caddycmd.LoadConfig`, tokens' `File()` | Refusing, before it goes live, a declaration a run would not see | its own tests (the hooks are there), e2e status 8, 8b | keep |
 | liveswap's package-level record of where each `backup` and `root` came from | as above | decided to stay (2026-09-25) | keep |
 
 **Nothing found that buys nothing.** The coupling that remains is
