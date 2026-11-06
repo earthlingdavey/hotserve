@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -141,24 +142,31 @@ class ClaudeTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             usage.check_machine("a-1")
         self.assertIn("a-1 is a new machine (files so far: a)", err.getvalue())
+        usage.write_csv(os.path.join(usage.CLAUDE_DIR, "Not-A-Label.csv"), KEYS + COLS, [])
+        with self.assertRaises(SystemExit) as cm:  # it would be summed, and no --machine could ever name it
+            usage.machines()
+        self.assertIn("Not-A-Label.csv: not a machine file", str(cm.exception))
 
     def test_the_label_is_given_once_and_the_match_is_the_last_given(self):
         os.makedirs("usage")
-        self.assertEqual(usage.local_settings("", ""), ("", "motel"))
+        self.assertEqual(usage.local_settings("", ""), ("", ""))  # "" is the default, applied by main, never saved
         self.assertEqual(usage.local_settings("a", "x,y"), ("a", "x,y"))
-        usage.save_local("a", "x,y")
-        self.assertEqual(usage.local_settings("", ""), ("a", "x,y"))
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(usage.local_settings("a", " x, y "), ("a", "x,y"))  # the same names, spelt otherwise
+            usage.save_local("a", "x,y")  # the first save has nothing to compare with
         self.assertEqual(out.getvalue(), "")
+        self.assertEqual(usage.local_settings("", ""), ("a", "x,y"))
+        self.assertEqual(usage.local_settings("a", " x, y "), ("a", "x,y"))  # the same names, spelt otherwise
+        self.assertEqual(usage.local_settings("a", "z"), ("a", "z"))  # a new match replaces the kept one...
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(usage.local_settings("a", "z"), ("a", "z"))  # a new match replaces the kept one, said so
+            usage.save_local("a", "z")  # ...said so where it becomes true
         self.assertIn("usage/local.json now keeps --match 'z' (was 'x,y')", out.getvalue())
-        usage.save_local("a", "z")
         self.assertEqual(usage.local_settings("", ""), ("a", "z"))
         usage.save_local("", "z")  # a hand-emptied label is repaired by the next run that gives one
         self.assertEqual(usage.local_settings("b", ""), ("b", "z"))
         usage.save_local("a", "z")
+        with self.assertRaises(SystemExit) as cm:  # a bad flag is refused as such, not compared with the kept label
+            usage.local_settings("Laptop", "")
+        self.assertIn("must be lowercase", str(cm.exception))
         with self.assertRaises(SystemExit) as cm:
             usage.local_settings("b", "")
         self.assertIn("machine is 'a' and --machine says 'b'", str(cm.exception))
@@ -206,6 +214,59 @@ class ClaudeTests(unittest.TestCase):
         self.assertEqual(usage.machines(), ["a", "b"])
         self.assertEqual(usage.read_claude(),
                          rows(("2026-09", "m", 1, 10), ("2026-09", "m", 2, 20), ("2026-10", "m", 3, 30)))
+
+
+class MainTests(unittest.TestCase):
+    """collect-claude end to end: what a failed run leaves alone and a good one writes, in that order."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        cwd = os.getcwd()
+        os.chdir(self.dir.name)
+        self.addCleanup(os.chdir, cwd)
+        os.makedirs(usage.CLAUDE_DIR)
+        os.makedirs("docs")
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        shutil.copy(os.path.join(repo, usage.FACTORS), usage.FACTORS)  # the real one: render needs its whole shape
+        with open(usage.COPILOT_CSV, "w") as f:
+            f.write("month,ai_credits_usd,note\n")
+        self.root = os.path.join(self.dir.name, "projects")
+        os.makedirs(os.path.join(self.root, "-x-motel"))
+        with open(os.path.join(self.root, "-x-motel", "s.jsonl"), "w") as f:
+            f.write(json.dumps({"timestamp": "2026-09-01T00:00:00Z", "requestId": "r", "message": {
+                "id": "m", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 2}}}) + "\n")
+
+    def run_main(self, *argv):
+        sys.argv = ["usage.py", "collect-claude", "--projects", self.root, *argv]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                usage.main()
+            except SystemExit as e:
+                return str(e), err.getvalue()
+        return None, err.getvalue()
+
+    def test_a_failed_run_writes_nothing_and_a_good_one_everything(self):
+        exit_, _ = self.run_main("--machine", "a", "--match", "nothing")
+        self.assertIn("no project directory", exit_)
+        self.assertFalse(os.path.exists(usage.LOCAL))  # the label is not pinned by a run that wrote no file
+        self.assertFalse(os.path.exists(usage.claude_path("a")))
+        exit_, err = self.run_main("--machine", "a", "--match", "motel")
+        self.assertIsNone(exit_, exit_)
+        self.assertEqual(err, "")
+        self.assertEqual(usage.read_local(), {"machine": "a", "match": "motel"})
+        self.assertEqual([(r["month"], r["calls"]) for r in usage.read_csv(usage.claude_path("a"))], [("2026-09", "1")])
+        with open(usage.FOOTPRINT) as f:
+            self.assertIn("| 2026-09 | 1 |", f.read())
+        exit_, err = self.run_main("--machine", "b", "--match", "")  # the same machine under a second label
+        self.assertIn("machine is 'a' and --machine says 'b'", exit_)
+        shutil.copy(usage.claude_path("a"), usage.claude_path("c"))  # ...and from a fresh checkout
+        os.remove(usage.LOCAL)
+        exit_, err = self.run_main("--machine", "b", "--match", "")
+        self.assertIsNone(exit_, exit_)
+        self.assertIn("b is a new machine (files so far: a, c)", err)
+        self.assertIn("usage/claude/a.csv holds a row identical", err)
+        self.assertEqual(usage.read_local(), {"machine": "b", "match": ""})  # the default is applied, not saved
 
 
 class HandEditedFileTests(unittest.TestCase):

@@ -88,7 +88,16 @@ occurrence, detection; fix size, risk):
   stop, because two machines can produce one identical small row (a
   single title call) and a stop would leave no way on. A fingerprint
   committed beside each machine file would decide it exactly, and is a
-  second file format for a case the warning already names.
+  second file format for a case the warning already names; a label
+  kept under $HOME would follow the machine across checkouts, and needs
+  a writable mount the `usage` service does not have (a missing host
+  directory is created root-owned).
+- A --match given to add a name replaces the remembered list instead,
+  and from then on the machine's months are all smaller than committed:
+  the merge rule keeps them, warning that the source shrank, until the
+  full list is typed again (S3 O5 D1 = 15; size 2, risk 2). The run
+  says what the file now keeps and what it kept; a union could never
+  drop a name without deleting the file.
 """
 
 import argparse
@@ -108,6 +117,7 @@ from datetime import datetime
 
 CLAUDE_DIR = "usage/claude"
 LOCAL = "usage/local.json"  # gitignored: this checkout's machine label and match names
+DEFAULT_MATCH = "motel"
 RUNS_CSV = "usage/runs.csv"
 JOBS_CSV = "usage/jobs.csv"
 COPILOT_CSV = "usage/copilot.csv"
@@ -209,54 +219,78 @@ def claude_path(machine):
 
 
 def machines():
-    return sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(claude_path("*")))
+    """The labels with a file; a file no label can name stops the run, or it would be summed and never reachable."""
+    out = []
+    for path in sorted(glob.glob(claude_path("*"))):
+        m = os.path.basename(path)[:-len(".csv")]
+        if not MACHINE.fullmatch(m):
+            sys.exit(f"{path}: not a machine file (a label is lowercase letters, digits and hyphens); rename or remove it")
+        out.append(m)
+    return out
+
+
+def so_far():
+    return "files so far: " + (", ".join(machines()) or "none yet")
+
+
+def label(machine):
+    """A valid --machine: it names this machine's file and is a public label. A bad one stops the run."""
+    if not machine:
+        sys.exit("--machine is not set: each machine's sessions go in their own file, so name this one "
+                 f"(make usage USAGE_MACHINE=<label>; the same label every run; {so_far()})")
+    if not MACHINE.fullmatch(machine):
+        sys.exit(f"--machine {machine!r} must be lowercase letters, digits and hyphens: it names "
+                 f"{CLAUDE_DIR}/<machine>.csv, a public file ({so_far()})")
+    return machine
 
 
 def check_machine(machine):
-    """--machine names this machine's file and is a public label; a bad one stops the run before anything is read."""
+    """The resolved label, checked before anything is read; a label with no file yet is said so."""
     have = machines()
-    so_far = "files so far: " + (", ".join(have) or "none yet")
-    if not machine:
-        sys.exit("--machine is not set: each machine's sessions go in their own file, so name this one "
-                 f"(make usage USAGE_MACHINE=<label>; the same label every run; {so_far})")
-    if not MACHINE.fullmatch(machine):
-        sys.exit(f"--machine {machine!r} must be lowercase letters, digits and hyphens: it names "
-                 f"{CLAUDE_DIR}/<machine>.csv, a public file ({so_far})")
-    if have and machine not in have:
+    if label(machine) not in have and have:
         # A fresh checkout on a machine that has a file: local.json is not there to say so,
         # and same_machine catches it only while a committed row is still what this run counts.
-        warn(f"{machine} is a new machine ({so_far}); if this one already has a file, use that label")
+        warn(f"{machine} is a new machine ({so_far()}); if this one already has a file, use that label")
+
+
+def read_local():
+    """What this checkout's earlier runs saved in LOCAL: {} before the first."""
+    if not os.path.exists(LOCAL):
+        return {}
+    try:
+        with open(LOCAL) as f:
+            saved = json.load(f)
+    except ValueError as e:
+        sys.exit(f"{LOCAL}: not valid JSON: {e}; delete it and pass --machine and --match again")
+    if not isinstance(saved, dict) or not all(isinstance(saved.get(k, ""), str) for k in ("machine", "match")):
+        sys.exit(f"{LOCAL}: expected an object of two strings; delete it and pass --machine and --match again")
+    if saved.get("machine") and not MACHINE.fullmatch(saved["machine"]):
+        sys.exit(f"{LOCAL}: machine {saved['machine']!r} is not a label; delete the file and pass --machine and --match again")
+    return saved
 
 
 def local_settings(machine, match):
-    """(machine, match) for this run: the flags, else what the checkout's first run saved in LOCAL."""
-    saved = {}
-    if os.path.exists(LOCAL):
-        try:
-            with open(LOCAL) as f:
-                saved = json.load(f)
-        except ValueError as e:
-            sys.exit(f"{LOCAL}: not valid JSON: {e}; delete it and pass --machine and --match again")
-        if not isinstance(saved, dict) or not all(isinstance(saved.get(k, ""), str) for k in ("machine", "match")):
-            sys.exit(f"{LOCAL}: expected an object of two strings; delete it and pass --machine and --match again")
+    """(machine, match) for this run: the flags, else what LOCAL remembers; a match of "" is the default."""
+    saved = read_local()
     was, kept = saved.get("machine") or "", ",".join(match_names(saved.get("match") or ""))
-    if was and not MACHINE.fullmatch(was):
-        sys.exit(f"{LOCAL}: machine {was!r} is not a label; delete the file and pass --machine and --match again")
-    if machine and was and machine != was:
+    if machine and label(machine) != was and was:
         how = (f"`git mv {claude_path(was)} {claude_path(machine)}` and delete {LOCAL}" if os.path.exists(claude_path(was))
                else f"delete {LOCAL}, since {claude_path(was)} does not exist here")
         sys.exit(f"{LOCAL} says this checkout's machine is {was!r} and --machine says {machine!r}: one machine "
                  f"under two labels is summed twice. To relabel it, {how}")
-    if match and not match_names(match):
+    names = match_names(match)
+    if match and not names:
         sys.exit(f"--match {match!r} names nothing: a name, or several comma-separated")
-    match = ",".join(match_names(match))
-    if match and kept and match != kept:
-        # Said out loud: a narrower list from here on is an undercount nothing else reports.
-        print(f"claude: {LOCAL} now keeps --match {match!r} (was {kept!r})")
-    return machine or was, match or kept or "motel"
+    return machine or was, ",".join(names) or kept
 
 
 def save_local(machine, match):
+    """What was given, not the default, so a changed default still reaches every checkout."""
+    kept = ",".join(match_names(read_local().get("match") or ""))
+    if os.path.exists(LOCAL) and match != kept:
+        # Said out loud, once it is true: a narrower list from here on is an undercount the
+        # merge rule reports as the source shrinking.
+        print(f"claude: {LOCAL} now keeps --match {match or 'the default'!r} (was {kept or 'the default'!r})")
     with open(LOCAL, "w") as f:
         json.dump({"machine": machine, "match": match}, f)
         f.write("\n")
@@ -759,7 +793,7 @@ def main():
     ap.add_argument("--repo", help="owner/name for collect-actions (make passes USAGE_REPO)")
     ap.add_argument("--match", default="",
                     help="substring of the project directories to count; several, comma-separated, for a checkout that "
-                         f"kept an older name (default motel; remembered in {LOCAL}, so given once)")
+                         f"kept an older name (default {DEFAULT_MATCH}; remembered in {LOCAL}, so given once)")
     ap.add_argument("--machine", default="",
                     help=f"this machine's public label: its sessions go in {CLAUDE_DIR}/<machine>.csv (make passes "
                          f"USAGE_MACHINE; given once per checkout, then {LOCAL} remembers it)")
@@ -784,7 +818,7 @@ def main():
     # leaves the page behind its CSVs.
     groups = []
     if "collect-claude" in args.steps:
-        fresh = collect_claude(args.projects, match)
+        fresh = collect_claude(args.projects, match or DEFAULT_MATCH)
         same_machine(machine, fresh)
         os.makedirs(CLAUDE_DIR, exist_ok=True)
         groups.append([(claude_path(machine), ["month", "model"], CLAUDE_COLS, fresh)])
