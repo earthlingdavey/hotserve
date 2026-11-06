@@ -201,9 +201,9 @@ var ed25519Order, _ = new(big.Int).SetString("7237005577332262213973186563042994
 // the commit's id covers the bytes, so S + L would be a second commit
 // id for one signed payload, as a re-wrapped armor would. The armor's
 // rule, for the scalar. A signature of another key type, or a blob this
-// cannot read, is ssh-keygen's to judge: an ECDSA signature's (r, n−s)
-// is a signer's own form as much as (r, s), with no spelling to hold it
-// to, and stays owed (DESIGN-box.md, Triage).
+// cannot read, is ssh-keygen's to judge: RSA's is unique, and ECDSA —
+// whose (r, n−s) is a signer's own form as much as (r, s), with no
+// spelling to hold it to — is no longer a signer type (signers.go).
 func canonicalScalar(blob []byte) bool {
 	var sig struct {
 		Version   uint32

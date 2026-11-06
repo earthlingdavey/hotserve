@@ -28,7 +28,7 @@ type manifest struct {
 	Path string `json:"path"`
 	// Cases name commits: base (the baseline), mid, head (two signed
 	// commits above it), unsigned and mallory (above head: no
-	// signature; a key not listed), bob (above head, a listed ECDSA
+	// signature; a key not listed), bob (above head, a listed RSA
 	// key), after_unsigned (signed, above unsigned), special (above
 	// head: a symlink, a submodule and a directory beside the file),
 	// orphan (a root commit on no branch of the baseline's).

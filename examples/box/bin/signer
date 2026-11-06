@@ -41,8 +41,9 @@ esac
 # A public key file is one line: <type> <base64> [comment].
 read -r type b64 _ <"$key" || true
 case $type in
-ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com|ssh-rsa) ;;
-*) fail "$key is not an SSH public key of a type a box takes (ssh-ed25519, ecdsa-sha2-nistp256/384/521, the sk- hardware forms, ssh-rsa)" ;;
+ssh-ed25519|sk-ssh-ed25519@openssh.com|ssh-rsa) ;;
+ecdsa-sha2-nistp*|sk-ecdsa-sha2-nistp256@openssh.com) fail "$key is an $type key, which a box no longer takes: an ECDSA signature has two forms that verify alike, so one signed commit would have two ids. Make an ed25519 key (ssh-keygen -t ed25519, or -t ed25519-sk for a hardware key) and name it with KEY=path/to/key.pub" ;;
+*) fail "$key is not an SSH public key of a type a box takes (ssh-ed25519, sk-ssh-ed25519@openssh.com, ssh-rsa)" ;;
 esac
 case $b64 in
 ''|*[!A-Za-z0-9+/=]*) fail "$key: the key's base64 is malformed" ;;

@@ -2,6 +2,7 @@ package examples
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -543,19 +544,47 @@ func TestBoxSignerAddsAReader(t *testing.T) {
 		t.Errorf("again:\n%s", out)
 	}
 
-	// A key age cannot take: told what to do instead.
+	// A key a box no longer takes: an ECDSA signature has two forms, so
+	// bin/signer refuses the key by name, before any line is written.
 	priv := filepath.Join(r.home, ".ssh", "gina")
 	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ecdsa", "-N", "", "-f", priv).CombinedOutput(); err != nil {
 		t.Fatalf("ssh-keygen: %v\n%s", err, out)
 	}
 	before := r.read(recipientsFile)
 	out, code = r.run("signer", "KEY="+priv+".pub", "PRINCIPAL=gina")
-	if code != 0 || !strings.Contains(out, "signer: this key is an ecdsa-sha2-nistp256 key, which age cannot encrypt to, so it cannot read the boxes' secrets:") ||
-		!strings.Contains(out, "make secret-show IDENTITY=~/.config/age/motel.txt") {
+	if code == 0 || !strings.Contains(out, "is an ecdsa-sha2-nistp256 key, which a box no longer takes: an ECDSA signature has two forms") || !strings.Contains(out, "ssh-keygen -t ed25519") {
 		t.Fatalf("an ecdsa key: exit %d\n%s", code, out)
 	}
 	if r.read(recipientsFile) != before {
 		t.Error("an ecdsa key went into the recipients file")
+	}
+	// A key age cannot take, which a box does: a hardware sk- key, made
+	// here by hand from an ed25519 one (the wire form is the ed25519
+	// key's plus an application string; ssh-keygen -l reads it).
+	edPriv := filepath.Join(r.home, ".ssh", "gina-sk")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", edPriv).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	edWire, err := base64.StdEncoding.DecodeString(strings.Fields(r.read(edPriv + ".pub"))[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sk bytes.Buffer
+	for _, s := range [][]byte{[]byte("sk-ssh-ed25519@openssh.com"), edWire[len(edWire)-32:], []byte("ssh:")} {
+		sk.Write([]byte{byte(len(s) >> 24), byte(len(s) >> 16), byte(len(s) >> 8), byte(len(s))})
+		sk.Write(s)
+	}
+	skPub := filepath.Join(r.home, ".ssh", "gina-hw.pub")
+	if err := os.WriteFile(skPub, []byte("sk-ssh-ed25519@openssh.com "+base64.StdEncoding.EncodeToString(sk.Bytes())+" gina\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code = r.run("signer", "KEY="+skPub, "PRINCIPAL=gina")
+	if code != 0 || !strings.Contains(out, "signer: this key is a sk-ssh-ed25519@openssh.com key, which age cannot encrypt to, so it cannot read the boxes' secrets:") ||
+		!strings.Contains(out, "make secret-show IDENTITY=~/.config/age/motel.txt") {
+		t.Fatalf("an sk- key: exit %d\n%s", code, out)
+	}
+	if r.read(recipientsFile) != before {
+		t.Error("an sk- key went into the recipients file")
 	}
 
 	// A file edited by hand, with no newline at its end: the key still

@@ -144,9 +144,12 @@ deploy.example.com {
 - `signer <principal> <key-type> <base64>` is one person's SSH public
   key. The principal matches `^[A-Za-z0-9._@+-]+$` and nothing else
   (allowed_signers principals are patterns with `*`, `?`, `!` and `,`;
-  none may appear). Key types: `ssh-ed25519`, `ecdsa-sha2-nistp256/
-  384/521`, `sk-ssh-ed25519@openssh.com`,
-  `sk-ecdsa-sha2-nistp256@openssh.com`, `ssh-rsa`. The base64 must
+  none may appear). Key types: `ssh-ed25519`, `sk-ssh-ed25519@openssh.com`,
+  `ssh-rsa` — the ones whose signature has one spelling. An ECDSA key
+  (`ecdsa-sha2-nistp256/384/521`, `sk-ecdsa-sha2-nistp256@openssh.com`,
+  taken until 2026-11-06) is refused by name, with the reason and the
+  rotation that replaces it: its signature has two forms that verify
+  alike, so one signed commit would have two ids (step 12). The base64 must
   decode to a key of the declared type and be that key's one canonical
   line (the decoder forgives a newline inside a quoted token; the
   allowed_signers file would not). The principal is at most 256 bytes.
@@ -378,8 +381,11 @@ cross-references throughout.
     S + L as the same signature (OpenSSH 10.0, measured 2026-11-06), and
     no signer writes one, so one refuses as a bundle error. An ECDSA
     signature has no such spelling — (r, n−s) is a signer's own form as
-    much as (r, s), and ssh-keygen takes both — so its twin is owed
-    (Triage, Owed).
+    much as (r, s), written half the time, and ssh-keygen takes both —
+    so ECDSA keys are not signer types ("The shape"): the box's own key
+    list is the one place the rule can hold, and `motel validate` on
+    the new binary names an installed list that still carries one
+    (docs/upgrading.md). An RSA signature is unique to its payload.
 13. **The file is the committed file.** The root tree's id equals the
     commit's `tree`; the `path`'s components are walked through the
     bundled trees (depth per the Caps table); the last entry is a blob
@@ -1025,7 +1031,7 @@ can do both by other means.
 
 | Finding | S | O | D | Where the fix lands |
 |---|---|---|---|---|
-| An ECDSA signature (`ecdsa-sha2-nistp256/384/521`, `sk-ecdsa-sha2-nistp256@openssh.com`) has a twin: (r, n−s) verifies over the same payload, ssh-keygen takes both (OpenSSH 10.0, measured 2026-11-06), and the twin's canonical armor is a second commit id for one signed commit — the hole the one-spelling rule closes for the armor, the header's place and Ed25519's scalar. A holder of the signed commit (a T5 dropping a bundle into `in/`; a `contents:write` credential force-pushing the twin over `main` and the original back) has root record a baseline `main` never had, and every later push is refused until `motel box baseline`. | 4 | 5 | 3 | 60 (Copilot on #407). Unlike S + L, (r, n−s) is a form a signer writes half the time, so no spelling rule holds it without refusing honest signatures. Two fixes, the owner's to choose: refuse the ECDSA key types in `ParseSigner` and step 12 (size 1, risk 2; one-way and wide: a box whose installed list holds an ECDSA signer fails the walk after the upgrade until a console edit, so `docs/upgrading.md` would carry it, and `recipients` already steers ECDSA holders to an age key), or record the twin's id beside the baseline in `applied.json` at apply and let the descent walk (step 14) end at either (size 3, risk 2: a field, the walk, and `bin/apply`'s `merge-base` pre-check meeting an id the repository lacks). |
+| (none at present; the last, the ECDSA twin signature, is paid by dropping the ECDSA key types — History, 2026-11-06) | | | | |
 
 ## Admission
 
@@ -1410,9 +1416,9 @@ recipient is the box's key (an X25519 `age1…`, "The box's key"); each
 one after it is a **reader**: a signer's `ssh-ed25519` key, or
 `ssh-rsa` of 2048 bits or more — the only SSH keys age encrypts to
 (filippo.io/age/agessh) — or an age recipient for a person whose
-signing key age cannot use, an `sk-` or ECDSA key or one held only by
-an agent (from `age-keygen`, `age-plugin-yubikey` or
-`age-plugin-se`). `#` lines name them. The template makes each signer
+signing key age cannot use, an `sk-` key or one held only by an agent
+(from `age-keygen`, `age-plugin-yubikey` or `age-plugin-se`; an ECDSA
+key, which age cannot use either, is no signer key since 2026-11-06). `#` lines name them. The template makes each signer
 whose key age can use a reader of every box — its first `make secret`
 writes `recipients` from the box's key and the signer lines, and `make
 signer` adds the next — so on the documented path the readers are the
@@ -2598,5 +2604,9 @@ Dated one-liners; the full text of each is in git.
   place, Copilot on #407). Copilot's second round found the signature
   itself has twins ssh-keygen verifies alike: an Ed25519 S + L, which no
   signer writes, refuses the same way (`canonicalScalar`); an ECDSA
-  (r, n−s), which a signer writes half the time, is owed with two fixes
-  for the owner to choose between (Triage, Owed).
+  (r, n−s), which a signer writes half the time, has no spelling to
+  hold it to, so the owner dropped the ECDSA key types (size 1, risk 2;
+  one-way and wide: a box whose installed list still carries one fails
+  the walk after the upgrade, which `motel validate` on the new binary
+  names first, so docs/upgrading.md says to rotate the signer before
+  upgrading). The fixture set's second signer, bob, is RSA from here.

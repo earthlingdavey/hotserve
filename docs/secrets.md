@@ -191,10 +191,11 @@ deploy of a new version of each app.
 ### A key age cannot use
 
 age encrypts to `ssh-ed25519` keys and to `ssh-rsa` keys of 2048 bits
-or more. It cannot use a hardware `sk-` key, an ECDSA key (which is
-what Secure Enclave tools make), or a key an agent holds with no file
-beside it. A signer with one of those reads with an age key of their
-own instead:
+or more. It cannot use a hardware `sk-` key, or a key an agent holds
+with no file beside it. (An ECDSA key, which Secure Enclave tools make,
+is not a signer key either: a box refuses it, since its signatures have
+two forms — make an ed25519 key to sign with.) A signer with one of
+those reads with an age key of their own instead:
 
 1. Make one: `age-keygen -o ~/.config/age/motel.txt` prints its
    public `age1…` line. For one held in hardware, `age-plugin-yubikey`

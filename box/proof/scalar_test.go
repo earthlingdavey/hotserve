@@ -16,7 +16,7 @@ import (
 // signature` for both), and hashes to a commit the repository never
 // had. No signer writes one, so it is refused as a bundle error
 // (DESIGN-box.md, step 12). An ECDSA signature's (r, n−s) has no such
-// rule and is not this test's: it stays owed.
+// rule, so ECDSA is no longer a signer type (TestParseSigner).
 func TestParseCommitReadsOneScalarOfAnEd25519Signature(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

@@ -142,6 +142,18 @@ Before you upgrade:
   rejects would stop the upgraded motel from starting, and the site
   would stay down until you fixed the config or went back (systemd
   retries a crash, not a refusal).
+- **A box with an ECDSA signer rotates it first** (upgrading from
+  v0.6.0 or earlier). A `signer` line with an `ecdsa-sha2-nistp256`,
+  `-384`, `-521` or `sk-ecdsa-sha2-nistp256@openssh.com` key is refused
+  from this release on, since an ECDSA signature has two forms that
+  verify alike and one signed commit would have two ids; the
+  `validate` above names such a line. While the box still runs the old
+  release: that signer makes an ed25519 key (`ssh-keygen -t ed25519`,
+  or `-t ed25519-sk` for a hardware key), `make signer` adds it, one
+  push applies, and a second push removes the old line. Upgrading
+  first instead leaves every push refused until root edits the line
+  out of `/etc/motel/Caddyfile` at the console (the next push then
+  reports the file as edited out of band and applies over it).
 - **The `.deb` you are upgrading from is still in `/var/local/motel`.**
   `apt install --allow-downgrades ./motel_<old>_$(dpkg --print-architecture).deb`
   puts it back — the same restart, in reverse, and nothing to download

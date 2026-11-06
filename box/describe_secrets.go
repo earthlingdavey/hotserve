@@ -462,8 +462,9 @@ func countRecipients(path, shown string, ts *treeSecrets) (int, error) {
 }
 
 // unsupportedSSHKey reports whether s is an SSH public key that age reads
-// but does not encrypt to — an sk- key, an ECDSA one — which age skips
-// in a recipients file with a warning.
+// but does not encrypt to — an sk- key; an ECDSA one, which a
+// recipients file written before 2026-11-06 may still carry — which age
+// skips in a recipients file with a warning.
 func unsupportedSSHKey(s string) bool {
 	k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(s))
 	return err == nil && k.Type() != ssh.KeyAlgoED25519 && k.Type() != ssh.KeyAlgoRSA
