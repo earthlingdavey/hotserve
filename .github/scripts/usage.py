@@ -215,28 +215,30 @@ def claude_path(machine):
     return os.path.join(CLAUDE_DIR, machine + ".csv")
 
 
+def stems():
+    """(path, stem) for every usage/claude/*.csv, in order."""
+    return [(p, os.path.basename(p)[:-len(".csv")]) for p in sorted(glob.glob(claude_path("*")))]
+
+
 def machines():
     """The labels with a file; a file no label can name stops the run, or it would be summed and never reachable."""
-    out = []
-    for path in sorted(glob.glob(claude_path("*"))):
-        m = os.path.basename(path)[:-len(".csv")]
+    for path, m in stems():
         if not MACHINE.fullmatch(m) or not os.path.isfile(path):
             sys.exit(f"{path}: not a machine file (a label is lowercase letters, digits and hyphens); rename or remove it")
-        out.append(m)
-    return out
+    return [m for _, m in stems()]
 
 
 def so_far():
     """For a message on the way out: the labels there are, without a stray file's exit taking the message's place."""
-    have = [m for m in (os.path.basename(p)[:-len(".csv")] for p in sorted(glob.glob(claude_path("*")))) if MACHINE.fullmatch(m)]
-    return "files so far: " + (", ".join(have) or "none yet")
+    return "files so far: " + (", ".join(m for _, m in stems() if MACHINE.fullmatch(m)) or "none yet")
 
 
 def label(machine):
     """A valid --machine: it names this machine's file and is a public label. A bad one stops the run."""
     if not machine:
         sys.exit("--machine is not set: each machine's sessions go in their own file, so name this one, once, "
-                 f"on the host: `git config --global motel.usage-machine <label>` (make reads it; {so_far()})")
+                 f"on the host: `git config --global motel.usage-machine <label>` (make reads it; {so_far()}). "
+                 "Set it per clone, without --global, if your ~/.gitconfig is synced between machines")
     if not MACHINE.fullmatch(machine):
         sys.exit(f"--machine {machine!r} must be lowercase letters, digits and hyphens: it names "
                  f"{CLAUDE_DIR}/<machine>.csv, a public file ({so_far()})")
@@ -262,7 +264,7 @@ def match_list(match):
     names = match_names(match)
     if match and not names:
         sys.exit(f"--match {match!r} names nothing: a name, or several comma-separated")
-    return [DEFAULT_MATCH, *(n for n in names if n != DEFAULT_MATCH)]
+    return list(dict.fromkeys([DEFAULT_MATCH, *names]))
 
 
 def same_machine(machine, fresh):
@@ -301,7 +303,8 @@ def collect_claude(root, names):
     # The others are counted, not named: they are this machine's other projects, and a run's
     # output gets pasted. The count is there so a checkout under an older name is seen left out.
     n_others = len(projects) - len(dirs)
-    others = f"{n_others} other project director{'y' if n_others == 1 else 'ies'} (see --match)"
+    others = (f"{n_others} other project director{'y' if n_others == 1 else 'ies'} (see --match; none at all means "
+              "the mount is empty: docker-compose.yml, service usage)")
     if not dirs:
         sys.exit(f"no project directory under {root} has {' or '.join(repr(n) for n in names)} in its name; {others}")
     print("claude: " + ", ".join(os.path.basename(d) for d in dirs))
@@ -792,12 +795,13 @@ def main():
     if "collect-claude" in args.steps:
         fresh = collect_claude(args.projects, names)
         same_machine(machine, fresh)
-        os.makedirs(CLAUDE_DIR, exist_ok=True)
         groups.append([(claude_path(machine), ["month", "model"], CLAUDE_COLS, fresh)])
     if "collect-actions" in args.steps:
         nruns, njobs = collect_actions(args.repo, token)
         groups.append([(RUNS_CSV, ["month", "workflow"], ["runs"], nruns),
                        (JOBS_CSV, ["month", "workflow", "runner"], JOBS_COLS, njobs)])
+    if "collect-claude" in args.steps:
+        os.makedirs(CLAUDE_DIR, exist_ok=True)  # here, not before collect-actions: nothing is written until all is collected
     for group in groups:
         merge(group, args.recompute)
     if groups or "render" in args.steps:

@@ -112,7 +112,7 @@ class ClaudeTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 got = usage.collect_claude(self.root, usage.match_names(match))
             self.assertEqual([(r["month"], r["model"], r["calls"]) for r in got], [("2026-09", "claude-x", "3")])
-            self.assertIn("not counted: 1 other project directory (see --match)", out.getvalue())
+            self.assertIn("not counted: 1 other project directory (see --match;", out.getvalue())
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             usage.collect_claude(self.root, ["motel", "-x-", "typo"])  # the default alone matching nothing is no news
         self.assertNotIn("not counted", out.getvalue())
@@ -121,7 +121,11 @@ class ClaudeTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 usage.collect_claude(self.root, names)
             if names:
-                self.assertIn("; 3 other project directories (see --match)", str(cm.exception))
+                self.assertIn("; 3 other project directories (see --match;", str(cm.exception))
+        os.makedirs(os.path.join(self.dir.name, "none"))
+        with self.assertRaises(SystemExit) as cm:
+            usage.collect_claude(os.path.join(self.dir.name, "none"), ["motel"])
+        self.assertIn("0 other project directories (see --match; none at all means the mount is empty", str(cm.exception))
 
     def test_machine_names_a_public_file(self):
         self.assertEqual(usage.claude_path("laptop-1"), "usage/claude/laptop-1.csv")
@@ -159,6 +163,7 @@ class ClaudeTests(unittest.TestCase):
         self.assertEqual(usage.match_list(""), ["motel"])
         self.assertEqual(usage.match_list("motel"), ["motel"])
         self.assertEqual(usage.match_list(" y, x ,motel"), ["motel", "y", "x"])
+        self.assertEqual(usage.match_list("x,x,motel,x"), ["motel", "x"])  # once each, so one warning each
         for empty in (",", "   ", " , "):  # a flag that names nothing must not pass as "none given"
             with self.assertRaises(SystemExit) as cm:
                 usage.match_list(empty)
@@ -190,6 +195,7 @@ class ClaudeTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:  # the setup message is not displaced by a stray file's
             usage.label("")
         self.assertIn("git config --global motel.usage-machine <label>` (make reads it; files so far: a, b)", str(cm.exception))
+        self.assertIn("without --global, if your ~/.gitconfig is synced", str(cm.exception))
         self.assertEqual(usage.match_names(",oldname , motel,"), ["oldname", "motel"])
 
     def test_every_machine_file_is_read(self):
