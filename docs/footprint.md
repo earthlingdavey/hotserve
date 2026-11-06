@@ -21,8 +21,8 @@ energy figures), network transfer, and the models' training.
 | 2026-08 | — | — | — | — | — | — | 6,377 | 38 | 1.3 | 0.5 | 60 | — |
 | 2026-09 | 13,412 | 13.7 | 3.9 | 2,692 | 287 | 82.3 | 18,295 | 110 | 4.3 | 1.6 | 265 | — |
 | 2026-10 | 16,899 | 11.2 | 4.2 | 1,938 | 220 | 63.0 | 16,854 | 101 | 4.0 | 1.5 | 244 | — |
-| 2026-11 | 1,234 | 2.2 | 0.2 | 269 | 37 | 10.7 | — | — | — | — | — | — |
-| **Total** | 31,545 | 27.1 | 8.2 | 4,899 | 544 | 156.0 | 41,526 | 249 | 9.6 | 3.6 | 569 | — |
+| 2026-11 | 1,251 | 2.2 | 0.2 | 272 | 38 | 10.8 | — | — | — | — | — | — |
+| **Total** | 31,562 | 27.2 | 8.2 | 4,902 | 544 | 156.2 | 41,526 | 249 | 9.6 | 3.6 | 569 | — |
 
 A dash is a month the source has no rows for. Claude USD is what the
 tokens would cost at list price, not what was paid (Claude Code runs on
@@ -34,7 +34,7 @@ Every kWh and kgCO2e is an estimate, see below.
 
 | Model | Calls | Input Mtok | Output Mtok | Cache-write Mtok | Cache-read Gtok | List USD | kgCO2e |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| claude-fable-5-1 | 11,187 | 0.24 | 13.7 | 73.4 | 3.06 | 2,652 | 95.1 |
+| claude-fable-5-1 | 11,204 | 0.24 | 13.8 | 73.5 | 3.06 | 2,656 | 95.2 |
 | claude-opus-5-5 | 15,708 | 0.03 | 9.3 | 68.7 | 4.00 | 1,435 | 45.7 |
 | claude-opus-5 | 4,612 | 0.01 | 4.0 | 14.8 | 1.16 | 804 | 15.1 |
 | claude-opus-4-8 | 28 | 0.00 | 0.1 | 0.1 | 0.01 | 8 | 0.2 |
@@ -72,12 +72,13 @@ many runner types its jobs used.
   repository, its worktrees and clones are counted. The sessions are
   spread over several machines, each of which sees only its own
   transcripts, so each keeps its own file under
-  [`usage/claude/`](../usage/claude) and the figures here are their sum
-  (so far: laptop, lima-agent). Claude Code purges transcripts after 30 days by
+  [`usage/claude/`](../usage/claude) and the figures here are their sum.
+  Claude Code purges transcripts after 30 days by
   default (Sources: transcripts), and the first machine on the ledger
   did until 2026-10-14: its sessions before 2026-09-13 are gone, so this
   part of the ledger starts there although the GitHub repository
   started on 2026-08-16.
+  Machines so far: laptop, lima-agent.
 - **Claude USD.** Anthropic's published prices per model (Sources:
   prices). Cache writes cost 1.25× (5-minute) or 2× (1-hour) the input
   price; cache reads the per-model rate.

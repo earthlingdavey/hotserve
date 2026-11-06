@@ -80,6 +80,13 @@ occurrence, detection; fix size, risk):
   The error names the file; `make usage-check` re-renders the page once
   it is fixed. A full schema or a render-before-write is more code than
   a loud, recoverable failure buys.
+- Two machines sharing one label, because ~/.gitconfig is synced
+  between them, write one file: the merge rule keeps the larger
+  machine's months and warns that the source shrank on the other's
+  runs (S3 O2 D1 = 6; size 3, risk 2). The Makefile says to set the
+  label per clone, without --global, when the global config is synced;
+  a label kept beside the transcripts would be per machine by
+  construction, and that mount is read-only and Claude Code's.
 - A USAGE_MACHINE typed on the command line that is not the machine's
   configured label writes a second file, and the page sums the machine
   twice (S3 O5 D1 = 15; size 3, risk 2). The run warns, naming the
@@ -220,7 +227,9 @@ def machines():
 
 
 def so_far():
-    return "files so far: " + (", ".join(machines()) or "none yet")
+    """For a message on the way out: the labels there are, without a stray file's exit taking the message's place."""
+    have = [m for m in (os.path.basename(p)[:-len(".csv")] for p in sorted(glob.glob(claude_path("*")))) if MACHINE.fullmatch(m)]
+    return "files so far: " + (", ".join(have) or "none yet")
 
 
 def label(machine):
@@ -236,11 +245,16 @@ def label(machine):
 
 def check_machine(machine):
     """The label, checked before anything is read; one with no file yet is said so."""
+    label(machine)
     have = machines()
-    if label(machine) not in have and have:
+    if have and machine not in have:
         # A label the machine has not used before: a typo for one it has is summed twice, and
         # same_machine catches that only while a committed row is still what this run counts.
         warn(f"{machine} is a new machine ({so_far()}); if this one already has a file, use that label")
+
+
+def match_names(match):
+    return [n.strip() for n in match.split(",") if n.strip()]
 
 
 def match_list(match):
@@ -264,14 +278,12 @@ def same_machine(machine, fresh):
     this = claude_path(machine)
     for other in machines():
         if other != machine and any(r in fresh for r in read_csv(claude_path(other))):
+            # The way out is for a label that is new; an established file is not to be removed on a coincidence.
+            out = (f": either `git mv -f {claude_path(other)} {this}` and run again, or `rm {this}` and run with "
+                   f"--machine {other}" if not os.path.exists(this) else "; a single small row can also coincide")
             warn(f"{claude_path(other)} holds a row identical to one counted here. If that is this machine under "
-                 f"an earlier label, the two files are summed twice: either `git mv -f {claude_path(other)} {this}` "
-                 f"and run again, or `rm {this}` and run with --machine {other}")
+                 f"an earlier label, the two files are summed twice{out}")
             return
-
-
-def match_names(match):
-    return [n.strip() for n in match.split(",") if n.strip()]
 
 
 def read_claude():
@@ -279,8 +291,7 @@ def read_claude():
     return [r for m in machines() for r in read_csv(claude_path(m))]
 
 
-def collect_claude(root, match):
-    names = match_names(match)
+def collect_claude(root, names):
     if not names:
         sys.exit("no project-directory names to count")
     if not os.path.isdir(root):
@@ -289,15 +300,18 @@ def collect_claude(root, match):
     dirs = [os.path.join(root, d) for d in projects if any(n in d for n in names)]
     # The others are counted, not named: they are this machine's other projects, and a run's
     # output gets pasted. The count is there so a checkout under an older name is seen left out.
-    others = f"{len(projects) - len(dirs)} other project directories (see --match)"
+    n_others = len(projects) - len(dirs)
+    others = f"{n_others} other project director{'y' if n_others == 1 else 'ies'} (see --match)"
     if not dirs:
         sys.exit(f"no project directory under {root} has {' or '.join(repr(n) for n in names)} in its name; {others}")
     print("claude: " + ", ".join(os.path.basename(d) for d in dirs))
     if len(dirs) < len(projects):
         print(f"claude: not counted: {others}")
     for n in names:
-        if not any(n in d for d in projects):
-            warn(f"no project directory here has {n!r} in its name")  # a typo in --match is otherwise silent for good
+        if n != DEFAULT_MATCH and not any(n in d for d in projects):
+            # A typo in --match is otherwise silent for good. The default is left out: a machine whose
+            # checkout kept the older name has no motel directory, and that is what --match is for.
+            warn(f"no project directory here has {n!r} in its name")
     msgs, files = {}, 0  # (message.id, requestId) -> [month, model, counts]
     for d in dirs:
         for path in glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True):
@@ -693,12 +707,13 @@ many runner types its jobs used.
   repository, its worktrees and clones are counted. The sessions are
   spread over several machines, each of which sees only its own
   transcripts, so each keeps its own file under
-  [`usage/claude/`](../usage/claude) and the figures here are their sum
-  (so far: {", ".join(machines()) or "none"}). Claude Code purges transcripts after 30 days by
+  [`usage/claude/`](../usage/claude) and the figures here are their sum.
+  Claude Code purges transcripts after 30 days by
   default (Sources: transcripts), and the first machine on the ledger
   did until 2026-10-14: its sessions before 2026-09-13 are gone, so this
   part of the ledger starts there although the GitHub repository
   started on 2026-08-16.
+  Machines so far: {", ".join(machines()) or "none"}.
 - **Claude USD.** Anthropic's published prices per model (Sources:
   prices). Cache writes cost 1.25× (5-minute) or 2× (1-hour) the input
   price; cache reads the per-model rate.
@@ -775,7 +790,7 @@ def main():
     # leaves the page behind its CSVs.
     groups = []
     if "collect-claude" in args.steps:
-        fresh = collect_claude(args.projects, ",".join(names))
+        fresh = collect_claude(args.projects, names)
         same_machine(machine, fresh)
         os.makedirs(CLAUDE_DIR, exist_ok=True)
         groups.append([(claude_path(machine), ["month", "model"], CLAUDE_COLS, fresh)])

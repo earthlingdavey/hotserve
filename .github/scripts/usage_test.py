@@ -110,17 +110,17 @@ class ClaudeTests(unittest.TestCase):
         self.transcript("-x-other", 4)
         for match in ("motel,oldname", "motel, oldname", ",oldname , motel,"):
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                got = usage.collect_claude(self.root, match)
+                got = usage.collect_claude(self.root, usage.match_names(match))
             self.assertEqual([(r["month"], r["model"], r["calls"]) for r in got], [("2026-09", "claude-x", "3")])
-            self.assertIn("not counted: 1 other project directories (see --match)", out.getvalue())
+            self.assertIn("not counted: 1 other project directory (see --match)", out.getvalue())
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
-            usage.collect_claude(self.root, "-x-,typo")
+            usage.collect_claude(self.root, ["motel", "-x-", "typo"])  # the default alone matching nothing is no news
         self.assertNotIn("not counted", out.getvalue())
         self.assertEqual(err.getvalue(), "warning: no project directory here has 'typo' in its name\n")
-        for match in ("nothing", ",", ""):
+        for names in (["nothing"], []):
             with self.assertRaises(SystemExit) as cm:
-                usage.collect_claude(self.root, match)
-            if match == "nothing":
+                usage.collect_claude(self.root, names)
+            if names:
                 self.assertIn("; 3 other project directories (see --match)", str(cm.exception))
 
     def test_machine_names_a_public_file(self):
@@ -182,6 +182,14 @@ class ClaudeTests(unittest.TestCase):
         # Both ways out undo what this run goes on to write: b's file.
         self.assertIn("`git mv -f usage/claude/a.csv usage/claude/b.csv` and run again", got)
         self.assertIn("`rm usage/claude/b.csv` and run with --machine a", got)
+        usage.write_csv(usage.claude_path("b"), KEYS + COLS, rows(("2026-08", "m", 1, 1)))  # b is established:
+        got = warned("b", rows(("2026-09", "m", 1, 10)))
+        self.assertIn("summed twice; a single small row can also coincide", got)  # no advice to remove its file
+        self.assertNotIn("rm ", got)
+        usage.write_csv(os.path.join(usage.CLAUDE_DIR, "Bad.csv"), KEYS + COLS, [])
+        with self.assertRaises(SystemExit) as cm:  # the setup message is not displaced by a stray file's
+            usage.label("")
+        self.assertIn("git config --global motel.usage-machine <label>` (make reads it; files so far: a, b)", str(cm.exception))
         self.assertEqual(usage.match_names(",oldname , motel,"), ["oldname", "motel"])
 
     def test_every_machine_file_is_read(self):

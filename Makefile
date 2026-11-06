@@ -193,7 +193,8 @@ GO_LDFLAGS = -s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v$(VERSION)
 # own transcripts, so every machine writes its own file,
 # usage/claude/$(USAGE_MACHINE).csv, and the page sums them. Name each
 # machine once, on the host: `git config --global motel.usage-machine
-# <label>` (a public label: the file name). USAGE_MATCH: project-
+# <label>` (a public label: the file name; per clone, without --global,
+# if your ~/.gitconfig is synced between machines). USAGE_MATCH: project-
 # directory names to count besides motel, comma-separated, for a
 # checkout that kept an older name: `git config motel.usage-match
 # <names>` (per checkout, or --global). usage-claude is the transcript
