@@ -191,20 +191,20 @@ GO_LDFLAGS = -s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v$(VERSION)
 # files it writes stay yours on a Linux host (the container is root).
 # The sessions are spread over several machines and each sees only its
 # own transcripts, so every machine writes its own file,
-# usage/claude/$(USAGE_MACHINE).csv, and the page sums them: name the
-# machine (a public label) on a checkout's first run and run this on
-# each. USAGE_MATCH: project-directory names to count besides motel,
-# comma-separated, for a checkout that kept an older name. Both are
-# remembered in usage/local.json (gitignored) for later runs; names only
-# ever add (delete the file to drop one).
-# usage-claude is the transcript half alone, for the other machines: no
-# token, so no Actions API budget spent. Commit the machine's file with
-# the page; when two machines' commits conflict in the page, take either
-# side and run usage-check: it re-renders the page and fails until the
-# re-rendered page is committed.
+# usage/claude/$(USAGE_MACHINE).csv, and the page sums them. Name each
+# machine once, on the host: `git config --global motel.usage-machine
+# <label>` (a public label: the file name). USAGE_MATCH: project-
+# directory names to count besides motel, comma-separated, for a
+# checkout that kept an older name: `git config motel.usage-match
+# <names>` (per checkout, or --global). usage-claude is the transcript
+# half alone, for the other machines: no token, so no Actions API
+# budget spent. Commit the machine's file with the page; when two
+# machines' commits conflict in the page, take either side and run
+# usage-check: it re-renders the page and fails until the re-rendered
+# page is staged.
 USAGE_REPO ?= smallhoursorg/motel
-USAGE_MATCH ?=
-USAGE_MACHINE ?=
+USAGE_MATCH ?= $(shell git config motel.usage-match)
+USAGE_MACHINE ?= $(shell git config motel.usage-machine)
 USAGE_FLAGS = --match "$(USAGE_MATCH)" --machine "$(USAGE_MACHINE)"
 usage:
 	GH_TOKEN=$$(gh auth token) $(COMPOSE) run --rm --user "$$(id -u):$$(id -g)" usage \

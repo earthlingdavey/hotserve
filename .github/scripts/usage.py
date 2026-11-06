@@ -16,9 +16,10 @@ docs/footprint.md:
                    spread over several machines and each sees only its
                    own transcripts, so every machine writes its own
                    file, named by --machine (a public label), and render
-                   sums the files. The label and the extra names are
-                   typed on a checkout's first run and remembered in
-                   usage/local.json (gitignored) for the later ones.
+                   sums the files. The label is set once per machine,
+                   on the host: `git config --global motel.usage-machine
+                   <label>`; make reads it, and motel.usage-match for
+                   the extra names.
   collect-actions  usage/runs.csv     GitHub Actions, from the API for
                    usage/jobs.csv     --repo (GH_TOKEN required). runs.csv:
                    one row per month and workflow, the runs with at
@@ -54,14 +55,12 @@ or touches another machine's share; the page is the sum of the files
 committed so far. Each machine commits its file and the page together;
 when two such commits meet, take either side of the page and run `make
 usage-check`: it re-renders the page from the merged files and fails
-until that page is committed. One machine under two labels is summed
-twice, so a label is typed once per checkout and then read from
-usage/local.json, and a --machine that disagrees with it stops the run;
-a label with no file yet, or a fresh row identical to one in another
-machine's file, warns. --match only ever adds names: the default is
-always counted and local.json keeps the extras, so no run narrows what
-a machine counts; delete local.json to drop a name. To relabel a
-machine, `git mv` its file and delete local.json.
+until that page is staged. One machine under two labels is summed
+twice, so the label lives in the host's git config, once per machine,
+where every worktree and clone reads it; a label with no file yet, or a
+fresh row identical to one in another machine's file, warns. --match
+adds names: the default is always counted. To relabel a machine, `git
+mv` its file and set the config again.
 
 `make usage` runs all three steps; `make usage-check` (CI) runs
 usage_test.py, then re-renders from the committed CSVs and fails on a
@@ -81,19 +80,15 @@ occurrence, detection; fix size, risk):
   The error names the file; `make usage-check` re-renders the page once
   it is fixed. A full schema or a render-before-write is more code than
   a loud, recoverable failure buys.
-- A fresh checkout on a machine that already has a file, run under a
-  new label, writes a second file and the page sums the machine twice
-  (S3 O5 D1 = 15; size 3, risk 2). local.json is not there to know
-  better; the run warns, naming the existing labels and any row of
-  theirs identical to a fresh one. That row check is a warning, not a
-  stop, because two machines can produce one identical small row (a
-  single title call) and a stop would leave no way on. A fingerprint
-  committed beside each machine file would decide it exactly, and is a
-  second file format for a case the warning already names; a label
-  kept under $HOME would follow the machine across checkouts, at the
-  cost of a third mount that the Makefile must create host-side first
-  (a missing bind-mount source is created root-owned). Worth doing if
-  retyping the label per worktree proves a nuisance.
+- A USAGE_MACHINE typed on the command line that is not the machine's
+  configured label writes a second file, and the page sums the machine
+  twice (S3 O5 D1 = 15; size 3, risk 2). The run warns, naming the
+  existing labels and any row of theirs identical to a fresh one. That
+  row check is a warning, not a stop, because two machines can produce
+  one identical small row (a single title call) and a stop would leave
+  no way on. A fingerprint committed beside each machine file would
+  decide it exactly, and is a second file format for a case the warning
+  already names.
 """
 
 import argparse
@@ -112,7 +107,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 CLAUDE_DIR = "usage/claude"
-LOCAL = "usage/local.json"  # gitignored: this checkout's machine label and match names
 DEFAULT_MATCH = "motel"
 RUNS_CSV = "usage/runs.csv"
 JOBS_CSV = "usage/jobs.csv"
@@ -232,70 +226,29 @@ def so_far():
 def label(machine):
     """A valid --machine: it names this machine's file and is a public label. A bad one stops the run."""
     if not machine:
-        sys.exit("--machine is not set: each machine's sessions go in their own file, so name this one "
-                 f"(make usage USAGE_MACHINE=<label>; the same label every run; {so_far()})")
+        sys.exit("--machine is not set: each machine's sessions go in their own file, so name this one, once, "
+                 f"on the host: `git config --global motel.usage-machine <label>` (make reads it; {so_far()})")
     if not MACHINE.fullmatch(machine):
         sys.exit(f"--machine {machine!r} must be lowercase letters, digits and hyphens: it names "
                  f"{CLAUDE_DIR}/<machine>.csv, a public file ({so_far()})")
     return machine
 
 
-def read_local():
-    """What this checkout's earlier runs saved in LOCAL: {} before the first."""
-    if not os.path.exists(LOCAL):
-        return {}
-    try:
-        with open(LOCAL) as f:
-            saved = json.load(f)
-    except ValueError as e:
-        sys.exit(f"{LOCAL}: not valid JSON: {e}; delete it and pass --machine and --match again")
-    if not isinstance(saved, dict) or not all(isinstance(saved.get(k, ""), str) for k in ("machine", "match")):
-        sys.exit(f"{LOCAL}: expected an object of two strings; delete it and pass --machine and --match again")
-    if saved.get("machine") and not MACHINE.fullmatch(saved["machine"]):
-        sys.exit(f"{LOCAL}: machine {saved['machine']!r} is not a label; delete the file and pass --machine and --match again")
-    return saved
-
-
-def local_settings(machine, match):
-    """(machine, extras) for this run, checked before anything is read.
-
-    The label: the flag, else what LOCAL remembers; the two disagreeing
-    stops the run. The extras: the names counted besides DEFAULT_MATCH,
-    what LOCAL remembers plus the flag's. Only ever added to, so no run
-    narrows what a machine counts; delete LOCAL to drop one.
-    """
-    saved = read_local()
-    was = saved.get("machine") or ""
-    if machine and label(machine) != was and was:
-        if os.path.exists(claude_path(machine)):
-            how = f"that label has a file of its own, so it is another machine's; delete {LOCAL} if this checkout is wrong"
-        elif os.path.exists(claude_path(was)):
-            how = f"to relabel it, `git mv {claude_path(was)} {claude_path(machine)}` and delete {LOCAL}"
-        else:
-            how = f"to relabel it, delete {LOCAL}, since {claude_path(was)} does not exist here"
-        sys.exit(f"{LOCAL} says this checkout's machine is {was!r} and --machine says {machine!r}: one machine "
-                 f"under two labels is summed twice; {how}")
-    machine = label(machine or was)
+def check_machine(machine):
+    """The label, checked before anything is read; one with no file yet is said so."""
     have = machines()
-    if have and machine not in have:
-        # A fresh checkout on a machine that has a file: local.json is not there to say so,
-        # and same_machine catches it only while a committed row is still what this run counts.
+    if label(machine) not in have and have:
+        # A label the machine has not used before: a typo for one it has is summed twice, and
+        # same_machine catches that only while a committed row is still what this run counts.
         warn(f"{machine} is a new machine ({so_far()}); if this one already has a file, use that label")
+
+
+def match_list(match):
+    """The names counted: the default and --match's extras; a --match that names nothing stops the run."""
     names = match_names(match)
     if match and not names:
         sys.exit(f"--match {match!r} names nothing: a name, or several comma-separated")
-    kept = match_names(saved.get("match") or "")
-    extras = sorted({*kept, *names} - {DEFAULT_MATCH})
-    new = sorted(set(extras) - set(kept))
-    if new:
-        print(f"claude: also counting {', '.join(new)}, remembered in {LOCAL} once this run writes")
-    return machine, extras
-
-
-def save_local(machine, extras):
-    with open(LOCAL, "w") as f:
-        json.dump({"machine": machine, "match": ",".join(extras)}, f)
-        f.write("\n")
+    return [DEFAULT_MATCH, *(n for n in names if n != DEFAULT_MATCH)]
 
 
 def same_machine(machine, fresh):
@@ -306,14 +259,14 @@ def same_machine(machine, fresh):
     under another label, and summing the two files would count it twice.
     A warning, not a stop: one small row (a single title call) can
     coincide, and a stop would leave no way on. The run goes on to write
-    this label's file and local.json, so both ways out undo that.
+    this label's file, so both ways out undo that.
     """
     this = claude_path(machine)
     for other in machines():
         if other != machine and any(r in fresh for r in read_csv(claude_path(other))):
             warn(f"{claude_path(other)} holds a row identical to one counted here. If that is this machine under "
                  f"an earlier label, the two files are summed twice: either `git mv -f {claude_path(other)} {this}` "
-                 f"and run again, or `rm {this} {LOCAL}` and run with --machine {other}")
+                 f"and run again, or `rm {this}` and run with --machine {other}")
             return
 
 
@@ -329,7 +282,7 @@ def read_claude():
 def collect_claude(root, match):
     names = match_names(match)
     if not names:
-        sys.exit("--match must not be empty: it would count every project on this machine")
+        sys.exit("no project-directory names to count")
     if not os.path.isdir(root):
         sys.exit(f"{root} is not a directory: is ~/.claude/projects mounted? (docker-compose.yml, service usage)")
     projects = sorted(os.path.basename(d) for d in glob.glob(os.path.join(root, "*")) if os.path.isdir(d))
@@ -342,6 +295,9 @@ def collect_claude(root, match):
     print("claude: " + ", ".join(os.path.basename(d) for d in dirs))
     if len(dirs) < len(projects):
         print(f"claude: not counted: {others}")
+    for n in names:
+        if not any(n in d for d in projects):
+            warn(f"no project directory here has {n!r} in its name")  # a typo in --match is otherwise silent for good
     msgs, files = {}, 0  # (message.id, requestId) -> [month, model, counts]
     for d in dirs:
         for path in glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True):
@@ -794,10 +750,10 @@ def main():
     ap.add_argument("--repo", help="owner/name for collect-actions (make passes USAGE_REPO)")
     ap.add_argument("--match", default="",
                     help=f"project-directory names to count besides {DEFAULT_MATCH}, comma-separated, for a checkout that "
-                         f"kept an older name; remembered in {LOCAL}, so given once")
+                         "kept an older name (make reads git config motel.usage-match)")
     ap.add_argument("--machine", default="",
                     help=f"this machine's public label: its sessions go in {CLAUDE_DIR}/<machine>.csv (make passes "
-                         f"USAGE_MACHINE; given once per checkout, then {LOCAL} remembers it)")
+                         "USAGE_MACHINE, from git config motel.usage-machine)")
     ap.add_argument("--projects", default=os.environ.get("CLAUDE_PROJECTS", "/claude-projects"),
                     help="the mounted ~/.claude/projects")
     ap.add_argument("--recompute", action="store_true", help="replace committed months even when a row shrank")
@@ -807,7 +763,8 @@ def main():
     factors = load_factors()
     token = os.environ.get("GH_TOKEN")
     if "collect-claude" in args.steps:
-        machine, extras = local_settings(args.machine, args.match)
+        machine, names = args.machine, match_list(args.match)
+        check_machine(machine)
     if "collect-actions" in args.steps:
         if not token:
             sys.exit("GH_TOKEN is not set: `make usage` passes `gh auth token`; log in with `gh auth login`")
@@ -818,7 +775,7 @@ def main():
     # leaves the page behind its CSVs.
     groups = []
     if "collect-claude" in args.steps:
-        fresh = collect_claude(args.projects, ",".join([DEFAULT_MATCH, *extras]))
+        fresh = collect_claude(args.projects, ",".join(names))
         same_machine(machine, fresh)
         os.makedirs(CLAUDE_DIR, exist_ok=True)
         groups.append([(claude_path(machine), ["month", "model"], CLAUDE_COLS, fresh)])
@@ -828,8 +785,6 @@ def main():
                        (JOBS_CSV, ["month", "workflow", "runner"], JOBS_COLS, njobs)])
     for group in groups:
         merge(group, args.recompute)
-    if "collect-claude" in args.steps:
-        save_local(machine, extras)
     if groups or "render" in args.steps:
         render(factors)
 

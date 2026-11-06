@@ -6,8 +6,6 @@ reference/
 build/
 /to-do
 __pycache__/
-# The usage ledger's label for this machine and what it counts (make usage).
-/usage/local.json
 # Claude Code: the triage skill is shared; worktrees, plans and local
 # settings are one machine's.
 /.claude/*
