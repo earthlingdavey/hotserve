@@ -817,10 +817,32 @@ It needs no privilege.
   plans nothing, whatever the root says. (motel itself refuses
   `root {env.X}` together with a `backup` block; `{$NAME}` it never
   sees.) See below.
-- A variable that no made-up value adapts with — among them a variable
-  in an import, `import sites/{$ENV:prod}/*.caddy`: with any other value
-  it names a file that is not there, and what the server reads when it
-  is set cannot be known here. Write import paths literally.
+- A variable in an import, `import sites/{$ENV:prod}/*.caddy`: with any
+  other value it names a file that is not there, and what the server
+  reads when it is set cannot be known here. Write import paths
+  literally. A variable that no made-up value adapts with is refused
+  for this where some value failed at an import — Caddy's parser meets
+  an import before any directive sees an argument — and where the
+  adapter's words are neither an import's nor a directive's own. One
+  that every value failed at a directive's check of its argument's form
+  (`protocols {$TLS_MIN:tls1.2}`, an `lb_policy`, a `redir` code) is
+  not refused for that: an import path, a root, an app's name and a
+  backup path each take any token, so a value a directive refused was
+  in none of them (#394) — but the trials say nothing of where else the
+  variable is written, so each occurrence is tried on its own, in a
+  copy of the Caddyfile's directory with that one occurrence made a
+  value of its own and the others their defaults. One the adapter
+  refuses, quoting the value at the occurrence's own line, is the
+  directive's (quoted from another line, the value travelled — a
+  snippet's argument — and is refused as not knowable); one that adapts
+  and
+  moves the root, an app's name or a backup path is refused as any
+  variable there is; and the copy's environment gives the variable a
+  second value of its own, so an occurrence read past the copy — a file
+  imported by its absolute path — shows, and is refused as not knowable
+  here. Caddy substitutes `{$NAME}` in the text before it reads a token,
+  by the same shape of match, so what is tried is what it substitutes,
+  whatever line, heredoc or quoted string it is in.
 - An import glob that matches no file. The adapter takes it for no
   error; but inside the plan unit's view, which holds `/etc/motel`
   and nothing else, an import from outside it matches nothing — and so
@@ -1053,7 +1075,13 @@ a file with a literal `root` does what a variable would.
 
 If no value tried adapts, the run fails with the adapter's own error,
 which names the file and line; a default that adapts
-(`{$NAME:value}`) settles it.
+(`{$NAME:value}`) settles it — unless the error is the parser's about
+an import, in which case the run says so: a default moves the import
+to the default's file here and the server's elsewhere, so the variable
+would be refused as an import's next, and only a literal path settles
+it. A variable with a default that no other value adapts with is read
+by what the trials failed at, and then one occurrence at a time
+(above, "What it refuses").
 
 **What this cannot see.** Caddy substitutes `{$NAME}` into the text
 before it reads a single token, so a value is not bound to be one token:
@@ -1491,6 +1519,11 @@ severity × occurrence × detection, then the fix's size and risk.
 | The guide's B2 timeline sort, `sort -t_ -k9,9` ("After an attack"), assumes the ninth `_` field of every B2 file id is the millisecond upload stamp: generalised from the lines measured in `rc-runs/rc-results/L10-timeline-sort.out`, while Backblaze calls file ids opaque. An id of another shape mis-sorts the listing and gives a wrong copy moment. And the timeline gives the moment to the second, while the guide has no step for a sub-second `version_at` when the last run's write and the attack's first fall in one second. | docs/backups.md, "After an attack", the timeline line | 3 | 2 | 3 | 18 | size 1, risk 2 (text no test checks) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-10-25, PR #356; D re-scored from 1 the same day). A moment too late is loud when the copy's `restic check --no-lock --read-data` finds errors, but not when the attack began by hiding the newest snapshot: the copy after that hide checks clean and is short of it. The guide's step for that, beside the check: for a moment from the bucket's history, each app's newest snapshot in the copy must be the one `motel-backup status` named before the attack (`snapshot <id>` on its `last complete backup` line, `backups/status/status.go`); one missing means an earlier moment. D is 3, not 1: the step is loud only where the reader holds that id from before the attack, and without it the copy is a plausible, clean, older backup. |
 | The tutorial's backups bullet (`docs/after-first-deploy.md`) names no command as root's: it links to "Who runs these". An administrator in `adm` alone who goes straight to "Set it up" runs `setup` as themselves. | `docs/after-first-deploy.md`, "Backups" | 2 | 5 | 1 | 10 | size 1, risk 2 (a list of root's commands in the bullet, which round 2 of #323's self-review found narrower than the guide's) | Rule 2 holds: `setup` refuses before anything else, "a setup starts system units, which needs root: run the same command again as root", and "Set it up" opens "As root on the box". Under rule 3 the product is under 20 (2026-10-28, #323 self-review round 3). |
 | A drill refused before any unit — a `b2:` repository, say — still prints each app's last proof from the record in a drill's own words, `example: restore proven: snapshot …, on <its date>`, before the refusal and exit 1 [RC check 9, `v0.5.0-rc1`]. | `drill`, `reportDrill` (cmd/motel-backup) | 2 | 5 | 1 | 10 | size 2, risk 2 | The refusal follows at once, the exit is 1, and the line carries the proof's own date, not the drill's. The report is wanted for a drill that ran and failed part way; telling that from a refusal before any unit needs the engine to say which, one more state for a message. |
+| A trial adapt that fails with no words from the adapter — the plan step's deadline reached mid-way, `/usr/bin/motel` replaced under a package upgrade, its output not JSON — is read as a variable no value adapts with, and every variable still to try is refused as opaque, the real error gone with it. | `Inspect` (`backups/plan/make.go`), the trial loop's `continue` | 2 | 3 | 3 | 18 | size 2, risk 1 (return an error with no adapter words at once) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-11-06, #394 review). The trial's error was discarded the same way before #394; the refusal is red and names the variables, and the next hourly run meets no deadline. |
+| A Caddyfile validated as a copy away from `/etc/motel` — a checkout, the box channel's staged file — is read alone, so a variable every made-up value fails at a directive's check of, written as well in a file beside the copy that the copy imports, is refused at `validate` as not knowable (the probe sees the file read past its copy), where the run on the box, which reads the files beside the live Caddyfile, tries that occurrence and may let it through. | `Inspect`, `envNames` with `beside` false, `probe` (`backups/plan/make.go`) | 2 | 5 | 1 | 10 | size 2, risk 1 (read the copy's directory too, as the run's) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-11-06, #394 review). Red where green was due, naming the variable; a box push carries no import (the first row of this table), so step 6's verdict is the run's. |
+| A variable with no default written both where a directive checks its form and where a plan reads — `protocols {$X}` and `root /srv/{$X}` — is refused twice over: first with the hint that a default settles it, then, with the default written, as a root from the environment. | `Inspect`, the base loop's hint (`backups/plan/make.go`) | 2 | 5 | 1 | 10 | size 2, risk 1 (probe before the hint, with no base plan to hold the copies against) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-11-06, #394 review). Each refusal is red and names the variable and the remedy, and the second is the one the first would have given with the default written. |
+| A variable a directive checks by form, carried to it by a snippet's argument — `import tlsmin {$X:tls1.2}` with `protocols {args[0]}` in the snippet — is refused as not knowable: the adapter places its refusal at the snippet's line, not the import's, and whether the snippet uses the argument once or again cannot be told from its words. | `probe`, `refusedAt` (`backups/plan/make.go`) | 2 | 5 | 1 | 10 | size 3, risk 2 (a second value the check accepts is not to be had in general; reading the snippet is reading syntax) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-11-06, #394 review). Red where green was due, naming the variable and the cause; the remedy is the value written in the snippet, or the argument named for what it is. |
+| A value a directive checks by form written inside a quoted string or a heredoc that spans lines, or after a line ending in an escaped backslash (`\\`), is placed by the adapter at the token's first line, or the physical one, and here at the occurrence's own, or the chain's start — the lexer's lines are counted for what follows a multi-line token, and `tokenLine` reads a `\\` at a line's end as a chain — so it is refused as not knowable where it is inert. | `probe`, `tokenLine` (`backups/plan/make.go`) | 2 | 5 | 1 | 10 | size 2, risk 1 (follow the lexer's quoted, heredoc and escape state) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (2026-11-06, #394 review). A protocol name, a policy or a redirect code is one token on one line; one spanning lines, or after an escaped backslash, is refused, red and named. |
 
 ## Development
 
