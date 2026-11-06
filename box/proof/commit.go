@@ -2,6 +2,7 @@ package proof
 
 import (
 	"bytes"
+	"encoding/base64"
 )
 
 // MaxCommit bounds a commit object (DESIGN-box.md, "Store rules").
@@ -125,6 +126,9 @@ func ParseCommit(raw []byte) (*Commit, error) {
 		c.Signature = sig
 		switch {
 		case bytes.HasPrefix(sig, []byte("-----BEGIN SSH SIGNATURE-----")):
+			if !canonicalSSHArmor(sig) {
+				return nil, refuse("bundle: commit: the SSH signature is not armored as ssh-keygen writes it (its base64 in lines of 70 characters between the BEGIN and END lines, and nothing else): the box reads one spelling of a signature, since the commit's id covers the armor and the signature does not — sign with ssh-keygen, git's own gpg.ssh.program")
+			}
 			c.Kind = SSHSig
 		case bytes.HasPrefix(sig, []byte("-----BEGIN PGP SIGNATURE-----")):
 			c.Kind = OpenPGPSig
@@ -144,4 +148,43 @@ func printableASCII(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// canonicalSSHArmor says whether sig is an SSH signature's armor as
+// ssh-keygen writes it and git stores it: the BEGIN line, the blob's
+// base64 in lines of 70 characters (the last one shorter), the END
+// line, each ending in "\n", and nothing else. The commit's id hashes
+// the armor; the signature covers the commit without it. So every other
+// spelling of one signature — the base64 re-wrapped, a blank or a
+// space-padded line, which ssh-keygen reads all the same — would be a
+// second commit id for the one signed payload, and a baseline the
+// repository never had (DESIGN-box.md, step 12).
+func canonicalSSHArmor(sig []byte) bool {
+	const begin, end = "-----BEGIN SSH SIGNATURE-----\n", "-----END SSH SIGNATURE-----\n"
+	if len(sig) < len(begin)+len(end) || !bytes.HasPrefix(sig, []byte(begin)) || !bytes.HasSuffix(sig, []byte(end)) {
+		return false
+	}
+	body := sig[len(begin) : len(sig)-len(end)]
+	blob, err := base64.StdEncoding.DecodeString(string(bytes.ReplaceAll(body, []byte("\n"), nil)))
+	if err != nil || len(blob) == 0 {
+		return false
+	}
+	return bytes.Equal(sig, ArmorSSH(blob))
+}
+
+// ArmorSSH is the one armor of blob the box reads (canonicalSSHArmor):
+// what ssh-keygen writes. The test harness signs with it too, so the
+// fixtures and the rule cannot drift apart.
+func ArmorSSH(blob []byte) []byte {
+	b64 := base64.StdEncoding.EncodeToString(blob)
+	var out bytes.Buffer
+	out.WriteString("-----BEGIN SSH SIGNATURE-----\n")
+	for len(b64) > 70 {
+		out.WriteString(b64[:70])
+		out.WriteByte('\n')
+		b64 = b64[70:]
+	}
+	out.WriteString(b64)
+	out.WriteString("\n-----END SSH SIGNATURE-----\n")
+	return out.Bytes()
 }

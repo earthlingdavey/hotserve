@@ -72,6 +72,15 @@ type App struct {
 	// Default false (https only). Exists for test rigs and LAN setups.
 	AllowInsecureHTTP bool `json:"allow_insecure_http,omitempty"`
 
+	// AllowTCPAdmin tells motel's own command gate (cmd/motel) that the
+	// admin API is meant to listen on TCP though apps run: every app
+	// shares the box's network namespace, so a TCP admin API is theirs
+	// to reconfigure the server with, and validate and reload refuse
+	// such a config without this. Exists for test rigs whose runner
+	// drives the admin API over the network; a box keeps the starter's
+	// `admin unix//run/motel/admin.sock`. Read by the gate alone.
+	AllowTCPAdmin bool `json:"allow_tcp_admin,omitempty"`
+
 	// ArtifactAllowlist declares where artifacts may be fetched from —
 	// required: there is no "any origin" mode. Entries are host
 	// ("artifacts.corp", single-tenant) or host+path prefix

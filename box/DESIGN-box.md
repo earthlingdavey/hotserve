@@ -361,7 +361,15 @@ cross-references throughout.
     box accepts is one ssh-keygen accepts.
     No `gpgsig`, an OpenPGP `gpgsig`, a `gpgsig` of neither kind or one
     the box cannot read, a `gpgsig-sha256`, an unlisted key, and an
-    altered commit each refuse by name.
+    altered commit each refuse by name. So does an SSH armor in any
+    spelling but ssh-keygen's own — the base64 in lines of 70
+    characters between the BEGIN and END lines, nothing else
+    (`canonicalSSHArmor`, box/proof/commit.go): the commit's id covers
+    the armor and the signature does not, and ssh-keygen reads the
+    base64 re-wrapped or a padded line all the same, so a second
+    spelling would be a second commit id for one signed payload — a
+    baseline the repository never had, which every later push would
+    fail to descend from until the console.
 13. **The file is the committed file.** The root tree's id equals the
     commit's `tree`; the `path`'s components are walked through the
     bundled trees (depth per the Caps table); the last entry is a blob
@@ -1001,12 +1009,13 @@ can do both by other means.
 | A run whose job summary passes GitHub's 1 MiB a step shows none of it: `bin/apply` writes every box in one step, so the boxes share the limit, and GitHub drops the whole step's summary, every box's lines (failed and superseded included), with an error annotation. One box reaches it alone with thousands of secrets' names near the 128-byte cap: 32 apps of 256 added is just over 1 MiB, and a push that removes them all and adds as many others names 16,384, about 2.1 MiB | examples/box/bin/apply | 2 | 5 | 1 | 10; named by GitHub's annotation; the job's status is unchanged, each failure's own `::error` annotation and the red job still show, and the log keeps every line; a cap would be a new branch |
 | A push against an installed file the walk refuses for any reason but an empty signer list (a console edit that imports, say) answers 500 (`could not check the push: the Caddyfile this box runs <reason>; nothing changed`), and root records `failed` for one the handler admitted before the edit, where `GET /` answers 409 for the same file | Handler contract; Message catalogue | 2 | 5 | 1 | 10; red and named; the workflow posts only after `GET /` answered 200, so it meets the 409 first unless the console edit lands mid-run. Root's `failed` is the States table's checking → failed, as designed: it writes only `out/<id>.json`, with no `txn.json`, and leaves `applied.json` as it was. A typed refusal of the running file through `check`, the push and the applier's phase is a branch in each (size 2, risk 1) |
 | The load warning for a `box` block with no audience gives an app's remedy, `audience <a name for this box>`. In a repository of several boxes, following it on each gets `bin/apply`'s one token refused on every box but the one it names | `WarnUnboundSource` (liveswap/deploytrust), from box/app.go; docs/outside-github.md, section 4 | 2 | 5 | 1 | 10; red and named: the push goes red, and the journal says `invalid audience claim`. The docs say why a box push's audience is shared. Size 2, risk 2: the warning has one remedy for both kinds of block, and giving the box its own is a branch |
+| An SSH signer that armors at a width other than ssh-keygen's 70 columns (Go's `encoding/pem` wraps at 64, RFC 2045 at 76) has every commit refused as a bundle error: the box reads one spelling, since each spelling is a commit id of its own | step 12; `canonicalSSHArmor` | 2 | 5 | 1 | 10; red and named, and the refusal says what to sign with (ssh-keygen, git's own `gpg.ssh.program`); taking a second width would be a second id for one signature, the hole the rule closes |
 
 **Owed** (over the bar, not yet fixed):
 
 | Finding | S | O | D | Where the fix lands |
 |---|---|---|---|---|
-| (none at present; the last two, the `timeouts` directive's floors and the handler's own upload bound, are built — History, 2026-10-17) | | | | |
+| (none at present; the last, the one spelling of an SSH armor, is built — History, 2026-11-06) | | | | |
 
 ## Admission
 
@@ -2571,3 +2580,7 @@ Dated one-liners; the full text of each is in git.
   (#315). The sandbox's purpose is unchanged: a guard against the
   applier's mistakes, not a boundary against a compromised applier,
   which can still start any unit through the manager.
+- 2026-11-06 — A security sweep: an SSH armor is read in one spelling,
+  ssh-keygen's own (`canonicalSSHArmor`), so one signature has one
+  commit id and the baseline moves only to a commit the repository has;
+  any other spelling refuses as a bundle error (scored 4×5×3).

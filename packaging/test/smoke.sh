@@ -290,6 +290,11 @@ expect_show $svc PrivateTmp yes
 expect_show $svc NoNewPrivileges yes
 expect_show $svc RestrictAddressFamilies AF_UNIX
 expect_show $svc SystemCallArchitectures native
+# motel.service itself: the one capability, and no way to another.
+expect_show motel.service AmbientCapabilities cap_net_bind_service
+expect_show motel.service CapabilityBoundingSet cap_net_bind_service
+expect_show motel.service NoNewPrivileges yes
+expect_show motel.service RestrictSUIDSGID yes
 # An allow list (no leading ~) that still holds io_uring_enter, the
 # rest of @aio, and not io_uring_setup: as for app units below.
 filter=" $(show $svc SystemCallFilter) "

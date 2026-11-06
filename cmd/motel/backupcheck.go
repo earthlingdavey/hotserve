@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/caddyserver/caddy/v2"
 	caddycmd "github.com/caddyserver/caddy/v2/cmd"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -15,18 +17,21 @@ import (
 	"github.com/smallhoursorg/motel/liveswap"
 )
 
-// gate holds a Caddyfile that declares a backup to what a backup run
-// can read of it, before Caddy's own command runs. A run (motel-backup)
+// gate holds a config to two rules before Caddy's own command runs
+// (checkConfig): that the admin API is off TCP where apps run
+// (checkAdmin), and that what a Caddyfile declares as a backup is what
+// a backup run can read of it (checkBackups). A run (motel-backup)
 // adapts the Caddyfile inside a view that holds the Caddyfile's own
 // directory and nothing else, as an account that owns nothing there: a
 // backup declared in a file outside that directory, or in one that
 // account may not read, is simply not in its plan, and the app is not
 // backed up while every run says ok.
 //
-// validate and reload refuse such a Caddyfile — a refused reload keeps
+// validate and reload refuse such a config — a refused reload keeps
 // the running config [measured] — and run serves it, saying why: a
 // start that refused would take every site down, after a reboot or an
-// unattended upgrade, over something the backup run says loudly. It
+// unattended upgrade, over something the backup run says loudly, or
+// over an admin API that the starter's own line keeps off TCP. It
 // returns whether the command is to go no further.
 func gate(args []string, stderr io.Writer) (stop bool) {
 	if len(args) == 0 {
@@ -36,7 +41,7 @@ func gate(args []string, stderr io.Writer) (stop bool) {
 	if cmd != "validate" && cmd != "reload" && cmd != "run" {
 		return false
 	}
-	warning, err := checkBackups(cmd, args[1:])
+	warning, err := checkConfig(cmd, args[1:])
 	switch {
 	case err != nil && cmd == "run":
 		_, _ = fmt.Fprintf(stderr, "ERROR: %v (served all the same; `motel reload` refuses this until it is mended)\n", err)
@@ -79,37 +84,64 @@ func commandFlags(name string, args []string) (*pflag.FlagSet, bool) {
 	return fs, true
 }
 
-// checkBackups loads the config the command's flags name with Caddy's
+// checkConfig holds the config the command's flags name to the gate's
+// two rules, each on its own, and joins what they refuse: neither
+// rule's early returns can drop the other's.
+func checkConfig(cmd string, args []string) (warning string, err error) {
+	cfg, file, adapter, ok := loadConfig(cmd, args)
+	if !ok {
+		return "", nil
+	}
+	adminErr := checkAdmin(cfg)
+	warning, err = checkBackups(cmd, file, adapter)
+	switch {
+	case adminErr == nil:
+		return warning, err
+	case err == nil:
+		return warning, adminErr
+	}
+	return warning, errors.New(adminErr.Error() + "; and " + err.Error())
+}
+
+// loadConfig loads the config the command's flags name with Caddy's
 // own LoadConfig — its default Caddyfile, its rule for what is one, its
-// adapt — and holds every file a backup declaration came from to the
-// Caddyfile's directory. A config that does not load says nothing here:
-// Caddy's own command says it next, in its own words. So does a config
-// that is not a Caddyfile, or not a file.
+// adapt — and says whether it did. A config that does not load says
+// nothing here: Caddy's own command says it next, in its own words. So
+// does one that is not a file: stdin or a pipe is Caddy's to read,
+// once, and a pipe nobody writes to would never answer.
 //
 // What this does not do: load `--envfile`. Caddy loads it before it
 // adapts, and a {$NAME} it sets can change what the Caddyfile imports;
 // here the Caddyfile is adapted in the environment the command was
 // started in. The packaged service passes none, and motel-backup
 // refuses an import that depends on a variable.
-func checkBackups(cmd string, args []string) (warning string, err error) {
-	fs, ok := commandFlags(cmd, args)
-	if !ok {
-		return "", nil
+func loadConfig(cmd string, args []string) (cfg []byte, file, adapter string, ok bool) {
+	fs, found := commandFlags(cmd, args)
+	if !found {
+		return nil, "", "", false
 	}
-	file, _ := fs.GetString("config")
-	adapter, _ := fs.GetString("adapter")
-	// Stdin or a pipe is Caddy's to read, once; and a pipe nobody writes
-	// to would never answer.
+	file, _ = fs.GetString("config")
+	adapter, _ = fs.GetString("adapter")
 	probe := file
 	if probe == "" {
 		probe = "Caddyfile" // what LoadConfig reads with none
 	}
 	if st, err := os.Stat(probe); file == "-" || err == nil && !st.Mode().IsRegular() { //nolint:gosec // the config the command was given, looked at before Caddy reads it
-		return "", nil
+		return nil, "", "", false
 	}
 	liveswap.ClearBackupSources()
-	_, file, adapter, err = caddycmd.LoadConfig(file, adapter)
-	if err != nil || adapter != "caddyfile" {
+	cfg, file, adapter, err := caddycmd.LoadConfig(file, adapter)
+	if err != nil {
+		return nil, "", "", false
+	}
+	return cfg, file, adapter, true
+}
+
+// checkBackups holds every file a backup declaration came from, in the
+// config loadConfig just loaded, to the Caddyfile's directory. A config
+// that is not a Caddyfile says nothing here.
+func checkBackups(cmd, file, adapter string) (warning string, err error) {
+	if adapter != "caddyfile" {
 		return "", nil
 	}
 	sources := liveswap.BackupSources()
@@ -214,6 +246,58 @@ func checkBackups(cmd string, args []string) (warning string, err error) {
 		return warning, nil
 	}
 	return warning, errors.New(strings.Join(errs, "; and "))
+}
+
+// checkAdmin refuses a config that runs apps while the admin API
+// listens on TCP. Caddy's default is localhost:2019, and localhost
+// includes every app motel runs: apps share the box's network
+// namespace (liveswap/DESIGN-sandbox.md), so one that reaches the admin
+// API loads a config of its own — a sibling's root and env file, the
+// TLS keys served as files — with every sandbox intact. The starter
+// puts the API on a unix socket (`admin unix//run/motel/admin.sock`,
+// packaging/Caddyfile), which no HTTP client can be steered at and no
+// app's view holds; this asks that the line stayed, whoever edited or
+// pushed the file. A config that runs no app is not asked, one that
+// says the TCP listener is meant (`allow_tcp_admin` in the liveswap
+// block: a test rig whose runner drives the admin API over the
+// network) is let through, and one Caddy cannot read is Caddy's to
+// refuse.
+func checkAdmin(cfg []byte) error {
+	var c struct {
+		Admin *struct {
+			Disabled bool   `json:"disabled"`
+			Listen   string `json:"listen"`
+		} `json:"admin"`
+		Apps struct {
+			Liveswap *struct {
+				Apps          map[string]json.RawMessage `json:"apps"`
+				AllowTCPAdmin bool                       `json:"allow_tcp_admin"`
+			} `json:"liveswap"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(cfg, &c); err != nil || c.Apps.Liveswap == nil || len(c.Apps.Liveswap.Apps) == 0 || c.Apps.Liveswap.AllowTCPAdmin {
+		return nil
+	}
+	// Caddy's default, as the config alone says it: CADDY_ADMIN in the
+	// command's environment moves Caddy's own default, but a shell's
+	// environment is not the unit's, and the config is what both run.
+	listen, implied := "localhost:2019", true
+	if c.Admin != nil {
+		if c.Admin.Disabled {
+			return nil
+		}
+		if c.Admin.Listen != "" {
+			listen, implied = c.Admin.Listen, false
+		}
+	}
+	if addr, err := caddy.ParseNetworkAddress(listen); err == nil && addr.IsUnixNetwork() {
+		return nil
+	}
+	where := listen
+	if implied {
+		where += " (Caddy's default: the config names no admin listener; a CADDY_ADMIN in this environment is not read here)"
+	}
+	return fmt.Errorf("the admin API listens on %s, which every app this config runs can reach: apps share the box's network namespace, and one that reaches the admin API reconfigures the whole server — put `admin unix//run/motel/admin.sock` in the global block (packaging/Caddyfile has it), or `admin off`, then `systemctl restart motel` once: a reload asks the admin API where the new file puts it, and the running motel answers where the old one did", where)
 }
 
 // sameFile says whether a and b are one Caddyfile: the same path, or the

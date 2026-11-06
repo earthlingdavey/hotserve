@@ -80,3 +80,8 @@ Dated one-liners; the full text of each is in git.
   on it and setup is not what puts it right. The smoke test stages
   each. Two residuals of the line accepted (a hand-made entry at the
   path; the old path's note).
+- 2026-11-06 — A security sweep: motel.service gets
+  `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`, `NoNewPrivileges=yes`
+  and `RestrictSUIDSGID=yes`, as every other shipped unit had, so a
+  setuid binary on the host is no route from the motel uid to root
+  (scored 5×2×5); the smoke test holds the unit to them.

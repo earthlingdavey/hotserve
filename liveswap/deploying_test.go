@@ -258,6 +258,24 @@ func TestAReleaseThatCannotBeRemovedEndsAsAFailedDeploysLeftOnDisk(t *testing.T)
 	}
 }
 
+// A staged artifact a stop left mid-transfer in tmp/ goes at the start
+// that follows, once recovery settles the app — before the next deploy
+// could fail an upload on the disk it holds. A name of another shape
+// is left alone.
+func TestRecoverySettleRemovesAStagedArtifactAStopLeft(t *testing.T) {
+	rig := newTestRig(t)
+	must(t, os.MkdirAll(rig.spec.dirs.tmp, 0o750))
+	for _, n := range []string{"push-abc.tar.gz", "artifact-def.tar.gz", "other.tar.gz"} {
+		must(t, os.WriteFile(rig.spec.dirs.tmp+"/"+n, []byte("x"), 0o600))
+	}
+	rig.ma.settleAfterRecovery(rig.ma.snapshot(), "")
+	entries, err := os.ReadDir(rig.spec.dirs.tmp)
+	must(t, err)
+	if len(entries) != 1 || entries[0].Name() != "other.tar.gz" {
+		t.Fatalf("tmp/ holds %v, want other.tar.gz alone", entries)
+	}
+}
+
 func TestARecordThatCannotBeReadIsNeitherReplacedNorActedOn(t *testing.T) {
 	// The record may be that deploy's own: nothing is written over it,
 	// and nothing removed on a guess.

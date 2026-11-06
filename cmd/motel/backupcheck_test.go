@@ -50,7 +50,7 @@ func write(t *testing.T, path, body string, mode os.FileMode) {
 
 const app = "app blog {\n\tcommand /bin/true\n\tbackup {\n\t\tfiles .\n\t}\n}\n"
 
-func global(body string) string { return "{\n\tliveswap {\n" + body + "\t}\n}\n" }
+func global(body string) string { return "{\n\tadmin off\n\tliveswap {\n" + body + "\t}\n}\n" }
 
 // config is a directory standing for /etc/motel, open to others as
 // it is on a box, and one outside it.
@@ -70,7 +70,7 @@ func dirs(t *testing.T) (config, outside string) {
 func checked(t *testing.T, cmd string, flags ...string) {
 	t.Helper()
 	liveswap.ClearBackupSources()
-	if _, err := checkBackups(cmd, flags); err != nil {
+	if _, err := checkConfig(cmd, flags); err != nil {
 		t.Fatalf("%s %q: %v", cmd, flags, err)
 	}
 	if len(liveswap.BackupSources()) == 0 {
@@ -148,7 +148,7 @@ func TestABackupDeclaredOutsideTheCaddyfilesDirectoryIsRefused(t *testing.T) {
 			config, outside := dirs(t)
 			write(t, filepath.Join(outside, tc.outsideFile), tc.outsideBody, 0o644)
 			write(t, config+"/Caddyfile", strings.ReplaceAll(tc.caddyfile, "OUTSIDE", outside), 0o644)
-			_, err := checkBackups("validate", []string{"--config", config + "/Caddyfile"})
+			_, err := checkConfig("validate", []string{"--config", config + "/Caddyfile"})
 			for _, w := range tc.want {
 				w = strings.NewReplacer("OUTSIDE", outside, "CONFIG", config).Replace(w)
 				if err == nil || !strings.Contains(err.Error(), w) {
@@ -178,7 +178,7 @@ func TestWhatOthersMayNotReadIsRefused(t *testing.T) {
 			if err := os.Chmod(config+"/apps", tc.appsMode); err != nil {
 				t.Fatal(err)
 			}
-			_, err := checkBackups(tc.cmd, []string{"--config", config + "/Caddyfile"})
+			_, err := checkConfig(tc.cmd, []string{"--config", config + "/Caddyfile"})
 			if w := strings.ReplaceAll(tc.want, "CONFIG", config); err == nil || !strings.Contains(err.Error(), w) {
 				t.Fatalf("want %q in the error, got %v", w, err)
 			}
@@ -197,7 +197,7 @@ func TestACandidateIsNotHeldToWhereItStands(t *testing.T) {
 	}
 	write(t, stage+"/.1.Caddyfile", global(app), 0o600)
 	checked(t, "validate", "--config", stage+"/.1.Caddyfile")
-	_, err := checkBackups("reload", []string{"--config", stage + "/.1.Caddyfile"})
+	_, err := checkConfig("reload", []string{"--config", stage + "/.1.Caddyfile"})
 	for _, w := range []string{
 		"the Caddyfile, " + stage + "/.1.Caddyfile, may not be read by others",
 		"blog's backup is read from " + stage + "/.1.Caddyfile, which others may not read",
@@ -210,7 +210,7 @@ func TestACandidateIsNotHeldToWhereItStands(t *testing.T) {
 	_, outside := dirs(t)
 	write(t, outside+"/shop.caddy", app, 0o644)
 	write(t, stage+"/.2.Caddyfile", global("\t\timport "+outside+"/shop.caddy\n"), 0o600)
-	_, err = checkBackups("validate", []string{"--config", stage + "/.2.Caddyfile"})
+	_, err = checkConfig("validate", []string{"--config", stage + "/.2.Caddyfile"})
 	if w := "blog's backup is read from " + outside + "/shop.caddy, outside " + stage; err == nil || !strings.Contains(err.Error(), w) {
 		t.Fatalf("validate of a candidate importing from outside: want %q in the error, got %v", w, err)
 	}
@@ -219,7 +219,7 @@ func TestACandidateIsNotHeldToWhereItStands(t *testing.T) {
 	config, _ := dirs(t)
 	write(t, config+"/Caddyfile", global(app), 0o600)
 	installed(t, config+"/Caddyfile")
-	_, err = checkBackups("validate", []string{"--config", config + "/Caddyfile"})
+	_, err = checkConfig("validate", []string{"--config", config + "/Caddyfile"})
 	if w := "the Caddyfile, " + config + "/Caddyfile, may not be read by others"; err == nil || !strings.Contains(err.Error(), w) {
 		t.Fatalf("validate of the file backups read: want %q in the error, got %v", w, err)
 	}
@@ -228,7 +228,7 @@ func TestACandidateIsNotHeldToWhereItStands(t *testing.T) {
 	if err := os.Chmod(config, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	_, err = checkBackups("validate", []string{"--config", config + "/Caddyfile"})
+	_, err = checkConfig("validate", []string{"--config", config + "/Caddyfile"})
 	if w := "blog's backup is read from under " + config + ", which others may not enter"; err == nil || !strings.Contains(err.Error(), w) {
 		t.Fatalf("validate of the file backups read, in a 0750 directory: want %q in the error, got %v", w, err)
 	}
@@ -254,13 +254,57 @@ func TestNothingIsAskedOfWhatHasNoBackupToLose(t *testing.T) {
 		// ".caddyfile" as JSON, with no --adapter; so is it left here.
 		{"--config", config + "/sites.conf"},
 	} {
-		if _, err := checkBackups("validate", flags); err != nil {
+		if _, err := checkConfig("validate", flags); err != nil {
 			t.Errorf("%q: %v", flags, err)
 		}
 	}
 }
 
 // validate and reload stop; run serves, and says why.
+// Apps share the box's network namespace, so an admin API on TCP is
+// theirs to reach: a Caddyfile that runs apps is refused (validate,
+// reload), or served with the error said (run), unless the API is off
+// or on a unix socket. One that runs no app is not asked. The default
+// is the config's alone: a CADDY_ADMIN in the shell that validates is
+// not the unit's.
+func TestAnAdminAPIOnTCPIsRefusedWhereAppsRun(t *testing.T) {
+	t.Setenv("CADDY_ADMIN", "unix//nowhere/admin.sock")
+	config, _ := dirs(t)
+	caddyfile := func(adminLine string) string {
+		return "{\n" + adminLine + "\tliveswap {\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n"
+	}
+	for name, tc := range map[string]struct{ body, want string }{
+		"the default":      {caddyfile(""), "localhost:2019 (Caddy's default"},
+		"tcp":              {caddyfile("\tadmin 0.0.0.0:2019\n"), "0.0.0.0:2019"},
+		"unix socket":      {caddyfile("\tadmin unix/" + config + "/admin.sock\n"), ""},
+		"off":              {caddyfile("\tadmin off\n"), ""},
+		"no app":           {":8080 {\n\trespond ok\n}\n", ""},
+		"said to be meant": {"{\n\tadmin 0.0.0.0:2019\n\tliveswap {\n\t\tallow_tcp_admin\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n", ""},
+	} {
+		write(t, config+"/Caddyfile", tc.body, 0o644)
+		_, err := checkConfig("validate", []string{"--config", config + "/Caddyfile"})
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: %v", name, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), "the admin API listens on "+tc.want)):
+			t.Errorf("%s: %v, want the admin API refused", name, err)
+		}
+	}
+	// A config that is not a Caddyfile is asked the same: the rule is the
+	// adapted config's, whatever wrote it.
+	write(t, config+"/caddy.json", `{"apps":{"liveswap":{"apps":{"blog":{"command":["/bin/true"]}}}}}`, 0o644)
+	if _, err := checkConfig("validate", []string{"--config", config + "/caddy.json"}); err == nil || !strings.Contains(err.Error(), "the admin API listens on localhost:2019 (Caddy's default") {
+		t.Errorf("a JSON config: %v, want the admin API refused", err)
+	}
+	write(t, config+"/Caddyfile", caddyfile(""), 0o644)
+	for cmd, stops := range map[string]bool{"validate": true, "reload": true, "run": false} {
+		var stderr bytes.Buffer
+		if got := gate([]string{cmd, "--config", config + "/Caddyfile"}, &stderr); got != stops || !strings.Contains(stderr.String(), "the admin API listens on localhost:2019") {
+			t.Errorf("%s: stop = %v, want %v; said %q", cmd, got, stops, stderr.String())
+		}
+	}
+}
+
 func TestOnlyValidateAndReloadAreStopped(t *testing.T) {
 	config, outside := dirs(t)
 	write(t, outside+"/shop.caddy", app, 0o644)
@@ -291,7 +335,7 @@ func TestAConfigThatIsNotAFileIsLeftToCaddy(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { _, err := checkBackups("validate", []string{"--config", fifo}); done <- err }()
+	go func() { _, err := checkConfig("validate", []string{"--config", fifo}); done <- err }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -312,7 +356,7 @@ func TestABackupReadThroughALinkOutIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, config+"/Caddyfile", global("\t\timport apps/*.caddy\n"), 0o644)
-	_, err := checkBackups("validate", []string{"--config", config + "/Caddyfile"})
+	_, err := checkConfig("validate", []string{"--config", config + "/Caddyfile"})
 	if w := "blog's backup is read from " + config + "/apps/blog.caddy, which leads to " + outside + "/blog.caddy, outside " + config; err == nil || !strings.Contains(err.Error(), w) {
 		t.Fatalf("want %q in the error, got %v", w, err)
 	}
@@ -405,7 +449,7 @@ func TestAReloadOfAnotherCaddyfileIsRefusedWhereBackupsReadTheCanonicalOne(t *te
 	}
 	// Another that declares no backup is none of this.
 	write(t, config+"/Caddyfile.plain", "http://:8080 {\n\trespond hi\n}\n", 0o644)
-	if w, err := checkBackups("reload", []string{"--config", config + "/Caddyfile.plain"}); w != "" || err != nil {
+	if w, err := checkConfig("reload", []string{"--config", config + "/Caddyfile.plain"}); w != "" || err != nil {
 		t.Errorf("no backup declared: %q, %v", w, err)
 	}
 }

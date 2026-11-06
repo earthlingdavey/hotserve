@@ -280,14 +280,18 @@ line.
   not every repository `setup` refuses (Accepted residuals). `setup` is
   its one writer, and `status`, as root, its one other reader.
 - **What an operator or an app wrote stays off command lines**, with
-  one exception. Units get the app's declaration as a root-written file
+  two exceptions. Units get the app's declaration as a root-written file
   bound at a fixed path, and declared paths as bind sources. Every
   property is sent to systemd typed, over D-Bus, and commands as
   `ExecStartEx` with `no-env-expand`: a directory called
-  `$RESTIC_PASSWORD %h` is backed up under that name. The exception is
+  `$RESTIC_PASSWORD %h` is backed up under that name. The exceptions are
   the listing: the directory part of a nested declared path
   (`media` of `media/uploads`) is an argument to `restic ls`, after
-  `--`, as `/backup/<app>/files/media`.
+  `--`, as `/backup/<app>/files/media`; and the dump: a declared
+  sqlite path, percent-escaped into a `file:` URI and quoted as a SQL
+  literal, is in the statements on `sqlite3`'s command line (`execute`
+  and `RestoreOver`, backups/dump/dump.go), readable in
+  `/proc/<pid>/cmdline` as the paths in `status.json` already are.
 - **Root never reads what an app wrote.** It opens `shared/` and each
   declared path as `O_PATH` — a descriptor that names a file and cannot
   read it — makes each app's staging directory, makes mounts, and

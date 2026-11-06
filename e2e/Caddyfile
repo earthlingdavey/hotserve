@@ -8,7 +8,10 @@
 {
 	# TCP admin is TEST-ONLY (the runner container drives /load and
 	# reads /metrics over the network). Production ships the admin API
-	# on a unix socket — see packaging/Caddyfile for why.
+	# on a unix socket — see packaging/Caddyfile for why. validate and
+	# reload refuse a config that runs apps with the admin API on TCP
+	# (cmd/motel's gate: every app can reach it); the liveswap block's
+	# `allow_tcp_admin` below says it is meant here.
 	admin 0.0.0.0:2019
 	auto_https off
 
@@ -28,6 +31,7 @@
 	liveswap {
 		root /var/lib/liveswap
 		allow_insecure_http
+		allow_tcp_admin
 		artifact_allowlist e2e-artifacts:8080
 		deploy_trust local {
 			public_key /shared/deploy.pub

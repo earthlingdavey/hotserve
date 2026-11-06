@@ -171,8 +171,10 @@ func NewRedactor(envFile []string, safe []string) *Redactor {
 		forms := secretForms(value)
 		// A connection URL's password is a secret on its own: a driver
 		// prints it without the rest of the URL.
-		if pw := urlPassword(value); len(pw) >= secretMinLen {
-			forms = append(forms, secretForms(pw)...)
+		for _, pw := range urlPasswords(value) {
+			if len(pw) >= secretMinLen {
+				forms = append(forms, secretForms(pw)...)
+			}
 		}
 		for _, form := range forms {
 			if len(form) < secretMinLen {
@@ -246,18 +248,52 @@ func chooseMarker(keys []string, all []string) string {
 	}
 }
 
-// urlPassword is the password in a value of the form
-// scheme://user:password@host…, or "".
-func urlPassword(v string) string {
-	if !strings.Contains(v, "://") {
-		return ""
+// urlPasswords is every password in a value of the form
+// scheme://user:password@host…, as a driver reads it and as net/url
+// does, where the two differ. libpq and others take a password with
+// an unescaped `#`, a bare `%` or a space as it stands, where url.Parse
+// reads a fragment, fails on the escape, or finds no user; so each
+// authority is split by hand — after a `://`, up to the first `/`, `?`
+// or control character, the user and password before its last `@` —
+// and each `://` is an authority, since a driver's list of hosts
+// (`http://a:9200,http://u:pw@b:9200`) holds several. net/url's reading
+// counts beside it, for the escapes it decodes (`p%40ss` as `p@ss`),
+// where the hand found one: an authority with no `@` is one with no
+// user, or one cut inside a password that holds `/` or `?`, which both
+// read short — and what stands before the cut is not the secret, so
+// masking it wherever it appears would be a mask over nothing. Such a
+// password is not read on its own (the residual); the URL whole still
+// is. A space is a password's to hold, so a URL followed by prose with
+// a `:` and an `@` in it reads a password that is none (the other
+// residual, DESIGN-liveswap.md): a mask over a string that was no
+// secret, named for the key.
+func urlPasswords(v string) []string {
+	var pws []string
+	for rest := v; ; {
+		i := strings.Index(rest, "://")
+		if i < 0 {
+			break
+		}
+		rest = rest[i+3:]
+		authority := rest
+		if j := strings.IndexFunc(authority, func(r rune) bool { return r == '/' || r == '?' || r < ' ' }); j >= 0 {
+			authority = authority[:j]
+		}
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			if _, pw, ok := strings.Cut(authority[:at], ":"); ok && !contains(pws, pw) {
+				pws = append(pws, pw)
+			}
+		}
 	}
-	u, err := url.Parse(v)
-	if err != nil || u.User == nil {
-		return ""
+	if len(pws) == 0 {
+		return nil
 	}
-	pw, _ := u.User.Password()
-	return pw
+	if u, err := url.Parse(v); err == nil && u.User != nil {
+		if pw, ok := u.User.Password(); ok && !contains(pws, pw) {
+			pws = append(pws, pw)
+		}
+	}
+	return pws
 }
 
 // secretForms is every encoding of a value the filter recognises.

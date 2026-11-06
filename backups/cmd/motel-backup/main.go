@@ -29,8 +29,9 @@
 //	motel-backup install check it, and install it into /target if all of it is sound
 //	motel-backup extract check it, and install what is sound into /target
 //
-// (The one string of a declaration's that does reach a command line is
-// the directory part of a nested path, to `restic ls`: engine.verify.
+// (Two strings of a declaration's do reach a command line: the directory
+// part of a nested path, to `restic ls` (engine.verify), and a declared
+// sqlite path, in the SQL on `sqlite3`'s argv (dump.execute, RestoreOver).
 // validate's argument is a path this process opens; it starts no unit.)
 //
 // It does not link Caddy, and motel does not run it: the two share a

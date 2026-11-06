@@ -545,7 +545,7 @@ func stageUpload(body io.Reader, tmpDir string, maxBytes int64) (string, string,
 	if err := os.MkdirAll(tmpDir, 0o750); err != nil {
 		return "", "", &stagingError{err}
 	}
-	f, err := os.CreateTemp(tmpDir, "push-*.tar.gz")
+	f, err := os.CreateTemp(tmpDir, pushTempPattern)
 	if err != nil {
 		return "", "", &stagingError{err}
 	}

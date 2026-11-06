@@ -241,4 +241,7 @@ func (ma *managedApp) settleAfterRecovery(c collaborators, keep string) {
 	if err := ma.settleInterrupted(c, keep); err != nil {
 		c.logger.Error("deploy marker not removed; each start and deploy tries again", zap.Error(err))
 	}
+	// And what a stop left mid-transfer: a staged artifact in tmp/,
+	// which no deploy would remove and the next upload could fail on.
+	removeStagedArtifacts(c.spec.dirs)
 }
