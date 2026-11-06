@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""The merge rule of usage.py, run by `make usage-check`: stdlib unittest."""
+"""The merge rule and the transcript step of usage.py, run by `make usage-check`: stdlib unittest."""
 import contextlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -81,6 +82,116 @@ class MergeTests(unittest.TestCase):
             usage.merge(group, True)
         self.assertEqual(usage.read_csv(runs), new_runs)
         self.assertEqual(usage.read_csv(jobs), new_jobs)
+
+
+class ClaudeTests(unittest.TestCase):
+    """collect-claude: which project directories count, and whose file the counts land in."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        cwd = os.getcwd()
+        os.chdir(self.dir.name)
+        self.addCleanup(os.chdir, cwd)
+        self.root = os.path.join(self.dir.name, "projects")
+
+    def transcript(self, project, calls):
+        d = os.path.join(self.root, project)
+        os.makedirs(d)
+        with open(os.path.join(d, "s.jsonl"), "w") as f:
+            for i in range(calls):
+                f.write(json.dumps({"timestamp": "2026-09-01T00:00:00Z", "requestId": f"{project}{i}", "message": {
+                    "id": f"{project}{i}", "model": "claude-x", "usage": {"input_tokens": 1, "output_tokens": 2}}}) + "\n")
+
+    def test_match_takes_several_names(self):
+        self.transcript("-x-motel", 1)
+        self.transcript("-x-oldname", 2)
+        self.transcript("-x-other", 4)
+        for match in ("motel,oldname", "motel, oldname", ",oldname , motel,"):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                got = usage.collect_claude(self.root, match)
+            self.assertEqual([(r["month"], r["model"], r["calls"]) for r in got], [("2026-09", "claude-x", "3")])
+            self.assertIn("not counted: 1 other project directories (see --match)", out.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            usage.collect_claude(self.root, "-x-")
+        self.assertNotIn("not counted", out.getvalue())
+        for match in ("nothing", ",", ""):
+            with self.assertRaises(SystemExit) as cm:
+                usage.collect_claude(self.root, match)
+            if match == "nothing":
+                self.assertIn("; 3 other project directories (see --match)", str(cm.exception))
+
+    def test_machine_names_a_public_file(self):
+        self.assertEqual(usage.claude_path("laptop-1"), "usage/claude/laptop-1.csv")
+        usage.check_machine("laptop-1")
+        for bad in ("", "Laptop", "a b", "a.b", "-a", "../x"):
+            with self.assertRaises(SystemExit):
+                usage.check_machine(bad)
+
+    def test_a_new_label_beside_old_files_warns(self):
+        """A fresh checkout on a machine that has a file: no local.json, so the warning is the guard."""
+        os.makedirs(usage.CLAUDE_DIR)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            usage.check_machine("a")  # the first file: nothing to compare with
+        self.assertEqual(err.getvalue(), "")
+        usage.write_csv(usage.claude_path("a"), KEYS + COLS, [])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            usage.check_machine("a")
+        self.assertEqual(err.getvalue(), "")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            usage.check_machine("a-1")
+        self.assertIn("a-1 is a new machine (files so far: a)", err.getvalue())
+
+    def test_the_label_is_given_once_and_the_match_is_the_last_given(self):
+        os.makedirs("usage")
+        self.assertEqual(usage.local_settings("", ""), ("", "motel"))
+        self.assertEqual(usage.local_settings("a", "x,y"), ("a", "x,y"))
+        usage.save_local("a", "x,y")
+        self.assertEqual(usage.local_settings("", ""), ("a", "x,y"))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(usage.local_settings("a", " x, y "), ("a", "x,y"))  # the same names, spelt otherwise
+        self.assertEqual(out.getvalue(), "")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(usage.local_settings("a", "z"), ("a", "z"))  # a new match replaces the kept one, said so
+        self.assertIn("usage/local.json now keeps --match 'z' (was 'x,y')", out.getvalue())
+        usage.save_local("a", "z")
+        self.assertEqual(usage.local_settings("", ""), ("a", "z"))
+        usage.save_local("", "z")  # a hand-emptied label is repaired by the next run that gives one
+        self.assertEqual(usage.local_settings("b", ""), ("b", "z"))
+        usage.save_local("a", "z")
+        with self.assertRaises(SystemExit) as cm:
+            usage.local_settings("b", "")
+        self.assertIn("machine is 'a' and --machine says 'b'", str(cm.exception))
+        self.assertIn("delete usage/local.json, since usage/claude/a.csv does not exist here", str(cm.exception))
+        os.makedirs(usage.CLAUDE_DIR)
+        usage.write_csv(usage.claude_path("a"), KEYS + COLS, [])
+        with self.assertRaises(SystemExit) as cm:
+            usage.local_settings("b", "")
+        self.assertIn("git mv usage/claude/a.csv to usage/claude/b.csv and delete usage/local.json", str(cm.exception))
+        for body in ("{nope", "[]", '{"machine": 5}', '{"machine": "a", "match": ["x"]}', '{"machine": "Dev Box"}'):
+            with open(usage.LOCAL, "w") as f:
+                f.write(body)
+            with self.assertRaises(SystemExit):
+                usage.local_settings("", "")
+
+    def test_an_identical_row_names_the_earlier_label(self):
+        """The same machine run under a second label: its rows already sit in the first file."""
+        os.makedirs(usage.CLAUDE_DIR)
+        usage.write_csv(usage.claude_path("a"), KEYS + COLS, rows(("2026-09", "m", 1, 10), ("2026-10", "m", 2, 20)))
+        self.assertEqual(usage.same_machine("a", rows(("2026-09", "m", 1, 10))), None)  # its own file
+        self.assertEqual(usage.same_machine("b", rows(("2026-09", "m", 1, 10), ("2026-10", "m", 3, 30))), "a")
+        self.assertEqual(usage.same_machine("b", rows(("2026-09", "m", 1, 11))), None)  # another machine
+        self.assertEqual(usage.same_machine("b", []), None)
+        self.assertEqual(usage.match_names(",oldname , motel,"), ["oldname", "motel"])
+
+    def test_every_machine_file_is_read(self):
+        os.makedirs(usage.CLAUDE_DIR)
+        with contextlib.redirect_stderr(io.StringIO()):
+            usage.write_csv(usage.claude_path("a"), KEYS + COLS, rows(("2026-09", "m", 1, 10)))
+            usage.write_csv(usage.claude_path("b"), KEYS + COLS, rows(("2026-09", "m", 2, 20), ("2026-10", "m", 3, 30)))
+        self.assertEqual(usage.machines(), ["a", "b"])
+        self.assertEqual(usage.read_claude(),
+                         rows(("2026-09", "m", 1, 10), ("2026-09", "m", 2, 20), ("2026-10", "m", 3, 30)))
 
 
 class HandEditedFileTests(unittest.TestCase):
