@@ -219,7 +219,7 @@ func canonicalScalar(blob []byte) bool {
 	var inner struct {
 		Format string
 		Blob   []byte
-		Rest   []byte `ssh:"rest"` // an sk- signature's flags and counter
+		Rest   []byte `ssh:"rest"` // an sk- signature's flags and counter, which its Blob signs over (DESIGN-box.md, step 12)
 	}
 	if err := ssh.Unmarshal(sig.Signature, &inner); err != nil || len(inner.Blob) != 64 {
 		return true

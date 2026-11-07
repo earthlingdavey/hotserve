@@ -286,9 +286,13 @@ func TestAnAdminAPIOnTCPIsRefusedWhereAppsRun(t *testing.T) {
 		"socket in the base view":       {caddyfile("\tadmin unix//usr/local/run/admin.sock\n"), "unix//usr/local/run/admin.sock, which an app this config runs can reach: /usr/local/run/admin.sock is under /usr, which is bound read-only"},
 		"socket under a configured root": {"{\n\tadmin unix/" + config + "/apps/blog/shared/admin.sock|0660\n\tliveswap {\n\t\troot " + config + "/apps\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n",
 			"unix/" + config + "/apps/blog/shared/admin.sock|0660, which an app this config runs can reach: " + config + "/apps/blog/shared/admin.sock is under the liveswap root " + config + "/apps"},
-		"off":              {caddyfile("\tadmin off\n"), ""},
-		"no app":           {":8080 {\n\trespond ok\n}\n", ""},
-		"said to be meant": {"{\n\tadmin 0.0.0.0:2019\n\tliveswap {\n\t\tallow_tcp_admin\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n", ""},
+		// A relative path is Caddy's working directory's to place, which
+		// the gate cannot see; one under the liveswap root would pass
+		// the view check above by its spelling.
+		"socket at a relative path": {caddyfile("\tadmin unix/admin.sock|0660\n"), "unix/admin.sock|0660, a unix socket at a relative path"},
+		"off":                       {caddyfile("\tadmin off\n"), ""},
+		"no app":                    {":8080 {\n\trespond ok\n}\n", ""},
+		"said to be meant":          {"{\n\tadmin 0.0.0.0:2019\n\tliveswap {\n\t\tallow_tcp_admin\n\t\tapp blog {\n\t\t\tcommand /bin/true\n\t\t}\n\t}\n}\n", ""},
 	} {
 		write(t, config+"/Caddyfile", tc.body, 0o644)
 		_, err := checkConfig("validate", []string{"--config", config + "/Caddyfile"})

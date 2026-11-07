@@ -330,7 +330,9 @@ func checkBackups(cmd, file, adapter string) (warning string, err error) {
 // pushed the file, and that the socket is where no app's view holds
 // it (liveswap.AdminSocketInView: not under the liveswap root, whose
 // directories are bound into the apps' sandboxes, nor under the base
-// view every sandbox holds read-only). A config that runs no app is
+// view every sandbox holds read-only), named by its whole path, since
+// a relative one is Caddy's working directory's to place and this
+// cannot see where that is. A config that runs no app is
 // not asked, one that says the TCP listener is meant (`allow_tcp_admin`
 // in the liveswap block: a test rig whose runner drives the admin API
 // over the network) is let through, and one Caddy cannot read is
@@ -364,15 +366,25 @@ func checkAdmin(cfg []byte) error {
 			listen, implied = c.Admin.Listen, false
 		}
 	}
-	// A unix socket on the filesystem, where no app's view holds it; not
-	// an abstract one (`unix/@name`), which lives in the network
-	// namespace the apps share, as a TCP port does. Placeholders in the
+	// A unix socket on the filesystem, named whole, where no app's view
+	// holds it; not an abstract one (`unix/@name`), which lives in the
+	// network namespace the apps share, as a TCP port does, and not a
+	// relative path, which is read against a working directory this
+	// check cannot see. Placeholders in the
 	// root and the path are read as Caddy reads them at load, from this
 	// environment, which the envfiles have joined.
 	if addr, err := caddy.ParseNetworkAddress(listen); err == nil && addr.IsUnixNetwork() && !strings.HasPrefix(addr.Host, "@") {
 		sock, _, _ := strings.Cut(addr.Host, "|") // `|0660`: the socket's mode, Caddy's listener's to read
 		repl := caddy.NewReplacer()
-		why := liveswap.AdminSocketInView(repl.ReplaceKnown(c.Apps.Liveswap.Root, ""), repl.ReplaceKnown(sock, ""))
+		path := repl.ReplaceKnown(sock, "")
+		if !filepath.IsAbs(path) {
+			// `unix/admin.sock`: Caddy opens it against the working
+			// directory of whatever runs it, which this check cannot
+			// see, and a unit's WorkingDirectory can put under the
+			// liveswap root.
+			return fmt.Errorf("the admin API listens on %s, a unix socket at a relative path, which Caddy opens against the working directory of whatever runs it — one this check cannot see, and one under the liveswap root puts the socket in an app's view; name the socket's whole path (`admin unix//run/motel/admin.sock`, as packaging/Caddyfile has it), then `systemctl restart motel` once: a reload asks the admin API where the new file puts it, and the running motel answers where the old one did", listen)
+		}
+		why := liveswap.AdminSocketInView(repl.ReplaceKnown(c.Apps.Liveswap.Root, ""), path)
 		if why == "" {
 			return nil
 		}

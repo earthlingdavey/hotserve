@@ -1096,7 +1096,10 @@ Dated one-liners; the full text of each is in git.
   abstract socket (`unix/@name`) is refused as TCP is; a unix socket
   no app's view may hold — not under the liveswap root, whose
   directories are bound into the apps' sandboxes, nor under the base
-  view every sandbox holds read-only (`AdminSocketInView`, 5×5×5);
+  view every sandbox holds read-only (`AdminSocketInView`, 5×5×5), and
+  named whole, since a relative path (`unix/admin.sock`) is Caddy's
+  working directory's to place, which the gate cannot see (Copilot's
+  fourth round, 5×5×5);
   recovery's sweep of `tmp/` asks `linkAt` first, as GC does; a
   percent-encoded URL password on a later authority is registered
   decoded too.

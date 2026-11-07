@@ -385,7 +385,14 @@ cross-references throughout.
     so ECDSA keys are not signer types ("The shape"): the box's own key
     list is the one place the rule can hold, and `motel validate` on
     the new binary names an installed list that still carries one
-    (docs/upgrading.md). An RSA signature is unique to its payload.
+    (docs/upgrading.md). An RSA signature is unique to its payload. An
+    `sk-ssh-ed25519@openssh.com` signature carries the security key's
+    flags and counter beside its Ed25519 bytes, but under them: the key
+    signs SHA256(application) ‖ flags ‖ counter ‖ SHA256(message), so
+    ssh-keygen refuses a counter or flags rewritten without the key
+    (measured 2026-11-07), and a second signature by the key, with its
+    next counter, is a second signed commit as any re-signing is — the
+    signer's own, not a twin anyone else can mint.
 13. **The file is the committed file.** The root tree's id equals the
     commit's `tree`; the `path`'s components are walked through the
     bundled trees (depth per the Caps table); the last entry is a blob
@@ -2610,3 +2617,6 @@ Dated one-liners; the full text of each is in git.
   the walk after the upgrade, which `motel validate` on the new binary
   names first, so docs/upgrading.md says to rotate the signer before
   upgrading). The fixture set's second signer, bob, is RSA from here.
+  Copilot's fourth round asked after the sk signature's counter: it is
+  under the signature (measured 2026-11-07), so only the key varies it
+  and it is no twin — not a failure, not scored; step 12 says so.
