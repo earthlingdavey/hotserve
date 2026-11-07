@@ -144,9 +144,12 @@ deploy.example.com {
 - `signer <principal> <key-type> <base64>` is one person's SSH public
   key. The principal matches `^[A-Za-z0-9._@+-]+$` and nothing else
   (allowed_signers principals are patterns with `*`, `?`, `!` and `,`;
-  none may appear). Key types: `ssh-ed25519`, `ecdsa-sha2-nistp256/
-  384/521`, `sk-ssh-ed25519@openssh.com`,
-  `sk-ecdsa-sha2-nistp256@openssh.com`, `ssh-rsa`. The base64 must
+  none may appear). Key types: `ssh-ed25519`, `sk-ssh-ed25519@openssh.com`,
+  `ssh-rsa` — the ones whose signature has one spelling. An ECDSA key
+  (`ecdsa-sha2-nistp256/384/521`, `sk-ecdsa-sha2-nistp256@openssh.com`,
+  taken until 2026-11-06) is refused by name, with the reason and the
+  rotation that replaces it: its signature has two forms that verify
+  alike, so one signed commit would have two ids (step 12). The base64 must
   decode to a key of the declared type and be that key's one canonical
   line (the decoder forgives a newline inside a quoted token; the
   allowed_signers file would not). The principal is at most 256 bytes.
@@ -361,7 +364,42 @@ cross-references throughout.
     box accepts is one ssh-keygen accepts.
     No `gpgsig`, an OpenPGP `gpgsig`, a `gpgsig` of neither kind or one
     the box cannot read, a `gpgsig-sha256`, an unlisted key, and an
-    altered commit each refuse by name.
+    altered commit each refuse by name. So does an SSH armor in any
+    spelling but ssh-keygen's own — the base64 in lines of 70
+    characters between the BEGIN and END lines, nothing else
+    (`canonicalSSHArmor`, box/proof/commit.go): the commit's id covers
+    the armor and the signature does not, and ssh-keygen reads the
+    base64 re-wrapped or a padded line all the same, so a second
+    spelling would be a second commit id for one signed payload — a
+    baseline the repository never had, which every later push would
+    fail to descend from until the console. The header's place is held
+    the same way: git appends `gpgsig` as the last header
+    (`sign_with_header`), and the payload is the same wherever the
+    header sits, so one after it refuses too. And so is the blob in
+    the parts the signature does not cover and ssh-keygen reads
+    loosely (`canonicalSignature`; OpenSSH 10.0, measured 2026-11-06
+    and -07): an Ed25519 S at or above the group order L, which RFC
+    8032 has a verifier reject and ssh-keygen verifies as it does S; a
+    reserved field that is not empty, over which ssh-keygen signs and
+    verifies as if empty; an RSA signature shorter than the modulus,
+    which ssh-keygen pads — one signature in 256 begins with a zero
+    byte, and that byte stripped verifies. No signer writes any of
+    these, so each refuses as a bundle error. The envelope's version
+    and key need no rule: the box reads version 1 only, and matches
+    the key byte for byte against its list, so another encoding of it
+    is unlisted. An ECDSA signature has no such spelling — (r, n−s) is
+    a signer's own form as much as (r, s), written half the time, and
+    ssh-keygen takes both — so ECDSA keys are not signer types ("The
+    shape"): the box's own key list is the one place the rule can
+    hold, and the new binary refuses an installed list that still
+    carries one, at `validate` and at start (docs/upgrading.md). An
+    `sk-ssh-ed25519@openssh.com` signature carries the security key's
+    flags and counter beside its Ed25519 bytes, but under them: the key
+    signs SHA256(application) ‖ flags ‖ counter ‖ SHA256(message), so
+    ssh-keygen refuses a counter or flags rewritten without the key
+    (measured 2026-11-07), and a second signature by the key, with its
+    next counter, is a second signed commit as any re-signing is — the
+    signer's own, not a twin anyone else can mint.
 13. **The file is the committed file.** The root tree's id equals the
     commit's `tree`; the `path`'s components are walked through the
     bundled trees (depth per the Caps table); the last entry is a blob
@@ -1001,12 +1039,13 @@ can do both by other means.
 | A run whose job summary passes GitHub's 1 MiB a step shows none of it: `bin/apply` writes every box in one step, so the boxes share the limit, and GitHub drops the whole step's summary, every box's lines (failed and superseded included), with an error annotation. One box reaches it alone with thousands of secrets' names near the 128-byte cap: 32 apps of 256 added is just over 1 MiB, and a push that removes them all and adds as many others names 16,384, about 2.1 MiB | examples/box/bin/apply | 2 | 5 | 1 | 10; named by GitHub's annotation; the job's status is unchanged, each failure's own `::error` annotation and the red job still show, and the log keeps every line; a cap would be a new branch |
 | A push against an installed file the walk refuses for any reason but an empty signer list (a console edit that imports, say) answers 500 (`could not check the push: the Caddyfile this box runs <reason>; nothing changed`), and root records `failed` for one the handler admitted before the edit, where `GET /` answers 409 for the same file | Handler contract; Message catalogue | 2 | 5 | 1 | 10; red and named; the workflow posts only after `GET /` answered 200, so it meets the 409 first unless the console edit lands mid-run. Root's `failed` is the States table's checking → failed, as designed: it writes only `out/<id>.json`, with no `txn.json`, and leaves `applied.json` as it was. A typed refusal of the running file through `check`, the push and the applier's phase is a branch in each (size 2, risk 1) |
 | The load warning for a `box` block with no audience gives an app's remedy, `audience <a name for this box>`. In a repository of several boxes, following it on each gets `bin/apply`'s one token refused on every box but the one it names | `WarnUnboundSource` (liveswap/deploytrust), from box/app.go; docs/outside-github.md, section 4 | 2 | 5 | 1 | 10; red and named: the push goes red, and the journal says `invalid audience claim`. The docs say why a box push's audience is shared. Size 2, risk 2: the warning has one remedy for both kinds of block, and giving the box its own is a branch |
+| An SSH signer that armors at a width other than ssh-keygen's 70 columns (Go's `encoding/pem` wraps at 64, RFC 2045 at 76) has every commit refused as a bundle error: the box reads one spelling, since each spelling is a commit id of its own | step 12; `canonicalSSHArmor` | 2 | 5 | 1 | 10; red and named, and the refusal says what to sign with (ssh-keygen, git's own `gpg.ssh.program`); taking a second width would be a second id for one signature, the hole the rule closes |
 
 **Owed** (over the bar, not yet fixed):
 
 | Finding | S | O | D | Where the fix lands |
 |---|---|---|---|---|
-| (none at present; the last two, the `timeouts` directive's floors and the handler's own upload bound, are built — History, 2026-10-17) | | | | |
+| (none at present; the last, the ECDSA twin signature, is paid by dropping the ECDSA key types — History, 2026-11-06) | | | | |
 
 ## Admission
 
@@ -1391,9 +1430,9 @@ recipient is the box's key (an X25519 `age1…`, "The box's key"); each
 one after it is a **reader**: a signer's `ssh-ed25519` key, or
 `ssh-rsa` of 2048 bits or more — the only SSH keys age encrypts to
 (filippo.io/age/agessh) — or an age recipient for a person whose
-signing key age cannot use, an `sk-` or ECDSA key or one held only by
-an agent (from `age-keygen`, `age-plugin-yubikey` or
-`age-plugin-se`). `#` lines name them. The template makes each signer
+signing key age cannot use, an `sk-` key or one held only by an agent
+(from `age-keygen`, `age-plugin-yubikey` or `age-plugin-se`; an ECDSA
+key, which age cannot use either, is no signer key since 2026-11-06). `#` lines name them. The template makes each signer
 whose key age can use a reader of every box — its first `make secret`
 writes `recipients` from the box's key and the signer lines, and `make
 signer` adds the next — so on the documented path the readers are the
@@ -2571,3 +2610,26 @@ Dated one-liners; the full text of each is in git.
   (#315). The sandbox's purpose is unchanged: a guard against the
   applier's mistakes, not a boundary against a compromised applier,
   which can still start any unit through the manager.
+- 2026-11-06 — A security sweep: an SSH armor is read in one spelling,
+  ssh-keygen's own (`canonicalSSHArmor`), and the `gpgsig` header in
+  one place, last, as git writes it, so one signature has one commit
+  id and the baseline moves only to a commit the repository has; any
+  other spelling or place refuses as a bundle error (scored 4×5×3; the
+  place, Copilot on #407). Copilot's second round found the signature
+  itself has twins ssh-keygen verifies alike: an Ed25519 S + L, which no
+  signer writes, refuses the same way (`canonicalSignature`); an ECDSA
+  (r, n−s), which a signer writes half the time, has no spelling to
+  hold it to, so the owner dropped the ECDSA key types (size 1, risk 2;
+  one-way and wide: a box whose installed list still carries one does
+  not start after the upgrade, since the install restarts motel onto a
+  binary that refuses the line by name, so docs/upgrading.md says to
+  rotate the signer before upgrading). The fixture set's second signer,
+  bob, is RSA from here. A self-review measured the rest of the
+  envelope through the box's own Verifier: the version and the key's
+  encoding are already held (the box reads version 1 and matches the
+  key byte for byte); a reserved field that is not empty, and an RSA
+  signature a byte short, verify alike and are refused the same way
+  (each 4×5×3).
+  Copilot's fourth round asked after the sk signature's counter: it is
+  under the signature (measured 2026-11-07), so only the key varies it
+  and it is no twin — not a failure, not scored; step 12 says so.

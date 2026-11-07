@@ -74,15 +74,7 @@ func sshsig(t testing.TB, k testKey, namespace string, msg []byte) string {
 		Namespace, Reserved, Hash string
 		Signature                 []byte
 	}{1, signer.PublicKey().Marshal(), namespace, "", "sha512", ssh.Marshal(sig)})...)
-	b64 := base64.StdEncoding.EncodeToString(blob)
-	var out strings.Builder
-	out.WriteString("-----BEGIN SSH SIGNATURE-----\n")
-	for len(b64) > 70 {
-		out.WriteString(b64[:70] + "\n")
-		b64 = b64[70:]
-	}
-	out.WriteString(b64 + "\n-----END SSH SIGNATURE-----\n")
-	return out.String()
+	return string(proof.ArmorSSH(blob))
 }
 
 // repo is the objects of a box repository: one file at testPath per

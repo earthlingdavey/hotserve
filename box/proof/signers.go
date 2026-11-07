@@ -25,15 +25,25 @@ type Signer struct {
 // and none of those may appear, nor whitespace or a quote.
 var principalRE = regexp.MustCompile(`^[A-Za-z0-9._@+-]+$`)
 
-// keyTypes are the key types a signer line may declare.
+// keyTypes are the key types a signer line may declare: the ones whose
+// signature has one spelling. An ECDSA signature has two — (r, s) and
+// (r, n−s) verify alike, and a signer writes either — so one signed
+// commit would have two ids, and the box's baseline could be moved to
+// the one the repository lacks (DESIGN-box.md, step 12); those types
+// are refused by name (ecdsaTypes).
 var keyTypes = map[string]bool{
-	"ssh-ed25519":                        true,
+	"ssh-ed25519":                true,
+	"sk-ssh-ed25519@openssh.com": true,
+	"ssh-rsa":                    true,
+}
+
+// ecdsaTypes are the key types the box took until 2026-11-06 and
+// refuses since, with the reason, so a signer with one is told why.
+var ecdsaTypes = map[string]bool{
 	"ecdsa-sha2-nistp256":                true,
 	"ecdsa-sha2-nistp384":                true,
 	"ecdsa-sha2-nistp521":                true,
-	"sk-ssh-ed25519@openssh.com":         true,
 	"sk-ecdsa-sha2-nistp256@openssh.com": true,
-	"ssh-rsa":                            true,
 }
 
 // MaxPrincipal bounds a principal: ssh-keygen prints the matching
@@ -51,8 +61,11 @@ func ParseSigner(principal, keyType, b64 string) (Signer, error) {
 	if len(principal) > MaxPrincipal {
 		return Signer{}, fmt.Errorf("signer principal %q is longer than %d bytes", Bound(principal), MaxPrincipal)
 	}
+	if ecdsaTypes[keyType] {
+		return Signer{}, fmt.Errorf("signer %s: an %s key, which the box no longer takes: an ECDSA signature has two forms that verify alike, so one signed commit would have two ids and the box could record one the repository never had; name an ssh-ed25519 key (ssh-keygen -t ed25519, or -t ed25519-sk for a hardware key) or an ssh-rsa one in its place — in the pushed file, or, for the box's installed file, at the console (docs/upgrading.md says to rotate such a signer before upgrading)", principal, keyType)
+	}
 	if !keyTypes[keyType] {
-		return Signer{}, fmt.Errorf("signer %s: key type %q is not one of ssh-ed25519, ecdsa-sha2-nistp256/384/521, sk-ssh-ed25519@openssh.com, sk-ecdsa-sha2-nistp256@openssh.com, ssh-rsa", principal, Bound(keyType))
+		return Signer{}, fmt.Errorf("signer %s: key type %q is not one of ssh-ed25519, sk-ssh-ed25519@openssh.com, ssh-rsa", principal, Bound(keyType))
 	}
 	key, err := base64.StdEncoding.Strict().DecodeString(b64)
 	if err != nil {

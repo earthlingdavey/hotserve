@@ -53,6 +53,7 @@ func parseWebhookDirective(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler,
 //	    root                   <path>
 //	    deploy_trust <preset>  { ... }   # who may deploy (repeatable)
 //	    allow_insecure_http
+//	    allow_tcp_admin                   # test rigs: the admin API on TCP is meant
 //	    artifact_allowlist     <host[:port][/path/][?param&param...]...>
 //	    app <name> {
 //	        command           <cmd> [args...]
@@ -114,6 +115,8 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			continue // the block consumed its own trailing tokens
 		case "allow_insecure_http":
 			a.AllowInsecureHTTP = true
+		case "allow_tcp_admin":
+			a.AllowTCPAdmin = true
 		case "artifact_allowlist":
 			entries := d.RemainingArgs()
 			if len(entries) == 0 {

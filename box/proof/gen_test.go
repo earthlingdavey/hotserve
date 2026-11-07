@@ -81,9 +81,9 @@ func generate(t *testing.T, out string) {
 			t.Fatal(err)
 		}
 	}
-	// Keys: two listed (ed25519, ecdsa), one not.
+	// Keys: two listed (ed25519, rsa), one not.
 	keys := map[string]string{}
-	for name, kind := range map[string][]string{"alice": {"-t", "ed25519"}, "bob": {"-t", "ecdsa", "-b", "256"}, "mallory": {"-t", "ed25519"}} {
+	for name, kind := range map[string][]string{"alice": {"-t", "ed25519"}, "bob": {"-t", "rsa", "-b", "3072"}, "mallory": {"-t", "ed25519"}} {
 		path := filepath.Join(home, name)
 		run(t, work, nil, "ssh-keygen", append(kind, "-q", "-N", "", "-C", name+"@example.com", "-f", path)...)
 		pub, err := os.ReadFile(path + ".pub")
@@ -152,7 +152,7 @@ func generate(t *testing.T, out string) {
 
 	git("checkout", "-q", "-b", "bob", cases["head"])
 	write(path, caddyfile(3))
-	cases["bob"] = signed("bob", "a listed ecdsa key")
+	cases["bob"] = signed("bob", "a listed rsa key")
 
 	git("checkout", "-q", "-b", "special", cases["head"])
 	write("box1/dir/x", "x\n")

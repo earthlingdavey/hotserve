@@ -19,6 +19,7 @@ func TestCaddyfileUnmarshalFullConfig(t *testing.T) {
 			claim repository smallhoursorg/site
 		}
 		allow_insecure_http
+		allow_tcp_admin
 		artifact_allowlist github.com/smallhoursorg/ artifacts.corp
 
 		app blog {
@@ -61,7 +62,7 @@ func TestCaddyfileUnmarshalFullConfig(t *testing.T) {
 	if err := a.UnmarshalCaddyfile(d); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if a.Root != "/srv/liveswap" || !a.AllowInsecureHTTP {
+	if a.Root != "/srv/liveswap" || !a.AllowInsecureHTTP || !a.AllowTCPAdmin {
 		t.Fatalf("globals wrong: %+v", a)
 	}
 	if len(a.DeployTrust) != 1 || a.DeployTrust[0].Kind != "github" ||
@@ -251,6 +252,7 @@ func TestCaddyfileUnmarshalErrors(t *testing.T) {
 		{"duplicate audience in a trust block", "liveswap {\n\tdeploy_trust github {\n\t\taudience a\n\t\taudience b\n\t}\n}", "duplicate audience"},
 		{"duplicate public_key in a trust block", "liveswap {\n\tapp a {\n\t\tdeploy_trust local {\n\t\t\tpublic_key /k1\n\t\t\tpublic_key /k2\n\t\t}\n\t}\n}", "duplicate public_key"},
 		{"duplicate allow_insecure_http", "liveswap {\n\tallow_insecure_http\n\tallow_insecure_http\n}", "duplicate allow_insecure_http"},
+		{"duplicate allow_tcp_admin", "liveswap {\n\tallow_tcp_admin\n\tallow_tcp_admin\n}", "duplicate allow_tcp_admin"},
 		{"bad duration", "liveswap {\n\tapp a {\n\t\tsoak banana\n\t}\n}", "invalid soak"},
 		{"bad keep", "liveswap {\n\tapp a {\n\t\tkeep many\n\t}\n}", "invalid keep"},
 		{"bad size", "liveswap {\n\tapp a {\n\t\tmax_artifact_size huge\n\t}\n}", "invalid max_artifact_size"},

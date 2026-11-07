@@ -131,7 +131,8 @@ Concept map from the Nomad-era stack:
   and vetted query.
 - Extraction MUST reject: absolute paths, `..` traversal, symlink and
   hardlink targets resolving outside the archive root, special files
-  (devices/FIFOs), setuid/setgid bits, decompressed content beyond 10×
+  (devices/FIFOs; setuid, setgid and sticky bits are stripped, not
+  refused — `rootWriter.write`), decompressed content beyond 10×
   `max_artifact_size` — as decompressed stream and as the content the
   entries declare, since a sparse entry expands from no stream, and in
   both readings the budget is the archive's, so one entry may
@@ -226,7 +227,15 @@ Concept map from the Nomad-era stack:
   regular file — not the same as none) MUST be held: neither deleted
   nor counted toward `keep`, and named each GC, while the rest are
   pruned by their records. Crash-orphaned `.extract-*` staging dirs
-  are removed whenever GC runs, since no order decides them. A dir
+  are removed whenever GC runs, since no order decides them. A staged
+  artifact (`tmp/artifact-*.tar.gz`, `tmp/push-*.tar.gz`) a motel
+  stopped mid-transfer left is removed at each start, once recovery
+  has settled the app and before any deploy of the start could stage
+  one — never through a link at the app dir or at `tmp/` (`linkAt`,
+  as GC asks of `releases/`), which would reach a sibling's upload:
+  its deploy would have removed it as it ended, `tmp/` is in no
+  app's view, so nothing else does, and left there it could fail the
+  next upload on the disk it holds. A dir
   under `releases/` whose name is not a version sorts after every
   release and holds no `keep` place, so it is removed whenever GC
   prunes. Nothing could deploy it or roll back to it, and the status
@@ -862,12 +871,15 @@ severity × occurrence × detection, then the fix's size and risk.
 | The manager's `DefaultTasksMax` is read once, with the dial. A read that fails while the connection stays up leaves it unreadable for the connection's life: every reattach and read-back then takes the manager's resolved default for an operator's cap (`unitCaps`), status shows `tasks_max` at that number for an app with none configured, and each sync re-sends the other caps with the "could not be read" Warn, until a redial. | `get`, `DefaultTasksMax`, `unitCaps` | 2 | 3 | 3 | 18 | size 2, risk 2 (a bounded re-read of the property when the cached value is 0; go-systemd's property get takes no context, so the bound is the dial's) | Under rule 3 the product is under 20 and the fix is not size 1, risk 1 (#345, 2026-10-23). The number shown is the unit's real bound; the kernel is unaffected; a restart of motel or a dropped connection reads it again. |
 | An app whose SIGTERM path breaks on a child it did not spawn — a handler that treats any SIGCHLD as a worker's death, or a drain that aborts on a pid it does not know — loses its grace: the sibling (`withSibling`) is the app's child and dies at the stop's SIGTERM, so the app sees one SIGCHLD then. (A drain that reaps until `ECHILD` does not hang: the sibling dies in the same instant as the SIGTERM reaches the app, and is reaped like a worker.) | `withSibling`, systemd_dbus.go | 5 | 2 | 3 | 30 | none that keeps the grace on 257: under `PrivatePIDs=` any extra process in the unit is the app's child or is reparented to it, so no sibling avoids the SIGCHLD; the alternative is the one-process race of #380 on every stop | The app is PID 1 of its namespace already and has to reap what is reparented to it; the common masters (gunicorn, php-fpm, puma, libuv, Go, the JVM) wait on known pids or ignore an unknown one, so the failure needs an app that aborts on one (#380 review, 2026-10-31). The remedy is systemd 258 (`698ac172aa`), where the sibling can go. Stated in the README beside the sibling. |
 | A `daemon-reload` or `daemon-reexec` of the user manager — which Debian's systemd postinst sends every user manager (`SIGRTMIN+25`) on each systemd upgrade — re-reads every running unit's transient file, and two settings do not survive the round trip: `RestrictNamespaces=yes` is written as an empty set and reads back as no restriction, and `TemporaryFileSystem=/dev/shm:…,size=50%` is written `50%%` and read back verbatim. Nothing running changes: an app unit execs once, before the reload. A start whose fork lands after a reload of the same instant runs with the re-read settings, and fails `226/NAMESPACE` on the invalid tmpfs option — red, named by the watchdog or the health gate — before anything runs with the namespace restriction lifted; its next start is a fresh unit. | the manager's transient-unit serialisation (`dbus-execute.c`, v257) | 2 | 2 | 1 | 4 | none in motel: both are the manager's. Dropping `size=50%` (tmpfs's own default) would make the round trip clean, and leave a start racing a reload running unrestricted instead of failing red | Under rule 3 the product is under 20 (#380, 2026-10-31): a reload and a start within the same instant. Measured in the dev-systemd lane (257.13): the properties before and after a reload, the transient file's lines, and under continuous reloads 6 of 40 starts not reaching ready with the namespace probe never succeeding. The option stays for this reason too (DESIGN-sandbox.md, "Sibling IPC closed"). |
+| An `env_file` value that is a URL followed by prose holding a `:` and then an `@` before any `/` or `?` (`smtp://mail.example.com:587 contact: ops@example.com`) reads a password that is none (`587 contact: ops`), and every response masks that string under the key's name. | `urlPasswords` (redact.go) | 2 | 5 | 3 | 30 | size 1, risk 1 — but a bound at a space un-reads a password that holds one, which libpq takes as it stands, and that is a secret the log would carry (3 × 5 × 5) | The two cannot both hold; the mask over nothing is named for its key, and the value's shape is the operator's to see there. |
+| An admin API on a socket-activated listener (`admin fd/3`, `fdgram/3`) is refused by `motel validate` and `reload`, and said at `run`, as a TCP one is, though the descriptor systemd passed may be a unix socket: the gate reads the config alone and cannot see what the descriptor is. | `checkAdmin` (cmd/motel/backupcheck.go) | 2 | 5 | 1 | 10 | size 2, risk 2 (taking `fd/` on trust is fail-open for a TCP descriptor; asking the manager what it passed is a new state) | Red and named, with the remedy in the message (`admin unix//run/motel/admin.sock`, or `admin off`); the package ships no socket unit, and the starter's socket needs none. |
 
 **Owed** (over the bar, not yet fixed):
 
 | Finding | S | O | D | Where the fix lands |
 |---|---|---|---|---|
 | A bind mount can give two apps one directory, or put one app's data inside another's: an fstab source another app also uses, or a whole app dir mounted at another's. A mount resolves to itself, so the launch check (`resolveBindSources`) passes it: blog launches on shop's data, writable, and nothing says so. | 5 | 5 | 5 | #308, to design: equal `(st_dev, st_ino)` alone misses a source nested in another's; when to check, what to refuse and what to say are open there. Until then, the README's bind-mount advice says the source must be the app's own |
+| Layer 4 of the response filter cannot mask a base64-class token under 23 characters and rarely one under 32: `looksGenerated` (redact.go) asks `shannon(tok) >= 4.5` bits a character, and a string's entropy over its own characters is at most log2(len) — 4.32 at 20, 4.46 at 22. Measured on random alphanumerics with a digit, upper and lower: 0% masked at 20–22, 5% at 24, 28% at 28, 66% at 32, 97% at 40 (hex: 97% at 20). The threat model promises "a run of 20+ characters … above the class's bar". A secret an app prints at runtime (an OAuth token; `secrets.token_urlsafe(16)`'s 22 characters) in the journal tail or a probe body reaches the CI log whole, and so does the tail of a known value cut mid-token by `capTail` (journal.go) or `probeBodyExcerpt` (health.go). | 3 | 5 | 5 | `looksGenerated`: a length-aware bar, `h >= min(entropyBase64, 0.9·log2(len))` or so, keeping the digit, upper and lower rule; `TestRedactorCorpus` for over-masking and a test at 20, 22 and 24 characters. Size 1, risk 2. Wide: every webhook response. Found 2026-11-06 (security sweep). |
 
 ## Resource caps
 
@@ -1070,3 +1082,28 @@ Dated one-liners; the full text of each is in git.
   digest; a push's upload is hashed and recorded as its pin from here
   on) instead of being refused; the two instances share the release
   dir for the overlap, recorded as an accepted residual.
+- 2026-11-06 — A security sweep: `motel validate` and `reload` refuse,
+  and `run` says, a config that runs apps with the admin API on TCP
+  (cmd/motel's gate; scored 5×5×5), unless the liveswap block says it
+  is meant (`allow_tcp_admin`, for the e2e rig whose runner drives the
+  admin API over the network); a URL password net/url does not read
+  (an unescaped `#`, a bare `%`, a space) is a known value all the same
+  (3×5×5), and one holding `/` or `?` is no longer read short; recovery
+  sweeps the staged artifacts a stop left in `tmp/` (3×4×5). The
+  entropy bar's gap under 23 characters stays owed. Copilot's two
+  rounds on #407: the gate loads each `--envfile` first, as Caddy does,
+  the file read whole so a key's last assignment wins (5×5×5); an
+  abstract socket (`unix/@name`) is refused as TCP is; a unix socket
+  no app's view may hold — not under the liveswap root, whose
+  directories are bound into the apps' sandboxes, nor under the base
+  view every sandbox holds read-only (`AdminSocketInView`, 5×5×5), and
+  named whole, since a relative path (`unix/admin.sock`) is Caddy's
+  working directory's to place, which the gate cannot see (Copilot's
+  fourth round, 5×5×5); a config that is not a regular file (stdin, a
+  pipe), which the gate had left to Caddy unread, is refused at
+  `validate` and `reload` and said at `run`, since the gate cannot see
+  whether it runs apps with the admin API on TCP (Copilot's fifth
+  round, 5×5×5);
+  recovery's sweep of `tmp/` asks `linkAt` first, as GC does; a
+  percent-encoded URL password on a later authority is registered
+  decoded too.

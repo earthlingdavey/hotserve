@@ -241,4 +241,15 @@ func (ma *managedApp) settleAfterRecovery(c collaborators, keep string) {
 	if err := ma.settleInterrupted(c, keep); err != nil {
 		c.logger.Error("deploy marker not removed; each start and deploy tries again", zap.Error(err))
 	}
+	// And what a stop left mid-transfer: a staged artifact in tmp/,
+	// which no deploy would remove and the next upload could fail on.
+	// Not through a link at the app dir or at tmp/ (linkAt, as GC asks
+	// of releases/ and a deploy's writeRefusal of tmp/): blog's tmp/
+	// linked to shop's would have blog's start remove shop's upload.
+	if p, why := c.spec.dirs.linkAt(c.spec.dirs.tmp); p != "" {
+		c.logger.Warn("staged artifacts not swept: the app dir or tmp/ is not the directory it names",
+			zap.String("path", p), zap.Error(why), zap.String("fix", notOwnDirFix))
+		return
+	}
+	removeStagedArtifacts(c.spec.dirs)
 }

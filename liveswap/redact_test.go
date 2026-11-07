@@ -41,9 +41,10 @@ func TestRedactorKnownValues(t *testing.T) {
 		t.Errorf("a value under %d chars must not be redacted: %q %v", secretMinLen, out, keys)
 	}
 	// The longer form (DATABASE_URL) wins over the value it contains
-	// (TOKEN), and both keys are reported when both appear.
+	// (TOKEN) — a value of both, since the URL's password is a known
+	// value on its own — and both keys are reported when both appear.
 	out, keys = r.Redact(full + " and " + pw)
-	if out != "[redacted:DATABASE_URL] and [redacted:TOKEN]" {
+	if out != "[redacted:DATABASE_URL] and [redacted:DATABASE_URL,TOKEN]" {
 		t.Errorf("longest-first: %q", out)
 	}
 	if strings.Join(keys, ",") != "DATABASE_URL,TOKEN" {
@@ -213,6 +214,38 @@ func TestRedactorBasicCredential(t *testing.T) {
 	} {
 		if got, _ := (*Redactor)(nil).Redact(tc.in); got != tc.want {
 			t.Errorf("%q:\n got %q\nwant %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A driver prints a URL's password on its own, so it is a known value
+// by itself — one net/url does not read included: an unescaped `#`, a
+// bare `%` or a space, which libpq takes as it stands.
+func TestRedactorURLPasswordNetURLDoesNotRead(t *testing.T) {
+	for _, pw := range []string{"pass-word99", "pa#ss-word99", "pa%ss-word99", "pa ss-word99", "p@ss-word99"} {
+		r := NewRedactor([]string{"DATABASE_URL=postgres://app:" + pw + "@db:5432/app?sslmode=require"}, nil)
+		out, keys := r.Redact("FATAL: password authentication failed with " + pw + " for app")
+		if strings.Contains(out, pw) || strings.Join(keys, ",") != "DATABASE_URL" {
+			t.Errorf("%q: %q %v", pw, out, keys)
+		}
+	}
+	// A list of hosts holds an authority per `://`.
+	if got := urlPasswords("http://a:9200,http://user:s3cretpassw0rd@b:9200/"); strings.Join(got, ",") != "s3cretpassw0rd" {
+		t.Errorf("a list of hosts: %q", got)
+	}
+	// An escape is read both ways, on any authority of a list.
+	if got := urlPasswords("postgres://app:p%40ss-word99@db/app"); strings.Join(got, ",") != "p%40ss-word99,p@ss-word99" {
+		t.Errorf("an escaped password: %q", got)
+	}
+	if got := urlPasswords("http://a:9200,http://user:p%40ss-word99@b:9200/"); strings.Join(got, ",") != "p%40ss-word99,p@ss-word99" {
+		t.Errorf("an escaped password on the second authority: %q", got)
+	}
+	// A password holding `/` or `?` is read short by net/url and by
+	// hand alike, and what stands before the cut is not the secret:
+	// nothing is read on its own rather than a mask over nothing.
+	for _, v := range []string{"postgres://app:abcdefghij/rest@db", "postgres://app:abcdefghij?x@db", "https://example.com/a@b:cdefghij", "redis://db:6379/0", "redis://host:6379?user=x@y:eightchars", "https://user@host/x", "smtp://host:587\ncontact: ops@example.com", "no url here"} {
+		if got := urlPasswords(v); len(got) != 0 {
+			t.Errorf("%q: read a password %q", v, got)
 		}
 	}
 }

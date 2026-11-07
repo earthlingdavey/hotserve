@@ -144,11 +144,14 @@ func Restore(ctx context.Context, cfg Config, r Runner, o RestoreOptions) (rep *
 		if err := notOwn(o.To, cfg); err != nil {
 			return nil, err
 		}
-		// Looked at here too, before any unit: the same walk toDir makes
+		// Looked at here too, before any unit: the same walks toDir makes
 		// again right before it makes the directory.
 		if parent, err := filepath.EvalSymlinks(filepath.Dir(o.To)); err == nil {
 			if err := notOwn(filepath.Join(parent, filepath.Base(o.To)), cfg); err != nil {
 				return nil, err
+			}
+			if err := rootsOwnAsTyped(filepath.Dir(o.To)); err != nil {
+				return nil, fmt.Errorf("--to: %w", err)
 			}
 			fd, err := rootsOwn(parent)
 			if err != nil {
@@ -412,15 +415,7 @@ func rootsOwn(dir string) (int, error) {
 		if err := unix.Fstat(fd, &st); err != nil {
 			return &os.PathError{Op: "stat", Path: at, Err: err}
 		}
-		switch {
-		case st.Mode&unix.S_IFMT != unix.S_IFDIR:
-			return fmt.Errorf("%s is not a directory", at)
-		case st.Uid != 0:
-			return fmt.Errorf("%s belongs to uid %d, not root. A restore is made where the name leads, and every directory on the way has to be root's own and writable by nobody else, or someone else could have put a link there first: /root, /srv, /var/backups, or a root-owned directory of your own", at, st.Uid)
-		case st.Mode&0o022 != 0:
-			return fmt.Errorf("%s can be written by others (mode %04o). A restore is made where the name leads, and every directory on the way has to be root's own and writable by nobody else, or someone else could have put a link there first: not /tmp — /root, /srv, /var/backups, or a root-owned directory of your own", at, st.Mode&0o7777)
-		}
-		return nil
+		return rootsOwnDir(&st, at)
 	}
 	if err := check(fd, sofar); err != nil {
 		unix.Close(fd) //nolint:errcheck,gosec // a path descriptor
@@ -449,6 +444,78 @@ func rootsOwn(dir string) (int, error) {
 	return fd, nil
 }
 
+// rootsOwnDir is what rootsOwn asks of each directory: that it is one,
+// root's, and writable by nobody else.
+func rootsOwnDir(st *unix.Stat_t, at string) error {
+	switch {
+	case st.Mode&unix.S_IFMT != unix.S_IFDIR:
+		return fmt.Errorf("%s is not a directory", at)
+	case st.Uid != 0:
+		return fmt.Errorf("%s belongs to uid %d, not root. A restore is made where the name leads, and every directory on the way has to be root's own and writable by nobody else, or someone else could have put a link there first: /root, /srv, /var/backups, or a root-owned directory of your own", at, st.Uid)
+	case st.Mode&0o022 != 0:
+		return fmt.Errorf("%s can be written by others (mode %04o). A restore is made where the name leads, and every directory on the way has to be root's own and writable by nobody else, or someone else could have put a link there first: not /tmp — /root, /srv, /var/backups, or a root-owned directory of your own", at, st.Mode&0o7777)
+	}
+	return nil
+}
+
+// rootsOwnAsTyped asks of a path as the operator typed it what rootsOwn
+// asks of the directories it leads to. The resolved path no longer
+// shows a directory that held a link the name passed through: a link in
+// /tmp to a directory that is root's own leads to one every step of
+// which passes, and the directory anyone could have written is the one
+// that held the link. So each directory is asked as the name reaches
+// it, before what it holds is looked at — and once a directory is
+// root's own and writable by nobody else, an entry in it is root's
+// too. A link's target is walked the same way: from / for an absolute
+// one, from the link's directory for a relative one, up to the
+// kernel's own count of links followed. Nothing is held open: the
+// descriptor comes from rootsOwn, over where the name led.
+func rootsOwnAsTyped(path string) error {
+	cur := "/"
+	var st unix.Stat_t
+	if err := unix.Lstat(cur, &st); err != nil {
+		return &os.PathError{Op: "stat", Path: cur, Err: err}
+	}
+	if err := rootsOwnDir(&st, cur); err != nil {
+		return err
+	}
+	rest := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	for links := 0; len(rest) > 0; {
+		part := rest[0]
+		rest = rest[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur) // walked already, on the way down
+			continue
+		}
+		next := filepath.Join(cur, part)
+		if err := unix.Lstat(next, &st); err != nil {
+			return &os.PathError{Op: "stat", Path: next, Err: err}
+		}
+		if st.Mode&unix.S_IFMT == unix.S_IFLNK {
+			if links++; links > 40 { // the kernel's MAXSYMLINKS
+				return &os.PathError{Op: "resolve", Path: next, Err: unix.ELOOP}
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return &os.PathError{Op: "readlink", Path: next, Err: err}
+			}
+			if filepath.IsAbs(target) {
+				cur = "/"
+			}
+			rest = append(strings.Split(strings.TrimPrefix(target, "/"), "/"), rest...)
+			continue
+		}
+		if err := rootsOwnDir(&st, next); err != nil {
+			return err
+		}
+		cur = next
+	}
+	return nil
+}
+
 // notOwn refuses a path under the engine's own directories.
 func notOwn(dir string, cfg Config) error {
 	owns := []string{cfg.StateDir, cfg.RunDir}
@@ -466,31 +533,38 @@ func notOwn(dir string, cfg Config) error {
 }
 
 // toDir makes the directory a restore --to goes into, and binds it for
-// the unit. Its parent may be anyone's — /tmp — so from the moment it is
-// made it is held by descriptor: what is chmod'ed, chowned and bound is
-// the directory that was made, whatever its name leads to by then.
+// the unit. Its parent has to be root's own every step of the way, as
+// typed and as it leads (rootsOwnAsTyped, rootsOwn), and from the
+// moment it is resolved it is held by descriptor: what is made,
+// chmod'ed, chowned and bound is relative to that descriptor, whatever
+// its name leads to by then.
 func (x *run) toDir(dir string) (source string, release func(), err error) {
 	uid, gid, err := x.dataOwner()
 	if err != nil {
 		return "", nil, err
 	}
-	// The parent may be anyone's — /tmp — and a name in it is theirs to
-	// swap for a link between a look and a mkdir that walks it as root.
-	// So the parent is held by descriptor: what the operator's name led
-	// to when it was resolved, and nothing else, is where the directory
-	// is made, relative to that descriptor.
+	// A name is its directory's owner's to swap for a link between a
+	// look and a mkdir that walks it as root. So the parent is held by
+	// descriptor: what the operator's name led to when it was resolved,
+	// and nothing else, is where the directory is made, relative to that
+	// descriptor.
 	parent, base := filepath.Split(dir)
 	parent = filepath.Clean(parent)
-	named, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		return "", nil, &os.PathError{Op: "resolve", Path: parent, Err: err}
-	}
 	// And root's own, every step of the way: a name the operator typed
 	// can only mean what root meant by it if nobody else could have put
 	// a link at any step — before the command was typed, which no look
 	// at the time can tell. So each directory on the way, from /, has to
 	// belong to root and be writable by nobody else: not /tmp, which
-	// everyone may add to, and nothing an app's user owns.
+	// everyone may add to, and nothing an app's user owns. Asked of the
+	// name as typed, where a link's own directory is seen, and of where
+	// it leads, which is what is held.
+	named, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", nil, &os.PathError{Op: "resolve", Path: parent, Err: err}
+	}
+	if err := rootsOwnAsTyped(parent); err != nil {
+		return "", nil, err
+	}
 	pfd, err := rootsOwn(named)
 	if err != nil {
 		return "", nil, err

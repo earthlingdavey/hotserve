@@ -97,8 +97,14 @@ func TestParseCommit(t *testing.T) {
 	if !bytes.Equal(reassemble(c), sshSigned) {
 		t.Fatal("reassemble")
 	}
-	// A header after the signature stays in the payload, in place.
-	c, err = ParseCommit(commitObject(emptyTree, nil, []string{gpgsigHeader(sshArmor), "encoding UTF-8"}, "msg\n"))
+	// A header after the signature is refused: git appends gpgsig last,
+	// and the same payload under another header order would be another
+	// commit id for one signature (armor_test.go).
+	if _, err := ParseCommit(commitObject(emptyTree, nil, []string{gpgsigHeader(sshArmor), "encoding UTF-8"}, "msg\n")); err == nil || !strings.Contains(err.Error(), "not the last header") {
+		t.Fatalf("a header after gpgsig: %v", err)
+	}
+	// One before it stays in the payload, in place.
+	c, err = ParseCommit(commitObject(emptyTree, nil, []string{"encoding UTF-8", gpgsigHeader(sshArmor)}, "msg\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,9 +495,14 @@ func TestParseSigner(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// An ECDSA key is refused by name, with the reason and the remedy:
+	// its signature has two forms, so one signed commit has two ids.
+	if _, err := ParseSigner("bob", ecType, ecB64); err == nil || !strings.Contains(err.Error(), "an ecdsa-sha2-nistp384 key, which the box no longer takes: an ECDSA signature has two forms") || !strings.Contains(err.Error(), "ssh-keygen -t ed25519") {
+		t.Fatalf("an ECDSA signer: %v", err)
+	}
 	for _, ok := range [][3]string{
 		{"alice@example.com", edType, edB64},
-		{"bob", ecType, ecB64},
+		{"bob", rsaType, rsaB64},
 		{"c.d_e+f-g", rsaType, rsaB64},
 		{"alice-yubikey", "sk-ssh-ed25519@openssh.com", skB64},
 	} {
@@ -512,6 +523,7 @@ func TestParseSigner(t *testing.T) {
 		"principal with a bang":  {"!a", edType, edB64},
 		"empty principal":        {"", edType, edB64},
 		"unknown type":           {"a", "ssh-dss", edB64},
+		"sk-ecdsa type":          {"a", "sk-ecdsa-sha2-nistp256@openssh.com", skB64},
 		"type mismatch":          {"a", "ssh-rsa", edB64},
 		"sk type mismatch":       {"a", "ssh-ed25519", skB64},
 		"not base64":             {"a", edType, "AAAA!"},
@@ -532,12 +544,12 @@ func TestParseSigner(t *testing.T) {
 	}
 	// The file, and the same key twice.
 	a, _ := ParseSigner("alice", edType, edB64)
-	b, _ := ParseSigner("bob", ecType, ecB64)
+	b, _ := ParseSigner("bob", rsaType, rsaB64)
 	out, err := Signers{a, b}.AllowedSigners()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "alice namespaces=\"git\" " + edType + " " + edB64 + "\nbob namespaces=\"git\" " + ecType + " " + ecB64 + "\n"
+	want := "alice namespaces=\"git\" " + edType + " " + edB64 + "\nbob namespaces=\"git\" " + rsaType + " " + rsaB64 + "\n"
 	if string(out) != want {
 		t.Fatalf("%q", out)
 	}

@@ -85,13 +85,16 @@ most container hosts will not give you.
 	# Keep the admin API off TCP: every app can reach localhost. This
 	# is the motel package's path (its unit creates /run/motel and
 	# `systemctl reload` finds the socket here); a self-managed unit
-	# needs RuntimeDirectory=motel, or another dir its user owns.
+	# needs RuntimeDirectory=motel, or another dir its user owns —
+	# never one under the liveswap root or the sandbox's base view
+	# (/usr, /etc/ssl/certs, ...), which an app's view would hold.
 	admin unix//run/motel/admin.sock
 
 	liveswap {
 		# root /var/lib/liveswap                # where releases/state live (default)
 		artifact_allowlist github.com/your-org/ # required: where artifacts may come from
 		# allow_insecure_http                  # permit http:// artifact URLs (off by default)
+		# allow_tcp_admin                      # test rigs only: let the admin API stay on TCP (off by default)
 
 		# A deploy_trust block may also sit here, as the default for
 		# apps that declare none of their own. Claims that name one
@@ -273,6 +276,7 @@ resolved at config load.
 | `root` | `/var/lib/liveswap` | Releases, shared data, state per app. Plain characters: a space, a colon, a backslash, a quote or a control character in the path is refused, since a systemd unit file cannot carry one in a bind mount |
 | `deploy_trust <preset> { … }` | — (required) | Who may deploy; global default or per app (see [Deploy authentication](#deploy-authentication-deploy_trust)) |
 | `allow_insecure_http` | off | Permit plain-http artifact URLs |
+| `allow_tcp_admin` | off | Test rigs only. Every app shares the box's network namespace, so an admin API on TCP (Caddy's default, `localhost:2019`) is every app's to reconfigure the server with; `motel validate` and `reload` refuse a config that runs apps with one, and `run` serves it saying so; so is an abstract socket (`unix/@name`, the network namespace's), or a unix socket under the liveswap root or the sandbox's base view, which an app's view holds, or at a relative path, which Caddy's working directory places where the gate cannot see; and a config given as stdin or a pipe, which the gate cannot read before Caddy reads it once, is refused unread. The starter keeps the API on `admin unix//run/motel/admin.sock`. This says the TCP listener is meant — a rig whose runner drives `/load` over the network — and the refusal stands down |
 | `artifact_allowlist` | — (required) | Where artifacts may be fetched from. Entries are a host (`artifacts.corp`) or a host + path prefix (`github.com/your-org/`). An entry admits only the scheme's default port unless it declares one (`minio.corp:9000`) — no wildcards; the port picks which service on the host answers, so it belongs to the operator, not the payload. Pin the path on multi-tenant hosts — a bare `github.com` admits anyone's artifacts. Query strings are refused unless the entry declares the parameter names it vouches for: `gitlab.com/api/v4/projects/42/?job` allows `?job=build`, `bucket.s3.corp/releases/?X-Amz-*` allows the presigned-URL family (a trailing `*` declares a prefix; values are never re-encoded — signed queries pass through byte-identical — but every query byte must be a legal RFC 3986 query character, so percent-encode anything exotic). Closed by default because on some servers a query *name* can override path routing entirely (WordPress-style `?p=2`), which would defeat the path pin. A refused URL fails the deploy with a 422 naming the offending parameter. First hop only, by design (GitHub asset URLs redirect to S3); every hop must still be https unless `allow_insecure_http`. Apps may override |
 | `command` | — (required) | argv to start the app, CWD = release dir |
 | `pre_start` | — | Run-to-completion hook; failure aborts deploy |
@@ -392,11 +396,11 @@ step 6 validates a staged copy before the applier puts it in place — is
 not asked; `motel run` logs it and serves.
 
 The check adapts the Caddyfile in the environment the command was
-started in. It does not load `--envfile` first, as Caddy's own
-`validate` and `run` do: a `{$NAME}` set only there, in an import's
-path, is judged here as unset. The packaged service passes no
-`--envfile`, and `motel-backup` refuses an import whose path depends
-on a variable.
+started in, with each `--envfile` loaded first as Caddy's own
+`validate` and `run` load it (a variable the environment already
+holds is kept), so a `{$NAME}` set only there is judged as Caddy
+will run it. The packaged service passes no `--envfile`, and
+`motel-backup` refuses an import whose path depends on a variable.
 ### Resource caps
 
 `memory_max`, `tasks_max` and `cpu_quota` bound every unit of the app —

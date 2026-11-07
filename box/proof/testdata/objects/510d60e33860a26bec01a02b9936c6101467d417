@@ -1,0 +1,12 @@
+tree a9b35305669bd48edcab03cd0e7ce50e38138009
+parent 6bc34139740894028a871759756647cefdf24919
+author Alice <alice@example.com> 1791547200 +0000
+committer Alice <alice@example.com> 1791547200 +0000
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgSm3kgOhqt7dX/rPbBhoO1WIzMG
+ bQjeG+r3svQDIvyBsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQMkAGI1d9u/lL7NY2XUutj7aa/tYC8M4HvlHLrMQ7zmc9lQ/J/Hu/USz7wG57FH7xw
+ CDsWk12ee0UdVpJ5nmVwA=
+ -----END SSH SIGNATURE-----
+
+a symlink, a submodule, a directory

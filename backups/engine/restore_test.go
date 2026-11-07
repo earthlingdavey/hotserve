@@ -1162,4 +1162,27 @@ func TestToIsMadeOnlyUnderDirectoriesThatAreRootsOwn(t *testing.T) {
 	if st, err := os.Lstat(filepath.Join(real, "out")); err != nil || !st.IsDir() {
 		t.Fatalf("not made where the name led: %v", err)
 	}
+	// Not through a link anyone could have put there: one in a directory
+	// others may write, to a directory that is root's own. Where the
+	// name leads passes every step; the name as typed does not.
+	planted := filepath.Join(open, "planted")
+	must(t, os.Symlink(toParent(t), planted))
+	refused(planted, "written by others")
+	// A relative link is walked from its own directory, `..` included:
+	// one in a root-owned directory to a root-owned sibling works, and
+	// one in a directory others may write is refused for that directory
+	// whatever it leads to.
+	sub := filepath.Join(real, "sub")
+	must(t, os.Mkdir(sub, 0o700))
+	must(t, os.Symlink("sub/../sub", filepath.Join(real, "rel")))
+	b = restoreBox(t)
+	to = filepath.Join(real, "rel", "out")
+	if rep, err := Restore(context.Background(), b.cfg, b, RestoreOptions{App: "blog", To: to}); err != nil || rep.Into != to {
+		t.Fatalf("through a relative link: %+v, %v", rep, err)
+	}
+	if st, err := os.Lstat(filepath.Join(sub, "out")); err != nil || !st.IsDir() {
+		t.Fatalf("not made where the relative link led: %v", err)
+	}
+	must(t, os.Symlink("../../"+filepath.Base(toParent(t)), filepath.Join(open, "rel"))) // open's parent and that target are siblings under /root
+	refused(filepath.Join(open, "rel"), "written by others")
 }

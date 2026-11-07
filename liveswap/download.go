@@ -84,7 +84,7 @@ func downloadArtifact(ctx context.Context, opts downloadOpts) (string, error) {
 	if err := os.MkdirAll(opts.destDir, 0o750); err != nil {
 		return "", err
 	}
-	f, err := os.CreateTemp(opts.destDir, "artifact-*.tar.gz")
+	f, err := os.CreateTemp(opts.destDir, artifactTempPattern)
 	if err != nil {
 		return "", err
 	}

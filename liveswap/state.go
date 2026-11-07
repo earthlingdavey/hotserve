@@ -269,6 +269,26 @@ func runningFirst(list []string, running string) []string {
 	return list
 }
 
+// The staged artifacts in tmp/: a URL deploy's download
+// (downloadArtifact) and a push's upload (stageUpload), by the
+// patterns os.CreateTemp takes.
+const (
+	artifactTempPattern = "artifact-*.tar.gz"
+	pushTempPattern     = "push-*.tar.gz"
+)
+
+// removeStagedArtifacts removes the staged artifacts left in tmp/. The
+// deploy that stages one removes it as it ends; one a motel that
+// stopped or died mid-transfer left is nobody's, and tmp/ is in no
+// app's view, so nothing else would, and the next upload could fail
+// on the disk it holds. Called at recovery's settle, under deployMu,
+// before any deploy of the start could stage: never beside one.
+func removeStagedArtifacts(d appDirs) {
+	for _, pattern := range []string{artifactTempPattern, pushTempPattern} {
+		removeOwnLeftovers(d.tmp, pattern)
+	}
+}
+
 // gcReleases prunes the releases directory down to the newest keep
 // releases in the order above: protect — the version this deploy
 // promoted, now serving — first, so it is never deleted and holds one
