@@ -212,6 +212,10 @@ func TestATokenLeadingItsLineStandsWhereANameIsRead(t *testing.T) {
 		{"foo#bar\\\n{$X}\n", false}, // no comment: the # is not at a token's start
 		{"# {$X}\n", false},          // a comment's own line
 		{"a\nb \\\n\t{$X}\nc\n", false},
+		{"\t\"{$X}\" a\n", true}, // a quoted name is a name
+		{"`{$X}` a\n", true},
+		{"root \"{$X}\"\n", false}, // a quoted argument
+		{"\v{$X}\n", true},         // the lexer's other spaces
 	} {
 		off := strings.Index(tc.raw, "{$X}")
 		if got := leadsItsLine([]byte(tc.raw), off); got != tc.leads {

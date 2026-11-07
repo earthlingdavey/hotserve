@@ -215,11 +215,13 @@ func TestIntegrationTheAdapterRefusesAnImportAndADirectiveAsInspectReadsThem(t *
 	// value but a kind's is refused as an unknown subdirective, quoted at
 	// its own line, as a check of form refuses an argument — and with
 	// KIND=sqlite the server declares a database where the plan has a
-	// file. Not tried, refused as not knowable; so after a comment
-	// ending in a backslash, which chains the line to the comment's
-	// number and to no directive.
+	// file. Not tried, refused as not knowable; so when quoted, the
+	// quotes being the lexer's, and after a comment ending in a
+	// backslash, which chains the line to the comment's number and to no
+	// directive.
 	for name, line := range map[string]string{
 		"first on its line":                     "{$KIND:files} app.db",
+		"quoted":                                "\"{$KIND:files}\" app.db",
 		"after a comment ending in a backslash": "# the kind \\\n\t\t\t\t{$KIND:files} app.db",
 	} {
 		kind := fmt.Sprintf(liveswap, line)

@@ -309,8 +309,6 @@ func Inspect(ctx context.Context, caddyfile, configDir string) (*Inspection, err
 			switch verdict {
 			case moves:
 				decisive = append(decisive, name)
-			case imports:
-				imported = append(imported, name)
 			case unknown:
 				opaque = append(opaque, name)
 			case inert:
@@ -353,7 +351,6 @@ type verdict int
 const (
 	inert   verdict = iota // no occurrence reaches anything a run does
 	moves                  // some occurrence moves what a run does
-	imports                // some occurrence is an import's path
 	unknown                // where the variable reaches could not be told here
 )
 
@@ -381,8 +378,8 @@ func (a adapted) mentions(s string) bool {
 // imported file read the value somewhere it may be read again — a
 // snippet's argument, an import with arguments expanded a second time
 // — and where else it went is not knowable here; one that adapts is
-// judged as a trial is; and one
-// that fails any other way, or at an import, is said so. An
+// judged as a trial is; and one that fails any other way, or at an
+// import — which a trial would have met first — is not knowable. An
 // occurrence standing where a directive's or a subdirective's name is
 // read — `{$KIND:files} app.db` in a backup block — is not tried: a
 // name is checked by form as an argument is, so the value would be
@@ -526,7 +523,7 @@ func probe(caddyfile, name string, files []string, env map[string]string, adapt 
 		case trial.mentions(fromEnv):
 			return unknown, nil // an occurrence the copy does not hold was read
 		case err != nil && failedAtImport(trial.said):
-			return imports, nil
+			return unknown, nil // an import's path, which a trial would have met first: the file changed under the run
 		case err != nil && strings.Contains(trial.said, own) && !throughAnImport(trial.said):
 			continue // the directive's own refusal of this occurrence
 		case err != nil:
@@ -583,8 +580,10 @@ func chains(line []byte) bool {
 // leadsItsLine says whether the token at off in raw is the first of its
 // logical line, or the first after a `}` on it: where Caddy's parser
 // reads a directive's name, and a module its subdirective's — a `{`
-// ends its line, by the parser, and the next subdirective may follow a
-// nested block's `}` on the same line, by the dispenser. A comment on
+// ends its line, by the parser; a token after a nested block's `}` on
+// the same line is read as a name by a module's dispenser, whose
+// NextBlock closes no block then [measured]; and a quoted name is a
+// name, its quotes the lexer's (`"files" app.db`). A comment on
 // an earlier line of the chain is no token, however it ends, so it
 // counts for nothing; one on the occurrence's own line holds the
 // occurrence, which then leads nothing. What else stands first on a
@@ -592,7 +591,7 @@ func chains(line []byte) bool {
 // quoted string spanning lines — is read as a name here too; a value a
 // directive checks by form follows the directive's own word.
 func leadsItsLine(raw []byte, off int) bool {
-	blank := func(b []byte) bool { return len(bytes.Trim(b, " \t\r\n\\}")) == 0 }
+	blank := func(b []byte) bool { return len(bytes.Trim(b, " \t\r\n\v\f\\}\"`")) == 0 }
 	own := bytes.LastIndexByte(raw[:off], '\n') + 1
 	for _, line := range bytes.Split(raw[chainStart(raw, off):own], []byte("\n")) {
 		if i := bytes.IndexByte(line, '#'); i >= 0 {
@@ -802,8 +801,8 @@ func envNames(caddyfile string, beside bool) (all, noDefault []string, within ma
 	}
 	if beside {
 		_ = filepath.WalkDir(filepath.Dir(caddyfile), func(p string, d fs.DirEntry, err error) error {
-			if err != nil || !d.Type().IsRegular() {
-				return nil // one it may not list or read is passed over, as above
+			if err != nil || !d.Type().IsRegular() || p == caddyfile {
+				return nil // one it may not list or read is passed over, as above; the Caddyfile is read
 			}
 			_ = read(p)
 			return nil
