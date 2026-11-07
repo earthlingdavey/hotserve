@@ -85,18 +85,46 @@ func (journalctlReader) tail(ctx context.Context, of tailOf, since time.Time, n 
 	// The line count bounds the entries, not their size: a single entry
 	// can be as long as journald lets a line be. The output streams
 	// through a writer that keeps only the last bytes, more than the
-	// response cap so that capTail still sees "there was more" (a
-	// dropped prefix leaves a partial first line for it to cut), and
-	// memory is fixed whatever the app wrote.
-	out, err := runJournalctl(ctx, tailArgs(of.units, streamIDs(found), since, n), 2*deployLogMaxBytes)
+	// response cap so that capTail still sees "there was more", and
+	// memory is fixed whatever the app wrote. A dropped prefix leaves a
+	// partial first line, whose first token the bound may have cut in
+	// two: that token goes (dropUnfinished), since a fragment of an
+	// env_file value is one the filter cannot match.
+	const limit = 2 * deployLogMaxBytes
+	out, err := runJournalctl(ctx, tailArgs(of.units, streamIDs(found), since, n), limit)
 	if err != nil {
 		return nil, err
 	}
 	text := strings.TrimRight(string(out), "\n")
+	if len(out) >= limit {
+		text = dropUnfinished(text, true)
+	}
 	if text == "" {
 		return nil, nil
 	}
 	return strings.Split(text, "\n"), nil
+}
+
+// dropUnfinished removes the token a read bound may have cut in two:
+// the first token of s (atStart: a kept suffix) or its last (a kept
+// prefix), up to or from the nearest whitespace, and puts an ellipsis
+// where it was. A bound that fell inside an env_file value left a
+// fragment the response filter cannot match and no heuristic can see
+// (redact.go); without a whitespace to cut at, the whole of s goes. A
+// value with a space in it can still be cut (DESIGN-liveswap.md,
+// "Accepted residuals").
+func dropUnfinished(s string, atStart bool) string {
+	const marker = "…"
+	if atStart {
+		if i := strings.IndexAny(s, " \t\r\n"); i >= 0 {
+			return marker + s[i:]
+		}
+		return marker
+	}
+	if i := strings.LastIndexAny(s, " \t\r\n"); i >= 0 {
+		return s[:i+1] + marker
+	}
+	return marker
 }
 
 // journalWindow is what both runs share. A second of slack: the
@@ -255,15 +283,4 @@ func capTail(lines []string, maxLines, maxBytes int) ([]string, bool) {
 		return nil, truncated
 	}
 	return lines, truncated
-}
-
-// excerpt is the first n bytes of s, cut on a rune boundary.
-func excerpt(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n]
 }

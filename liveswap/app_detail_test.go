@@ -230,20 +230,42 @@ func TestFailureDetailCutsAfterTheKnownValues(t *testing.T) {
 	}
 }
 
-// An env_file the filter cannot read when the detail is built — one
-// that went unreadable after the deploy read it — leaves the app's
-// bytes out of the detail, as the response would be withheld for the
-// same reason; the exit and the probe's status stay, and the reason
-// is said where the tail would be.
-func TestFailureDetailWithholdsTheBodyWithoutTheEnvFile(t *testing.T) {
+// The values held to are the launch's own, so an env_file that went
+// unreadable after the deploy rendered it costs the detail nothing, and
+// the keys found come back for the result's redacted_env.
+func TestFailureDetailHoldsTheLaunchsOwnValues(t *testing.T) {
 	rig := newTestRig(t)
 	rig.spec.deployLogLines = 40
 	rig.spec.envFile = filepath.Join(t.TempDir(), "gone.env")
-	rig.ma.journal = &fakeJournal{lines: []string{"never read"}}
-	err := fmt.Errorf("not healthy within deadline 5m: %w", &probeError{status: 500, body: "secret things"})
-	d := rig.ma.failureDetail(rig.ma.snapshot(), rig.spec, err, "exit status 3", 0, launch{}, time.Now())
-	if d == nil || d.Probe == nil || d.Probe.Status != 500 || d.Probe.Body != "" || d.Exit != "exit status 3" || d.LogTail != nil || !strings.Contains(d.LogTailError, "env_file could not be read") {
-		t.Fatalf("detail = %+v, want the status and exit without the app's bytes, and the reason", d)
+	rig.ma.journal = &fakeJournal{lines: []string{"token hunter2hunter2hunter2 refused"}}
+	err := fmt.Errorf("not healthy within deadline 5m: %w", &probeError{status: 500, body: "bad token hunter2hunter2hunter2"})
+	l := launch{secrets: []string{"API_TOKEN=hunter2hunter2hunter2"}} // gitleaks:allow
+	d, keys := rig.ma.failureDetail(rig.ma.snapshot(), rig.spec, err, "exit status 3", 0, l, time.Now())
+	if d == nil || d.Probe == nil || d.Probe.Body != "bad token [redacted:API_TOKEN]" || d.Exit != "exit status 3" || d.LogTailError != "" {
+		t.Fatalf("detail = %+v, want the launch's value replaced and nothing withheld", d)
+	}
+	if strings.Join(keys, ",") != "API_TOKEN" {
+		t.Fatalf("keys = %v, want the one found", keys)
+	}
+}
+
+// The token a read bound cut in two goes, with an ellipsis in its
+// place: the first of a kept suffix, the last of a kept prefix.
+func TestDropUnfinished(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		atStart bool
+		want    string
+	}{
+		{"cret=hunter2 then more\nline two", true, "… then more\nline two"},
+		{"nowhitespaceatall", true, "…"},
+		{"line one\nstarts a sec", false, "line one\nstarts a …"},
+		{"nowhitespaceatall", false, "…"},
+		{"ends with a space ", false, "ends with a space …"},
+	} {
+		if got := dropUnfinished(tc.in, tc.atStart); got != tc.want {
+			t.Errorf("dropUnfinished(%q, %v) = %q, want %q", tc.in, tc.atStart, got, tc.want)
+		}
 	}
 }
 

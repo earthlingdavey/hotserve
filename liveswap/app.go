@@ -192,10 +192,10 @@ type deployResult struct {
 	// launch (nothing of the app's ran).
 	Detail *deployDetail `json:"detail,omitempty"`
 	// RedactedEnv is the env keys whose values the detail's early
-	// replacement found (failureDetail): the response filter reports
-	// the keys it finds under this same name, and merges these into
-	// them (withField), since by the time it runs the values are
-	// markers already.
+	// replacement found (failureDetail): by the time the response
+	// filter runs they are markers already, so it reports them from
+	// here — this field, wherever the result sits in a body, is hoisted
+	// into the body's own `redacted_env` (withField, redact.go).
 	RedactedEnv []string `json:"redacted_env,omitempty"`
 }
 
@@ -239,9 +239,6 @@ type deployDetail struct {
 	LogTail          []string `json:"log_tail,omitempty"`
 	LogTailTruncated bool     `json:"log_tail_truncated,omitempty"`
 	LogTailError     string   `json:"log_tail_error,omitempty"`
-	// redactedEnv is the keys whose values the early replacement found,
-	// carried to deployResult.RedactedEnv.
-	redactedEnv []string
 }
 
 type probeDetail struct {
@@ -609,7 +606,7 @@ func preflightResult(what string, err error) error {
 // error; the app's as read before motel stopped it, and only when
 // it died on its own), the last probe's answer, and the last lines the
 // launch's units wrote. Nil when a launch left nothing to say.
-func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, appExit string, appPID int, l launch, since time.Time) *deployDetail {
+func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, appExit string, appPID int, l launch, since time.Time) (*deployDetail, []string) {
 	d := &deployDetail{}
 	var ee *exitError
 	var pe *probeError
@@ -617,16 +614,17 @@ func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, a
 	// held to the known values here, before any cap cuts them: a cap
 	// that fell inside a value would leave a fragment the response
 	// filter's first layer cannot match, and no heuristic masks a
-	// fragment under entropyMinLen (redact.go). The filter runs whole
-	// over the finished body as always; this is its first layer, early.
-	// An env_file the filter cannot read leaves those bytes out, as
-	// the response would be withheld for the same reason.
-	known := ma.redactorFor(statusSnapshot{})
+	// fragment under entropyMinLen (redact.go). The values are the
+	// launch's own (l.secrets: what this instance's env_file rendered),
+	// so no file is read and nothing is withheld on a file that went
+	// unreadable since — the record keeps its detail (recordRedactor).
+	// The filter runs whole over the finished body as always; this is
+	// its first layer, early, and the keys it finds are returned for
+	// the result's redacted_env, since the filter will not find the
+	// values again.
+	known := NewRedactor(l.secrets, nil)
 	seen := map[string]bool{}
 	withBody := spec.deployLogLines > 0
-	if known.withhold != "" {
-		d.LogTailError, withBody = known.withhold, false
-	}
 	// With the exit, the pid of the process that failed — the pre_start's
 	// as the manager recorded it, or the app's: the journal finds that
 	// process's lines by it when journald could not tell their unit
@@ -643,7 +641,7 @@ func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, a
 		// The body is the app's output as much as the journal is:
 		// deploy_log_lines 0 keeps both on the box.
 		if withBody {
-			d.Probe.Body = excerpt(known.replaceKnown(pe.body, seen), probeBodyExcerpt)
+			d.Probe.Body = deploytrust.CutRunes(known.replaceKnown(pe.body, seen), probeBodyExcerpt)
 		}
 	}
 	if withBody && c.journal != nil {
@@ -683,12 +681,12 @@ func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, a
 		}
 	}
 	if d.Exit == "" && d.Probe == nil && d.LogTail == nil && !d.LogTailTruncated && d.LogTailError == "" {
-		return nil
+		return nil, nil
 	}
-	if len(seen) > 0 {
-		d.redactedEnv = reportedKeys(seen)
+	if len(seen) == 0 {
+		return d, nil
 	}
-	return d
+	return d, reportedKeys(seen)
 }
 
 // Deploy runs the full blue/green pipeline. Any failure before the
@@ -749,6 +747,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	relaunch := false        // the running version, launched again from its release on disk: not the version's history
 	accepted := false        // the request passed its checks: from here on, what happens is the version's history
 	var detail *deployDetail // filled by the failure-detail defer below, which runs first
+	var redacted []string    // the env keys the detail's early replacement found
 	launched := false        // a pre_start or Start was attempted: there are units to ask about
 	appExit := ""            // the app's exit, read before motel stops a failed instance
 	appPID := 0              // and its main process's pid (runner.Exit)
@@ -784,10 +783,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 		if err != nil {
 			result.Status = "failed"
 			result.Error = err.Error()
-			result.Detail = detail
-			if detail != nil {
-				result.RedactedEnv = detail.redactedEnv
-			}
+			result.Detail, result.RedactedEnv = detail, redacted
 			// The phase reached when it failed — none when it failed
 			// before the first (a rollback whose env_file would not
 			// read): "idle" is the app's state, not a deploy's phase.
@@ -945,7 +941,7 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 	// joins its own lines onto it.
 	defer func() {
 		if err != nil && launched {
-			detail = ma.failureDetail(c, spec, err, appExit, appPID, l, started)
+			detail, redacted = ma.failureDetail(c, spec, err, appExit, appPID, l, started)
 		}
 	}()
 	// A launch that never becomes the instance leaves nothing behind:

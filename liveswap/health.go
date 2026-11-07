@@ -152,10 +152,15 @@ func (p *httpProber) probeOnce(ctx context.Context, sock *socketRef, path string
 		// the status is ("Invalid HTTP_HOST header", "no such table"),
 		// and a redirect's target says where the app wanted to go. More
 		// is read than is kept: the excerpt is cut after the known
-		// values are replaced (failureDetail), so a cut never leaves a
-		// fragment of one.
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, probeBodyRead))
-		return &probeError{status: resp.StatusCode, location: resp.Header.Get("Location"), body: string(body)}
+		// values are replaced (failureDetail), so that cut never leaves
+		// a fragment of one; the token the read's own bound may have
+		// cut goes here (dropUnfinished, journal.go).
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, probeBodyRead))
+		body := string(raw)
+		if len(body) >= probeBodyRead {
+			body = dropUnfinished(body, false)
+		}
+		return &probeError{status: resp.StatusCode, location: resp.Header.Get("Location"), body: body}
 	}
 	return nil
 }

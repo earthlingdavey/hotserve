@@ -383,12 +383,14 @@ func TestProberProcessDeathKeepsLastProbe(t *testing.T) {
 	}
 }
 
-// A failing probe's body is read only up to probeBodyRead bytes: the
-// excerpt a deploy's detail keeps is a diagnosis, not a page, and is cut
-// to probeBodyExcerpt once the known values are replaced
-// (TestFailureDetailCutsAfterTheKnownValues).
+// A failing probe's body is read only up to probeBodyRead bytes, less
+// the token that bound cut in two: the excerpt a deploy's detail keeps
+// is a diagnosis, not a page, and is cut to probeBodyExcerpt once the
+// known values are replaced (TestFailureDetailCutsAfterTheKnownValues).
 func TestProbeOnceKeepsABoundedBodyExcerpt(t *testing.T) {
-	big := strings.Repeat("x", probeBodyRead*3)
+	big := strings.Repeat("word1 ", probeBodyRead)
+	want := big[:probeBodyRead]
+	want = want[:strings.LastIndexByte(want, ' ')+1] + "…"
 	sock := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(big))
@@ -399,7 +401,7 @@ func TestProbeOnceKeepsABoundedBodyExcerpt(t *testing.T) {
 	if !errors.As(err, &pe) || pe.status != http.StatusInternalServerError {
 		t.Fatalf("want a probe error with the status, got %v", err)
 	}
-	if len(pe.body) != probeBodyRead || pe.body != big[:probeBodyRead] {
-		t.Fatalf("body read is %d bytes, want the first %d", len(pe.body), probeBodyRead)
+	if pe.body != want {
+		t.Fatalf("body read is %d bytes ending %q, want the first %d less the cut token", len(pe.body), pe.body[len(pe.body)-12:], probeBodyRead)
 	}
 }

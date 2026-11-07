@@ -874,6 +874,7 @@ severity × occurrence × detection, then the fix's size and risk.
 | An `env_file` value that is a URL followed by prose holding a `:` and then an `@` before any `/` or `?` (`smtp://mail.example.com:587 contact: ops@example.com`) reads a password that is none (`587 contact: ops`), and every response masks that string under the key's name. | `urlPasswords` (redact.go) | 2 | 5 | 3 | 30 | size 1, risk 1 — but a bound at a space un-reads a password that holds one, which libpq takes as it stands, and that is a secret the log would carry (3 × 5 × 5) | The two cannot both hold; the mask over nothing is named for its key, and the value's shape is the operator's to see there. |
 | An admin API on a socket-activated listener (`admin fd/3`, `fdgram/3`) is refused by `motel validate` and `reload`, and said at `run`, as a TCP one is, though the descriptor systemd passed may be a unix socket: the gate reads the config alone and cannot see what the descriptor is. | `checkAdmin` (cmd/motel/backupcheck.go) | 2 | 5 | 1 | 10 | size 2, risk 2 (taking `fd/` on trust is fail-open for a TCP descriptor; asking the manager what it passed is a new state) | Red and named, with the remedy in the message (`admin unix//run/motel/admin.sock`, or `admin off`); the package ships no socket unit, and the starter's socket needs none. |
 | Layer 4 of the response filter misses a short generated token: its bar follows the token's length (`looksGenerated`, `log2(len) − 0.3` bits a character up to 4.5), which masks about 55% of random 20- and 22-character url-safe tokens, 41% at 24, 29% at 26 and all that the fixed bar masked above; the rest of a runtime secret an app prints bare (`secrets.token_urlsafe(16)`'s 22 characters, half the time) reaches the CI log. | `looksGenerated`, `maskGenerated` (redact.go) | 3 | 5 | 5 | 75 | size 1, risk 2: a bar of `0.9·log2(len)`, as first proposed, masks 80% of each short length but also nine of the 148 mixed-case tokens in this repository's own text — identifiers with a digit (`loadEd25519PrivateKey`), unit settings (`RandomizedDelaySec=40s`) — in the failed-deploy bodies the filter exists to keep readable; the bar taken masks one (an e-mail's local part). Measured 2026-11-07 | The known values are not at stake: `env_file` values are replaced whole, and now before the caps cut (`failureDetail`), so no fragment of one leaks. What remains is a secret the app fetched at runtime and printed bare, under 26 characters, on a failed deploy; `deploy_log_lines 0` keeps the app's output on the box, as the README says for a public repository. An assignment is judged by its parts, so `KEY=<secret>` keeps its key and masks its value whatever the key's letters add. |
+| A read bound — the journal tail's 16 KiB, the probe body's 4 KiB — that falls inside an `env_file` value holding whitespace leaves the part of it before (journal) or after (probe) the nearest space as a fragment the filter cannot match, when the replacement of other values shrinks the text enough for the kept cap to reach it. `dropUnfinished` removes the unfinished token up to the nearest whitespace, which is the whole of a value without one. | `dropUnfinished` (journal.go), `probeOnce` (health.go) | 3 | 1 | 5 | 15 | size 2, risk 2: cutting at a line instead of a token drops a diagnosis's first or last line for a case that needs a value with a space, printed at the bound, behind several kilobytes of other known values | Three things must hold at once: a value with whitespace in it (a URL password or a sentence, not a token), printed so that the read bound falls inside it, and enough other known values before (probe) or after (journal) it for their markers to pull the fragment under the kept cap. The fragment is at most one space-delimited piece of the value. `deploy_log_lines 0` keeps the app's output on the box. |
 
 **Owed** (over the bar, not yet fixed):
 
@@ -1112,9 +1113,16 @@ Dated one-liners; the full text of each is in git.
   are cut to their caps (`failureDetail`; the probe reads 4 KiB and
   keeps 512 bytes after the replacement): a cap that fell inside an
   `env_file` value left a fragment the filter could not match and no
-  heuristic could see (scored 3×5×5; size 2, risk 1). An env_file the
-  filter cannot read leaves the app's bytes out of the detail, as the
-  response is withheld for the same reason. The entropy bar follows
+  heuristic could see (scored 3×5×5; size 2, risk 1). The values held
+  to are the launch's own (`launch.secrets`), so no file is read and a
+  file that went unreadable since costs the record nothing, as
+  `recordRedactor` asks; the keys found travel in the result's
+  `redacted_env`, which the filter hoists into the body's own
+  (`withField`). The token a read's own bound cut in two — the
+  journal's 16 KiB, the probe's 4 KiB — goes too (`dropUnfinished`),
+  since a replacement that shrinks the text can carry that fragment
+  under the kept cap (self-review, 3×2×5); a value with a space in it
+  is the residual row. The entropy bar follows
   the token's length (`log2(len) − 0.3`, up to 4.5), measured against
   the repository's own tokens; the owed row is paid as an accepted
   residual with the numbers, and the steeper bar first proposed is

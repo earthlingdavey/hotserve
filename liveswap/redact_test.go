@@ -398,6 +398,24 @@ func TestRedactorEntropy(t *testing.T) {
 	}
 }
 
+// A redacted_env the body already carries below its top level — a
+// deployResult's, nested in a status — is hoisted into the body's own,
+// with the keys the filter found, each once.
+func TestRedactJSONHoistsANestedRedactedEnv(t *testing.T) {
+	r := NewRedactor([]string{"TOP=hunter2hunter2hunter2"}, nil) // gitleaks:allow
+	body := `{"error":"failed","status":{"last_deploy":{"redacted_env":["API_TOKEN"],"detail":{"log_tail":["[redacted:API_TOKEN]"]}},"deploys":[{"redacted_env":["DB_URL","API_TOKEN"]}]},"note":"hunter2hunter2hunter2"}`
+	out := r.redactJSON([]byte(body))
+	var got struct {
+		RedactedEnv []string `json:"redacted_env"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.RedactedEnv, ",") != "API_TOKEN,DB_URL,TOP" {
+		t.Fatalf("redacted_env = %v in %s", got.RedactedEnv, out)
+	}
+}
+
 // An assignment is judged by its parts: the key stays readable and the
 // value is masked on its own, and a short value is not carried over the
 // bar by its key's letters.

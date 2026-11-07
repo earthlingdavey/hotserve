@@ -421,6 +421,33 @@ func (r *Redactor) replaceKnown(s string, seen map[string]bool) string {
 	return s
 }
 
+// nestedStrings is every string in an array under name, anywhere in
+// the decoded JSON v, appended to out: the strings, and only those,
+// since the field is key names.
+func nestedStrings(v any, name string, out []string) []string {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, child := range t {
+			if k != name {
+				out = nestedStrings(child, name, out)
+				continue
+			}
+			if items, ok := child.([]any); ok {
+				for _, it := range items {
+					if s, ok := it.(string); ok {
+						out = append(out, s)
+					}
+				}
+			}
+		}
+	case []any:
+		for _, child := range t {
+			out = nestedStrings(child, name, out)
+		}
+	}
+	return out
+}
+
 // union is both lists' names, each once, sorted.
 func union(a, b []string) []string {
 	set := make(map[string]bool, len(a)+len(b))
@@ -654,30 +681,25 @@ func outcomeAlternation() string {
 }
 
 // withField sets a string-array field on a JSON object body, merged
-// with any array the body already holds under that name. The body is
-// the filter's output: an existing array there — a stored record's
-// own redacted_env, read back — has been through every layer as body
-// text, so its entries are kept, never replaced, and nothing that
-// did not pass the filter is added. The final pass runs before this
-// (rule 2). The object is re-marshalled, so its top-level keys come
-// out sorted; its values are carried as raw JSON, so a nested object
-// keeps its keys' order. Anything but an object is returned as it is.
+// with every array the body already holds under that name, at its top
+// level or below it. The body is the filter's output: an array there —
+// a stored record's own redacted_env, read back, or a deployResult's
+// (RedactedEnv, the keys its detail's early replacement found) nested
+// in a status — has been through every layer as body text, so its
+// entries are kept, never replaced, and nothing that did not pass the
+// filter is added; hoisting them keeps the body's own field the one
+// place a reader looks. The final pass runs before this (rule 2). The
+// object is re-marshalled, so its top-level keys come out sorted; its
+// values are carried as raw JSON, so a nested object keeps its keys'
+// order. Anything but an object is returned as it is.
 func withField(body, name string, values []string) string {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(body), &obj); err != nil || obj == nil {
 		return body
 	}
-	var had []string
-	if raw, ok := obj[name]; ok {
-		var items []any
-		if json.Unmarshal(raw, &items) == nil {
-			for _, it := range items {
-				if str, ok := it.(string); ok {
-					had = append(had, str) // the strings, and only those: the field is key names
-				}
-			}
-		}
-	}
+	var tree any
+	_ = json.Unmarshal([]byte(body), &tree) // obj parsed, so this does too
+	had := nestedStrings(tree, name, nil)
 	v, err := json.Marshal(union(values, had))
 	if err != nil {
 		return body
