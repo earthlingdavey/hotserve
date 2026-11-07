@@ -216,13 +216,17 @@ func TestIntegrationTheAdapterRefusesAnImportAndADirectiveAsInspectReadsThem(t *
 	// its own line, as a check of form refuses an argument — and with
 	// KIND=sqlite the server declares a database where the plan has a
 	// file. Not tried, refused as not knowable; so when quoted, the
-	// quotes being the lexer's, and after a comment ending in a
-	// backslash, which chains the line to the comment's number and to no
-	// directive.
+	// quotes being the lexer's; indented with a space of Unicode's; after
+	// a comment ending in a backslash, which chains the line to the
+	// comment's number and to no directive; and after a token, a
+	// backslash and a space, where the lexer returns the token and the
+	// escape goes with it, so nothing chains.
 	for name, line := range map[string]string{
-		"first on its line":                     "{$KIND:files} app.db",
-		"quoted":                                "\"{$KIND:files}\" app.db",
-		"after a comment ending in a backslash": "# the kind \\\n\t\t\t\t{$KIND:files} app.db",
+		"first on its line":                        "{$KIND:files} app.db",
+		"quoted":                                   "\"{$KIND:files}\" app.db",
+		"indented with a no-break space":           "\u00a0{$KIND:files} app.db",
+		"after a backslash, a space and a newline": "files uploads\\ \n\t\t\t\t{$KIND:files} app.db",
+		"after a comment ending in a backslash":    "# the kind \\\n\t\t\t\t{$KIND:files} app.db",
 	} {
 		kind := fmt.Sprintf(liveswap, line)
 		adapts("with a kind "+name, kind)

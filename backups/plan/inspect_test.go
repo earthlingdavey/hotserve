@@ -182,9 +182,10 @@ func TestAnImportsWordsEndBeforeTheParsersLocation(t *testing.T) {
 // caddyconfig/caddyfile/lexer.go, parse.go; the comment's backslash and
 // the escaped one held by
 // TestIntegrationTheAdapterRefusesAnImportAndADirectiveAsInspectReadsThem]:
-// a `\` escapes the newline after it, through any spaces and through
-// the rest of a comment, and a character that is no space and in no
-// comment uses the escape up. The first token of a logical line, or the
+// a `\` escapes the newline after it, through the spaces before any
+// token and through the rest of a comment; a space after a token
+// returns the token and drops the escape; any other character uses it
+// up; spaces are unicode.IsSpace. The first token of a logical line, or the
 // first after a `}`, is where a directive's or a subdirective's name is
 // read.
 func TestATokenLeadingItsLineStandsWhereANameIsRead(t *testing.T) {
@@ -216,6 +217,11 @@ func TestATokenLeadingItsLineStandsWhereANameIsRead(t *testing.T) {
 		{"`{$X}` a\n", true},
 		{"root \"{$X}\"\n", false}, // a quoted argument
 		{"\v{$X}\n", true},         // the lexer's other spaces
+		{"\u00a0{$X} a\n", true},   // and its Unicode ones
+		{"root\u00a0{$X}\n", false},
+		{"files uploads\\ \n{$X} a\n", true}, // the space returns the token, and the escape goes with it
+		{"files uploads\\\n{$X} a\n", false},
+		{"root \\\u00a0\n{$X}\n", false}, // no token begun: the escape holds through the space
 	} {
 		off := strings.Index(tc.raw, "{$X}")
 		if got := leadsItsLine([]byte(tc.raw), off); got != tc.leads {

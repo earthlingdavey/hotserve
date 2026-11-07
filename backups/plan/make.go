@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // motel is the binary that adapts the Caddyfile. Absolute: a
@@ -552,26 +553,31 @@ func chainStart(raw []byte, off int) int {
 
 // chains says whether Caddy's lexer (caddyconfig/caddyfile/lexer.go,
 // 2.11.7) reads the newline after line as escaped, chaining the next
-// line onto it: a `\` sets the escape, which holds through spaces and
-// through the rest of a comment — the lexer reads the escape before it
-// reads the comment, and clears it only on a character it escapes — so
-// `root \`, `root \ ` and `# C:\certs` chain, and `root a\b` and
-// `root \\` do not. Quoted strings and heredocs are not followed: a
-// line in one chains or not as its characters say, and what the next
-// line holds is the string's, a value either way.
+// line onto it. A `\` sets the escape; a space (unicode.IsSpace, as the
+// lexer has it) ends a token in progress and the escape with it, since
+// the lexer returns the token there and the escape is the call's own,
+// but keeps the escape where no token has begun; a comment keeps it to
+// the line's end, the lexer reading the escape before the comment; and
+// any other character uses it up. So `root \`, `root \ ` and
+// `# C:\certs` chain, and `root a\b`, `root \\` and `files uploads\ `
+// do not. Quoted strings and heredocs are not followed: a line in one
+// chains or not as its characters say, and what the next line holds is
+// the string's, a value either way.
 func chains(line []byte) bool {
-	escaped, comment, atStart := false, false, true
-	for _, ch := range line {
+	escaped, comment, inToken := false, false, false
+	for _, r := range string(line) {
 		switch {
-		case !escaped && ch == '\\':
+		case !escaped && r == '\\':
 			escaped = true
+		case unicode.IsSpace(r):
+			if inToken {
+				escaped, inToken = false, false
+			}
 		case comment:
-		case ch == ' ' || ch == '\t' || ch == '\r' || ch == '\v' || ch == '\f':
-			atStart = true
-		case ch == '#' && atStart:
+		case r == '#' && !inToken:
 			comment = true
 		default:
-			escaped, atStart = false, false
+			escaped, inToken = false, true
 		}
 	}
 	return escaped
@@ -591,7 +597,9 @@ func chains(line []byte) bool {
 // quoted string spanning lines — is read as a name here too; a value a
 // directive checks by form follows the directive's own word.
 func leadsItsLine(raw []byte, off int) bool {
-	blank := func(b []byte) bool { return len(bytes.Trim(b, " \t\r\n\v\f\\}\"`")) == 0 }
+	blank := func(b []byte) bool {
+		return len(bytes.TrimFunc(b, func(r rune) bool { return unicode.IsSpace(r) || strings.ContainsRune("\\}\"`", r) })) == 0
+	}
 	own := bytes.LastIndexByte(raw[:off], '\n') + 1
 	for _, line := range bytes.Split(raw[chainStart(raw, off):own], []byte("\n")) {
 		if i := bytes.IndexByte(line, '#'); i >= 0 {
