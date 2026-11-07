@@ -2,6 +2,7 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -153,27 +154,68 @@ func TestAProbeReachesWhatTheCaddyfileImports(t *testing.T) {
 	}
 }
 
-// A probe's refusal is the directive's own only where the adapter places
-// it at the occurrence's own line: the line is read after ", at ", to
-// its end, and not out of the import chain that follows a token a
-// snippet brought in [measured, Caddy 2.11.7].
-func TestARefusalIsPlacedWhereTheAdapterPlacesIt(t *testing.T) {
-	plain := `{"level":"error","msg":"parsing caddyfile tokens for 'tls': wrong protocol name or protocol not supported: 'hsb-probe-x.invalid', at /tmp/hsb-probe-1/Caddyfile:3"}`
-	chain := `{"level":"error","msg":"parsing caddyfile tokens for 'tls': wrong protocol name or protocol not supported: 'hsb-probe-x.invalid', at /tmp/hsb-probe-1/Caddyfile:21 import chain ['/tmp/hsb-probe-1/Caddyfile:25 (import site)']"}`
+// A probe's refusal is the directive's own unless it came through an
+// import: a token a snippet or an imported file brought in has the
+// import chain after the line [measured, Caddy 2.11.7], and is refused
+// once where the import may expand it again.
+func TestARefusalThroughAnImportIsNotTheDirectivesOwn(t *testing.T) {
+	plain := `{"level":"error","msg":"parsing caddyfile tokens for 'tls': wrong protocol name or protocol not supported: 'hsb-probe-x-1.invalid', at /tmp/hsb-probe-1/Caddyfile:3"}`
+	chain := `{"level":"error","msg":"parsing caddyfile tokens for 'tls': wrong protocol name or protocol not supported: 'hsb-probe-x-1.invalid', at /tmp/hsb-probe-1/Caddyfile:21 import chain ['/tmp/hsb-probe-1/Caddyfile:25 (import site)']"}`
+	if throughAnImport(plain) || !throughAnImport(chain) || throughAnImport("") {
+		t.Fatal("throughAnImport")
+	}
+}
+
+// An import's words end before the parser's location: its line number
+// is a digit, and so is a value a variable may be tried at ("1", "2").
+func TestAnImportsWordsEndBeforeTheParsersLocation(t *testing.T) {
+	words, atImport := importWords(errors.New("exit status 1"), `{"level":"error","ts":1,"msg":"File to import not found: sites/1.caddy, at /etc/motel/Caddyfile:1"}`+"\n")
+	if !atImport || !strings.HasSuffix(words, "sites/1.caddy") {
+		t.Fatalf("importWords = %q, %v", words, atImport)
+	}
+	if words, atImport := importWords(&emptyGlobError{[]string{"sites/1/*.caddy"}}, ""); !atImport || words != "sites/1/*.caddy" {
+		t.Fatalf("importWords of an empty glob = %q, %v", words, atImport)
+	}
+}
+
+// Where a token stands is read as the lexer reads lines [Caddy 2.11.7,
+// caddyconfig/caddyfile/lexer.go, parse.go; the comment's backslash and
+// the escaped one held by
+// TestIntegrationTheAdapterRefusesAnImportAndADirectiveAsInspectReadsThem]:
+// a `\` escapes the newline after it, through any spaces and through
+// the rest of a comment, and a character that is no space and in no
+// comment uses the escape up. The first token of a logical line, or the
+// first after a `}`, is where a directive's or a subdirective's name is
+// read.
+func TestATokenLeadingItsLineStandsWhereANameIsRead(t *testing.T) {
 	for _, tc := range []struct {
-		said, loc string
-		want      bool
+		raw   string
+		leads bool
 	}{
-		{plain, "/tmp/hsb-probe-1/Caddyfile:3", true},
-		{plain, "/tmp/hsb-probe-1/Caddyfile:30", false},
-		{plain, "/tmp/hsb-probe-1/Caddyfile:2", false},
-		{chain, "/tmp/hsb-probe-1/Caddyfile:21", true},
-		{chain, "/tmp/hsb-probe-1/Caddyfile:25", false}, // the import's line, in the chain
-		{chain, "/tmp/hsb-probe-1/Caddyfile:2", false},
-		{"Error: parsing caddyfile tokens for 'tls': wrong protocol name or protocol not supported: 'x', at /f/Caddyfile:2\n", "/f/Caddyfile:2", true},
+		{"{$X} a\n", true},
+		{"  {$X} a\n", true},
+		{"root {$X}\n", false},
+		{"a\nroot {$X}\n", false},
+		{"root \\\n\t{$X}\n", false},
+		{"a\r\nroot \\\r\n\t{$X}\r\n", false},
+		{"root \\ \t\n{$X}\n", false},  // the escape holds through spaces
+		{"root \\\\\n{$X}\n", true},    // an escaped backslash chains nothing
+		{"root \\\\\\\n{$X}\n", false}, // three: one escaped, one chaining
+		{"root a\\b\n{$X}\n", true},    // used up by the b
+		{"\\\n{$X}\n", true},
+		{"} {$X} a\n", true},
+		{"}\t\\\n{$X}\n", true},
+		{"# c \\\n{$X} a\n", true},             // the comment ends at the newline the backslash escapes
+		{"# C:\\certs\n{$X} a\n", true},        // a backslash anywhere in a comment holds to its end
+		{"root /x # C:\\certs\n{$X}\n", false}, // and chains the line onto the directive before the comment
+		{"foo # c \\\n{$X}\n", false},
+		{"foo#bar\\\n{$X}\n", false}, // no comment: the # is not at a token's start
+		{"# {$X}\n", false},          // a comment's own line
+		{"a\nb \\\n\t{$X}\nc\n", false},
 	} {
-		if got := refusedAt(tc.said, tc.loc); got != tc.want {
-			t.Errorf("refusedAt(%q, %q) = %v", tc.said, tc.loc, got)
+		off := strings.Index(tc.raw, "{$X}")
+		if got := leadsItsLine([]byte(tc.raw), off); got != tc.leads {
+			t.Errorf("leadsItsLine(%q) = %v", tc.raw, got)
 		}
 	}
 }

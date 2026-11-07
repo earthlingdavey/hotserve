@@ -160,7 +160,11 @@ func TestEnvNamesReadsEveryFileBesideTheCaddyfile(t *testing.T) {
 // checks by form are read from the text, substituted as Caddy
 // substitutes them, so a copy with a value written in is read as the
 // real adapter reads it; a literal import of a file that is there is
-// read too, one level down. The other variables are read from the
+// read too, one level down. A backup block's subdirective that is
+// neither sqlite nor files is refused as parseBackup refuses it,
+// quoted at its line; a file saying "# refusals carry an import chain"
+// has every refusal end as one of a token an import brought in does.
+// The other variables are read from the
 // environment, with the prefix the real adapter's directive errors
 // carry; MAGIC is refused in words that are neither a directive's nor
 // an import's. It fails if anything of the caller's environment reaches
@@ -195,7 +199,7 @@ for f in $(grep -E '^[[:space:]]*import[[:space:]]+[^{* ]+[[:space:]]*$' "$last"
 	grep -q "^($f)" "$last" && continue # a snippet's name, not a file's
 	case "$f" in /*) p=$f ;; *) p=$dir/$f ;; esac
 	p=$(printf '%s' "$p" | sed 's|/\./|/|g')
-	[ -e "$p" ] || { echo "Error: File to import not found: $f" >&2; exit 1; }
+	[ -e "$p" ] || { echo "Error: File to import not found: $f, at $last:1" >&2; exit 1; }
 	read_files="$read_files $p"
 done
 for f in $read_files; do awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }' "$f" >>"$text"; echo >>"$text"; done
@@ -207,16 +211,17 @@ first() { args "$1" | head -1; }
 # directive. A file saying "# place refusals at N" has every refusal
 # placed at its line N, for the tests of a refusal placed elsewhere.
 where() {
+	chain=""; grep -q '^# refusals carry an import chain$' "$last" && chain=" import chain ['$last:1 (import x)']"
 	at=$(sed -n 's/^# place refusals at \([0-9]*\)$/\1/p' "$last" | head -1)
-	[ -n "$at" ] && { printf '%s:%s' "$last" "$at"; return; }
+	[ -n "$at" ] && { printf '%s:%s%s' "$last" "$at" "$chain"; return; }
 	for f in $read_files; do
 		n=$(awk -v d="$1" -v tok="$2" '{ if (!cont) { start = NR; head = ($1 == d) } if (head && index($0, tok)) { print start; exit } cont = (substr($0, length($0)) == "\\") }' "$f")
-		[ -n "$n" ] && { printf '%s:%s' "$f" "$n"; return; }
+		[ -n "$n" ] && { printf '%s:%s%s' "$f" "$n" "$chain"; return; }
 	done
 }
 if uses ENV; then
 	if grep -q '{\$ENV}' "$text"; then e=$ENV; else e=${ENV:-prod}; fi
-	[ "$e" = prod ] || { echo "Error: File to import not found: sites/$e.caddy" >&2; exit 1; }
+	[ "$e" = prod ] || { echo "Error: File to import not found: sites/$e.caddy, at $last:1" >&2; exit 1; }
 fi
 # An import glob that matches nothing: a warning, and the config all the
 # same.
@@ -261,6 +266,13 @@ for t in $(args lb_policy); do
 	*) echo "Error: parsing caddyfile tokens for 'reverse_proxy': getting module named 'http.reverse_proxy.selection_policies.$p': module not registered: http.reverse_proxy.selection_policies.$p, at $(where lb_policy "$t")" >&2; exit 1;;
 	esac
 done
+# A backup block's subdirective is sqlite or files, as parseBackup has
+# it: any other word there is refused, quoted, at its line.
+k=$(awk '/^[[:space:]]*backup[[:space:]]*\{/ { b = 1; next } b && /^[[:space:]]*\}/ { b = 0 } b && $1 != "" && $1 != "sqlite" && $1 != "files" && $1 !~ /^#/ { print $1; exit }' "$text")
+if [ -n "$k" ]; then
+	kk=$(subst "$k")
+	case "$kk" in sqlite|files) ;; *) echo "Error: parsing caddyfile tokens for 'liveswap': unknown backup subdirective \"$kk\", at $(where "$k" "$k")" >&2; exit 1;; esac
+fi
 # A header's value goes into the config as any token's would.
 headers=""; for h in $(args header_up); do headers="$headers $(subst "$h")"; done
 # What a plan reads, from the text as the real adapter reads it. A
@@ -335,6 +347,11 @@ func TestMakeRefusesAPlanThatDependsOnTheEnvironment(t *testing.T) {
 		"one variable in a directive's check and the root":      {"liveswap {\n\troot /srv/{$X:tls1.2}\n}\ntls {\n\tprotocols {$X:tls1.2}\n}\n", []string{"X", "depends on"}},
 		"one variable in a directive's check and an app line":   {"app {$X:first} {\n}\nlb_policy {$X:first}\n", []string{"X", "depends on"}},
 		"one variable in a directive's check and a backup path": {"backup {\n\tsqlite {$X:tls1.2}\n\tfiles  {$Y:tls1.3}\n}\ntls {\n\tprotocols {$X:tls1.2} {$Y:tls1.3}\n}\n", []string{"X, Y", "depends on"}},
+		// A backup path whose default is the value the probe would try
+		// there: the probe takes one the Caddyfile does not hold, and
+		// finds the path moved.
+		"one variable in a directive's check and a backup path whose default is the probe's marker":      {"backup {\n\tsqlite {$X:hsb-probe-x-1.invalid}\n}\ntls {\n\tprotocols {$X:tls1.2}\n}\n", []string{"X", "depends on"}},
+		"one variable in a directive's check and a backup path whose default is the marker's other form": {"backup {\n\tsqlite {$X:hsb-probe-x.invalid}\n}\ntls {\n\tprotocols {$X:tls1.2}\n}\n", []string{"X", "depends on"}},
 		// The argument on the line after, chained by a backslash: the
 		// adapter places its refusal where the chain starts, and so is
 		// the occurrence.
@@ -344,9 +361,19 @@ func TestMakeRefusesAPlanThatDependsOnTheEnvironment(t *testing.T) {
 		"the same, and another after the chain": {"tls {\n\tprotocols \\\n\t\t{$TLS_MIN:tls1.2}\n}\ntls {\n\tprotocols {$TLS_MIN:tls1.2}\n}\n", nil},
 		// And an earlier line holding the same text does not place it.
 		"a header first, then the directive's check": {"header_up X-Env {$X:tls1.2}\ntls {\n\tprotocols {$X:tls1.2}\n}\n", nil},
-		// A refusal placed anywhere but at the occurrence read the value
-		// somewhere else: not knowable here.
-		"a value refused from another line": {"# place refusals at 1\ntls {\n\tprotocols {$TLS_MIN:tls1.2}\n}\n", []string{"TLS_MIN", "could not be told"}},
+		// A refusal placed on another line — a directive that checks at
+		// its block's end — is the directive's own all the same: only an
+		// import carries a token elsewhere, and that shows in its words.
+		"a value refused from another line": {"# place refusals at 1\ntls {\n\tprotocols {$TLS_MIN:tls1.2}\n}\n", nil},
+		// A refusal through an import — the adapter's words end in the
+		// import chain — is of the first expansion the parser met; an
+		// import with arguments may expand the occurrence again, where a
+		// plan reads: not knowable here.
+		"a value refused through an import": {"# refusals carry an import chain\ntls {\n\tprotocols {$TLS_MIN:tls1.2}\n}\n", []string{"TLS_MIN", "could not be told"}},
+		// A variable standing where a subdirective's name is read is
+		// checked by form as a name, and another value names another
+		// subdirective: not tried, refused as not knowable.
+		"a variable where a subdirective's name is read": {"backup {\n\t{$KIND:files} app.db\n}\n", []string{"KIND", "could not be told"}},
 		// The same, written where nothing a plan reads is: let through.
 		"one variable in a directive's check and a header": {"tls {\n\tprotocols {$X:tls1.2}\n}\nheader_up X-Env {$X:tls1.2}\n", nil},
 		// With no default: a default first, and with one the root next

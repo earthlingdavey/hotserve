@@ -163,10 +163,8 @@ func TestIntegrationTheAdapterRefusesAnImportAndADirectiveAsInspectReadsThem(t *
 	if _, err := Make(context.Background(), file); err == nil || !strings.Contains(err.Error(), "could not be told") {
 		t.Fatalf("Make with an occurrence past the copy: %v", err)
 	}
-	// A refusal is placed where the lexer places the token: at the start
-	// of its chain, with the lines the chain spans counted again after
-	// it — so the chained occurrence and the inert one after it are both
-	// found where the adapter says.
+	// A chained occurrence, and an inert one after it: each the
+	// directive's own refusal, wherever the adapter places it.
 	if err := os.WriteFile(file, []byte("example.com {\n\ttls {\n\t\tprotocols \\\n\t\t\t{$X:tls1.2}\n\t}\n\treverse_proxy a:1 {\n\t\theader_up X-Env {$X:tls1.2}\n\t}\n}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +177,82 @@ func TestIntegrationTheAdapterRefusesAnImportAndADirectiveAsInspectReadsThem(t *
 	}
 	if _, err := Make(context.Background(), file); err != nil {
 		t.Fatalf("Make with the occurrence in the copy: %v", err)
+	}
+	// But a value the directive refuses in an imported file is refused
+	// through the import — the adapter's words end in the import chain
+	// — and the variable as not knowable: the import may be expanded
+	// again (an accepted residual, the README's table).
+	if err := os.WriteFile(filepath.Join(dir, "sites", "tls.caddy"), []byte("tls {\n\tprotocols {$X:tls1.2}\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("example.com {\n\timport sites/tls.caddy\n\trespond ok\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Make(context.Background(), file); err == nil || !strings.Contains(err.Error(), "could not be told") {
+		t.Fatalf("Make with the directive's check in an imported file: %v", err)
+	}
+
+	const liveswap = "{\n\tadmin off\n\tliveswap {\n\t\troot /srv\n\t\tartifact_allowlist example.com/\n\t\tdeploy_trust github {\n\t\t\taudience motel\n\t\t\tclaim repository your-org/app\n\t\t}\n\t\tapp blog {\n\t\t\tcommand ./server\n\t\t\tbackup {\n\t\t\t\t%s\n\t\t\t}\n\t\t}\n\t}\n}\n"
+	adapts := func(name, caddyfile string, env ...string) {
+		t.Helper()
+		if out := said(caddyfile, env...); strings.Contains(out, "\"level\":\"error\"") {
+			t.Fatalf("fixture: the Caddyfile %s does not adapt with %v: %s", name, env, out)
+		}
+	}
+
+	// One textual occurrence a snippet carries to two places — a backup
+	// path and a policy the adapter checks by form: the adapter refuses
+	// the first expansion it meets, quoting the value from the snippet's
+	// line with the import chain after it, and the other, where a plan
+	// reads, is never seen. Refused as not knowable.
+	shared := "(value) {\n\t{args[0]} {$X:first}\n}\n" + fmt.Sprintf(liveswap, "import value sqlite") + "example.com {\n\treverse_proxy a:1 {\n\t\timport value lb_policy\n\t}\n}\n"
+	adapts("with a shared snippet occurrence", shared)
+	if _, err := Make(context.Background(), file); err == nil || !strings.Contains(err.Error(), "could not be told") {
+		t.Fatalf("Make with one occurrence a snippet carries to a backup path and a policy: %v", err)
+	}
+
+	// A variable standing where a subdirective's name is read: every
+	// value but a kind's is refused as an unknown subdirective, quoted at
+	// its own line, as a check of form refuses an argument — and with
+	// KIND=sqlite the server declares a database where the plan has a
+	// file. Not tried, refused as not knowable; so after a comment
+	// ending in a backslash, which chains the line to the comment's
+	// number and to no directive.
+	for name, line := range map[string]string{
+		"first on its line":                     "{$KIND:files} app.db",
+		"after a comment ending in a backslash": "# the kind \\\n\t\t\t\t{$KIND:files} app.db",
+	} {
+		kind := fmt.Sprintf(liveswap, line)
+		adapts("with a kind "+name, kind)
+		adapts("with a kind "+name, kind, "KIND=sqlite")
+		if out := said(kind, "KIND=1"); !failedAtDirective(out) {
+			t.Fatalf("fixture: a kind %s is not refused in a directive's words, so the probe is not reached: %s", name, out)
+		}
+		if _, err := Make(context.Background(), file); err == nil || !strings.Contains(err.Error(), "could not be told") {
+			t.Fatalf("Make with a kind %s: %v", name, err)
+		}
+	}
+	// A line ending in two backslashes chains nothing — the first escapes
+	// the second — so the token first on the next line is a
+	// subdirective's name, where a chain would have made it an argument.
+	escaped := "example.com {\n\treverse_proxy a:1 {\n\t\theader_up X-Env \\\\\n\t\t{$D:header_up} X-B v\n\t}\n}\n"
+	adapts("with an escaped backslash", escaped)
+	if out := said(escaped, "D=1"); !failedAtDirective(out) {
+		t.Fatalf("fixture: the subdirective after the escaped backslash is not refused in a directive's words: %s", out)
+	}
+	if _, err := Make(context.Background(), file); err == nil || !strings.Contains(err.Error(), "could not be told") {
+		t.Fatalf("Make with a subdirective's name after an escaped backslash: %v", err)
+	}
+
+	// A backup path whose default is the value the probe would try
+	// there, had it one value: the probe takes one the Caddyfile does not
+	// hold, and the path is found moved.
+	for _, def := range []string{"hsb-probe-x-1.invalid", "hsb-probe-x.invalid"} {
+		marker := fmt.Sprintf(liveswap, "sqlite {$X:"+def+"}") + strings.Replace(site, "TLS_MIN", "X", 1)
+		adapts("with the probe's marker "+def+" as a default", marker)
+		if _, err := Make(context.Background(), file); err == nil || !strings.Contains(err.Error(), "depends on the environment variable(s) X") {
+			t.Fatalf("Make with the probe's marker %s as a backup path's default: %v", def, err)
+		}
 	}
 }
 

@@ -117,8 +117,10 @@ type adapted struct {
 // written is tried on its own (probe): a copy of the Caddyfile with
 // that one occurrence made a value of its own and the others their
 // defaults, adapted by the adapter. One the adapter refuses, quoting
-// the value, is the directive's own; one that adapts and changes the
-// plan is refused as a root's or a backup path's would be; and when
+// the value and not through an import, is the directive's own; one
+// that adapts and changes the plan is refused as a root's or a backup
+// path's would be; one standing where
+// a directive's name is read is refused before any is tried; and when
 // none does either, the variable moves nothing a run does (#394). Caddy
 // substitutes {$NAME} in the text before it reads a token, by the
 // shape of match envRe is, so the occurrences found here are the ones
@@ -322,7 +324,7 @@ func Inspect(ctx context.Context, caddyfile, configDir string) (*Inspection, err
 		return nil, fmt.Errorf("the Caddyfile imports through the environment variable(s) %s: with any other value the import names a file that is not there, so what the server imports when they are set cannot be known here; a backup reads the Caddyfile without motel's environment — write the import literally", strings.Join(imported, ", "))
 	}
 	if len(opaque) > 0 {
-		return nil, fmt.Errorf("the Caddyfile does not adapt with the environment variable(s) %s set to any value tried, and where else they are read could not be told here — a value a snippet's argument carries, a file the adapter reaches past the Caddyfile's directory or beside a copy checked away from its own, or words that are neither a directive's nor an import's — so what the server reads when they are set cannot be known; a backup reads the Caddyfile without motel's environment — write the root, app names, backup paths and imports literally", strings.Join(opaque, ", "))
+		return nil, fmt.Errorf("the Caddyfile does not adapt with the environment variable(s) %s set to any value tried, and where else they are read could not be told here — a value written in a snippet or an imported file, or carried to one by its argument, a word standing where a directive's name is read, a file the adapter reaches past the Caddyfile's directory or beside a copy checked away from its own, or words that are neither a directive's nor an import's — so what the server reads when they are set cannot be known; a backup reads the Caddyfile without motel's environment — write the root, app names, backup paths and imports literally", strings.Join(opaque, ", "))
 	}
 	if err := base.Validate(); err != nil {
 		return nil, err
@@ -373,13 +375,19 @@ func (a adapted) mentions(s string) bool {
 // copy with every occurrence at its default, which has to adapt to the
 // plan the Caddyfile did: an adapt that fails at an occurrence writes
 // no config for the value to show in. Then an adapt the adapter
-// refuses quoting the first value, at the occurrence's own file and
-// line, is the directive's own refusal of that occurrence, consumed
-// where it is written; one quoting it from another line read the value
-// somewhere else — a snippet's argument, which the snippet may use
-// again — and where else it went is not knowable here; one that adapts is
-// judged as a trial is; and one that fails any other way, or at an
-// import, is said so.
+// refuses quoting the first value, not through an import, is the
+// directive's own refusal of that occurrence, consumed where it is
+// written (throughAnImport); one quoting it from a snippet or an
+// imported file read the value somewhere it may be read again — a
+// snippet's argument, an import with arguments expanded a second time
+// — and where else it went is not knowable here; one that adapts is
+// judged as a trial is; and one
+// that fails any other way, or at an import, is said so. An
+// occurrence standing where a directive's or a subdirective's name is
+// read — `{$KIND:files} app.db` in a backup block — is not tried: a
+// name is checked by form as an argument is, so the value would be
+// refused as an unknown one at its own line, while another value
+// names another directive, and the server's is not known here.
 //
 // The copy is written under the temporary directory: the plan unit's
 // own (PrivateTmp), or the operator's at validate. It costs one adapt
@@ -387,7 +395,6 @@ func (a adapted) mentions(s string) bool {
 // could not set up is an error, named; what it could not tell is
 // unknown, which Inspect refuses as such.
 func probe(caddyfile, name string, files []string, env map[string]string, adapt func(map[string]string, string) (adapted, error), judge func(adapted) bool) (verdict, error) {
-	own, fromEnv := "hsb-probe-"+slug(name)+".invalid", "hsb-probe-"+slug(name)+"-env.invalid"
 	dir, err := filepath.Abs(filepath.Dir(caddyfile))
 	if err != nil {
 		return unknown, fmt.Errorf("the Caddyfile's directory, to copy for {$%s}: %w", name, err)
@@ -395,7 +402,6 @@ func probe(caddyfile, name string, files []string, env map[string]string, adapt 
 	type occurrence struct {
 		file string
 		m    []int // envRe's match, as FindAllSubmatchIndex gives it
-		line int   // in the file, counted from 1
 	}
 	texts := map[string][]byte{}
 	rels := map[string]string{} // each file's path relative to dir
@@ -415,9 +421,38 @@ func probe(caddyfile, name string, files []string, env map[string]string, adapt 
 		}
 		texts[f], rels[f] = raw, rel
 		for _, m := range envRe.FindAllSubmatchIndex(raw, -1) {
-			if string(raw[m[2]:m[3]]) == name {
-				occurrences = append(occurrences, occurrence{f, m, tokenLine(raw, m[0])})
+			if string(raw[m[2]:m[3]]) != name {
+				continue
 			}
+			if leadsItsLine(raw, m[0]) {
+				return unknown, nil // where a directive's name is read
+			}
+			occurrences = append(occurrences, occurrence{f, m})
+		}
+	}
+	// The markers: a value of the occurrence's own, and a second for the
+	// environment — neither written in any file read, nor a value the
+	// base adapted with: an occurrence whose default is the marker would
+	// be tried as the control was, and show nothing of where it reaches.
+	appears := func(s string) bool {
+		for _, raw := range texts {
+			if bytes.Contains(raw, []byte(s)) {
+				return true
+			}
+		}
+		for _, v := range env {
+			if strings.Contains(v, s) {
+				return true
+			}
+		}
+		return false
+	}
+	var own, fromEnv string
+	for n := 1; ; n++ {
+		own = fmt.Sprintf("hsb-probe-%s-%d.invalid", slug(name), n)
+		fromEnv = fmt.Sprintf("hsb-probe-%s-%d-env.invalid", slug(name), n)
+		if !appears(own) && !appears(fromEnv) {
+			break
 		}
 	}
 	tmp, err := os.MkdirTemp("", "hsb-probe-")
@@ -492,10 +527,10 @@ func probe(caddyfile, name string, files []string, env map[string]string, adapt 
 			return unknown, nil // an occurrence the copy does not hold was read
 		case err != nil && failedAtImport(trial.said):
 			return imports, nil
-		case err != nil && strings.Contains(trial.said, own) && refusedAt(trial.said, fmt.Sprintf("%s:%d", filepath.Join(tmp, rels[o.file]), o.line)):
-			continue // the directive's own refusal of this occurrence, where it is written
+		case err != nil && strings.Contains(trial.said, own) && !throughAnImport(trial.said):
+			continue // the directive's own refusal of this occurrence
 		case err != nil:
-			return unknown, nil // refused elsewhere, or for something else: where the value went is not told
+			return unknown, nil // refused through an import, or for something else: where the value went is not told
 		case judge(trial):
 			return moves, nil
 		}
@@ -503,46 +538,85 @@ func probe(caddyfile, name string, files []string, env map[string]string, adapt 
 	return inert, nil
 }
 
-// tokenLine is the line Caddy's lexer gives a token at off in raw
-// (caddyconfig/caddyfile/lexer.go): the physical line, but for a token
-// on a line chained onto the one before by a `\` at its end, which is
-// placed where the chain starts — the lines a chain spans are counted
-// again after it. A token inside a quoted string or a heredoc that
-// spans lines is placed by the lexer at the token's first line and here
-// at the occurrence's own, so an occurrence in one is refused as not
-// knowable; so is one after a line ending in an escaped backslash,
-// `\\`, which chains nothing there and is read as a chain here. A value
-// a directive checks by form is one token on one line, or nothing a run
-// plans for.
-func tokenLine(raw []byte, off int) int {
-	line := 1 + bytes.Count(raw[:off], []byte("\n"))
-	for end := bytes.LastIndexByte(raw[:off], '\n'); end > 0; end = bytes.LastIndexByte(raw[:end], '\n') {
-		prev := bytes.TrimSuffix(raw[:end], []byte("\r"))
-		if len(prev) == 0 || prev[len(prev)-1] != '\\' {
+// chainStart is the offset in raw where the logical line holding off
+// begins: its physical line's, or, for a line the lexer chains onto the
+// one before, where the chain starts.
+func chainStart(raw []byte, off int) int {
+	start := bytes.LastIndexByte(raw[:off], '\n') + 1
+	for start > 0 {
+		prev := bytes.LastIndexByte(raw[:start-1], '\n') + 1
+		if !chains(raw[prev : start-1]) {
 			break
 		}
-		line--
+		start = prev
 	}
-	return line
+	return start
 }
 
-// refusedAt says whether the adapter's words place the refusal at loc, a
-// file:line, as Caddy's directive errors end: ", at <file>:<line>", and
-// then, for a token a snippet brought in, " import chain [...]" naming
-// the import's own line — which is not where the refusal is, so the
-// line is held to end there.
-func refusedAt(said, loc string) bool {
-	for rest := said; ; {
-		i := strings.Index(rest, ", at "+loc)
-		if i < 0 {
-			return false
-		}
-		rest = rest[i+len(", at "+loc):]
-		if rest == "" || rest[0] < '0' || rest[0] > '9' {
-			return true
+// chains says whether Caddy's lexer (caddyconfig/caddyfile/lexer.go,
+// 2.11.7) reads the newline after line as escaped, chaining the next
+// line onto it: a `\` sets the escape, which holds through spaces and
+// through the rest of a comment — the lexer reads the escape before it
+// reads the comment, and clears it only on a character it escapes — so
+// `root \`, `root \ ` and `# C:\certs` chain, and `root a\b` and
+// `root \\` do not. Quoted strings and heredocs are not followed: a
+// line in one chains or not as its characters say, and what the next
+// line holds is the string's, a value either way.
+func chains(line []byte) bool {
+	escaped, comment, atStart := false, false, true
+	for _, ch := range line {
+		switch {
+		case !escaped && ch == '\\':
+			escaped = true
+		case comment:
+		case ch == ' ' || ch == '\t' || ch == '\r' || ch == '\v' || ch == '\f':
+			atStart = true
+		case ch == '#' && atStart:
+			comment = true
+		default:
+			escaped, atStart = false, false
 		}
 	}
+	return escaped
 }
+
+// leadsItsLine says whether the token at off in raw is the first of its
+// logical line, or the first after a `}` on it: where Caddy's parser
+// reads a directive's name, and a module its subdirective's — a `{`
+// ends its line, by the parser, and the next subdirective may follow a
+// nested block's `}` on the same line, by the dispenser. A comment on
+// an earlier line of the chain is no token, however it ends, so it
+// counts for nothing; one on the occurrence's own line holds the
+// occurrence, which then leads nothing. What else stands first on a
+// line — a site address, a snippet's name, a line of a heredoc or of a
+// quoted string spanning lines — is read as a name here too; a value a
+// directive checks by form follows the directive's own word.
+func leadsItsLine(raw []byte, off int) bool {
+	blank := func(b []byte) bool { return len(bytes.Trim(b, " \t\r\n\\}")) == 0 }
+	own := bytes.LastIndexByte(raw[:off], '\n') + 1
+	for _, line := range bytes.Split(raw[chainStart(raw, off):own], []byte("\n")) {
+		if i := bytes.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		if !blank(line) {
+			return false
+		}
+	}
+	return blank(raw[own:off])
+}
+
+// throughAnImport says whether the adapter's refusal is of a token an
+// import brought in: Caddy ends it with the import chain (2.11.7,
+// caddyfile.Dispenser.WrapErr). A snippet or a file imported with
+// arguments is expanded once an import; the adapter refuses the first
+// expansion it meets, and the others, which may carry the value to a
+// path, are not seen — so such a refusal is not the directive's own of
+// the occurrence where it is written. One not through an import is:
+// a token is read where it stands and the markers are written nowhere
+// else, so whatever line the adapter names — a directive that checks
+// at its block's end names another — the directive that refused the
+// value is the one that consumed it.
+func throughAnImport(said string) bool { return strings.Contains(said, " import chain [") }
 
 // mirror makes dst a copy of src in which every entry is a link to
 // src's own, but the files named in written (paths relative to src),
@@ -651,6 +725,9 @@ func importWords(err error, said string) (string, bool) {
 		return strings.Join(empty.patterns, " "), true
 	}
 	if last := lastLine(said); isImportLine(last) {
+		if i := strings.LastIndex(last, ", at "); i >= 0 {
+			last = last[:i] // the parser's location: its line number is a digit, as a value tried may be
+		}
 		return last, true
 	}
 	return "", false
