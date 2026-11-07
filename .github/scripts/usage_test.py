@@ -248,7 +248,7 @@ class MainTests(unittest.TestCase):
         self.assertFalse(os.path.exists(usage.FOOTPRINT))
         exit_, _ = self.run_main("--machine", "")
         self.assertIn("git config --global motel.usage-machine", exit_)
-        exit_, err = self.run_main("--machine", "a", "--match", "motel")
+        exit_, err = self.run_main("--machine", "a", "--match=-x-")  # a value that starts with a hyphen, as make passes it
         self.assertIsNone(exit_, exit_)
         self.assertEqual(err, "")
         self.assertEqual([(r["month"], r["calls"]) for r in usage.read_csv(usage.claude_path("a"))], [("2026-09", "1")])

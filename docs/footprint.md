@@ -21,8 +21,8 @@ energy figures), network transfer, and the models' training.
 | 2026-08 | — | — | — | — | — | — | 6,377 | 38 | 1.3 | 0.5 | 60 | — |
 | 2026-09 | 13,412 | 13.7 | 3.9 | 2,692 | 287 | 82.3 | 18,295 | 110 | 4.3 | 1.6 | 265 | — |
 | 2026-10 | 16,899 | 11.2 | 4.2 | 1,938 | 220 | 63.0 | 16,854 | 101 | 4.0 | 1.5 | 244 | — |
-| 2026-11 | 1,272 | 2.3 | 0.2 | 276 | 38 | 11.0 | — | — | — | — | — | — |
-| **Total** | 31,583 | 27.2 | 8.2 | 4,906 | 545 | 156.4 | 41,526 | 249 | 9.6 | 3.6 | 569 | — |
+| 2026-11 | 2,284 | 3.9 | 0.4 | 473 | 67 | 19.1 | — | — | — | — | — | — |
+| **Total** | 32,595 | 28.8 | 8.4 | 5,103 | 573 | 164.5 | 41,526 | 249 | 9.6 | 3.6 | 569 | — |
 
 A dash is a month the source has no rows for. Claude USD is what the
 tokens would cost at list price, not what was paid (Claude Code runs on
@@ -34,7 +34,7 @@ Every kWh and kgCO2e is an estimate, see below.
 
 | Model | Calls | Input Mtok | Output Mtok | Cache-write Mtok | Cache-read Gtok | List USD | kgCO2e |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| claude-fable-5-1 | 11,225 | 0.24 | 13.8 | 73.6 | 3.06 | 2,659 | 95.4 |
+| claude-fable-5-1 | 12,237 | 0.27 | 15.4 | 78.2 | 3.24 | 2,856 | 103.5 |
 | claude-opus-5-5 | 15,708 | 0.03 | 9.3 | 68.7 | 4.00 | 1,435 | 45.7 |
 | claude-opus-5 | 4,612 | 0.01 | 4.0 | 14.8 | 1.16 | 804 | 15.1 |
 | claude-opus-4-8 | 28 | 0.00 | 0.1 | 0.1 | 0.01 | 8 | 0.2 |
@@ -87,9 +87,9 @@ many runner types its jobs used.
   CO2 per token). Cache writes count as input tokens, cache reads at
   0.08× an input token; kWh is derived back from CO2 at the 287
   gCO2e/kWh those factors assume. Anthropic publishes no energy figures.
-  By these factors the average call here comes out at 17.3 Wh;
+  By these factors the average call here comes out at 17.6 Wh;
   Google's published median for a Gemini Apps text prompt is
-  0.24 Wh (Sources: a published per-prompt figure), 72× lower,
+  0.24 Wh (Sources: a published per-prompt figure), 73× lower,
   though a chat prompt and a coding call with a large cached context
   are different work. Read these as an order of magnitude, not a
   measurement.

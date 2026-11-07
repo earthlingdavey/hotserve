@@ -206,7 +206,11 @@ GO_LDFLAGS = -s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v$(VERSION)
 USAGE_REPO ?= smallhoursorg/motel
 USAGE_MATCH ?= $(shell git config motel.usage-match)
 USAGE_MACHINE ?= $(shell git config motel.usage-machine)
-USAGE_FLAGS = --match '$(USAGE_MATCH)' --machine '$(USAGE_MACHINE)'
+# Through the environment, not spliced into the recipe: a value with a
+# quote or a `$` reaches the script as typed. --match= so a value that
+# starts with a hyphen is a value, not an option.
+export USAGE_MATCH USAGE_MACHINE
+USAGE_FLAGS = --match="$$USAGE_MATCH" --machine="$$USAGE_MACHINE"
 usage:
 	GH_TOKEN=$$(gh auth token) $(COMPOSE) run --rm --user "$$(id -u):$$(id -g)" usage \
 		python3 -I .github/scripts/usage.py collect-claude collect-actions render --repo $(USAGE_REPO) $(USAGE_FLAGS)
