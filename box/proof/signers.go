@@ -62,7 +62,7 @@ func ParseSigner(principal, keyType, b64 string) (Signer, error) {
 		return Signer{}, fmt.Errorf("signer principal %q is longer than %d bytes", Bound(principal), MaxPrincipal)
 	}
 	if ecdsaTypes[keyType] {
-		return Signer{}, fmt.Errorf("signer %s: an %s key, which the box no longer takes: an ECDSA signature has two forms that verify alike, so one signed commit would have two ids and the box could record one the repository never had; sign with an ssh-ed25519 key (ssh-keygen -t ed25519, or -t ed25519-sk for a hardware key) or an ssh-rsa one, and rotate it in with two pushes: add the new signer, let one push apply, remove the old", principal, keyType)
+		return Signer{}, fmt.Errorf("signer %s: an %s key, which the box no longer takes: an ECDSA signature has two forms that verify alike, so one signed commit would have two ids and the box could record one the repository never had; name an ssh-ed25519 key (ssh-keygen -t ed25519, or -t ed25519-sk for a hardware key) or an ssh-rsa one in its place — in the pushed file, or, for the box's installed file, at the console (docs/upgrading.md says to rotate such a signer before upgrading)", principal, keyType)
 	}
 	if !keyTypes[keyType] {
 		return Signer{}, fmt.Errorf("signer %s: key type %q is not one of ssh-ed25519, sk-ssh-ed25519@openssh.com, ssh-rsa", principal, Bound(keyType))

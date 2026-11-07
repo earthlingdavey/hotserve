@@ -151,8 +151,10 @@ Before you upgrade:
   release: that signer makes an ed25519 key (`ssh-keygen -t ed25519`,
   or `-t ed25519-sk` for a hardware key), `make signer` adds it, one
   push applies, and a second push removes the old line. Upgrading
-  first instead leaves every push refused until root edits the line
-  out of `/etc/motel/Caddyfile` at the console (the next push then
+  first instead stops the site: the install restarts motel onto the
+  new binary, which refuses to start on a Caddyfile with that line,
+  naming it, until root edits the line out of `/etc/motel/Caddyfile`
+  at the console and runs `systemctl start motel` (the next push then
   reports the file as edited out of band and applies over it).
 - **The `.deb` you are upgrading from is still in `/var/local/motel`.**
   `apt install --allow-downgrades ./motel_<old>_$(dpkg --print-architecture).deb`

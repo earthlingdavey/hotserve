@@ -11,6 +11,8 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
+
+	"github.com/smallhoursorg/motel/liveswap/backupdecl"
 )
 
 // Per-app sandboxing (issue #35) is systemd's own per-unit sandboxing
@@ -722,9 +724,6 @@ func pathWithin(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
 }
 
-// defaultRoot is the liveswap root a config that names none gets.
-const defaultRoot = "/var/lib/liveswap"
-
 // AdminSocketInView says what makes a unix socket at path — the admin
 // API's listener — reachable from an app's sandbox, or "" where no
 // app's view holds it. Read by motel's command gate (cmd/motel), which
@@ -739,7 +738,7 @@ const defaultRoot = "/var/lib/liveswap"
 // walk past one.
 func AdminSocketInView(root, path string) string {
 	if root == "" {
-		root = defaultRoot
+		root = backupdecl.DefaultRoot
 	}
 	path = filepath.Clean(path)
 	paths := []string{path}

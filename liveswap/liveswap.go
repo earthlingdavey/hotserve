@@ -317,7 +317,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 		a.ArtifactAllowlist[i] = repl.ReplaceKnown(e, "")
 	}
 	if a.Root == "" {
-		a.Root = defaultRoot
+		a.Root = backupdecl.DefaultRoot
 	}
 
 	var err error

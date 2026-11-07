@@ -2,8 +2,10 @@ package proof
 
 import (
 	"bytes"
+	"crypto/rsa"
 	"encoding/base64"
 	"math/big"
+	"slices"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -143,8 +145,8 @@ func ParseCommit(raw []byte) (*Commit, error) {
 			if !ok {
 				return nil, refuse("bundle: commit: the SSH signature is not armored as ssh-keygen writes it (its base64 in lines of 70 characters between the BEGIN and END lines, and nothing else): the box reads one spelling of a signature, since the commit's id covers the armor and the signature does not — sign with ssh-keygen, git's own gpg.ssh.program")
 			}
-			if !canonicalScalar(blob) {
-				return nil, refuse("bundle: commit: the Ed25519 signature's S is not below the group order, where every signer writes it: the box reads one spelling of a signature, since the commit's id covers its bytes and ssh-keygen verifies S and S + L alike")
+			if why := canonicalSignature(blob); why != "" {
+				return nil, refuse("bundle: commit: %s", why)
 			}
 			c.Kind = SSHSig
 		case bytes.HasPrefix(sig, []byte("-----BEGIN PGP SIGNATURE-----")):
@@ -176,7 +178,7 @@ func printableASCII(b []byte) bool {
 // space-padded line, which ssh-keygen reads all the same — would be a
 // second commit id for the one signed payload, and a baseline the
 // repository never had (DESIGN-box.md, step 12). The blob under the
-// armor comes back with the verdict, for canonicalScalar.
+// armor comes back with the verdict, for canonicalSignature.
 func canonicalSSHArmor(sig []byte) ([]byte, bool) {
 	const begin, end = "-----BEGIN SSH SIGNATURE-----\n", "-----END SSH SIGNATURE-----\n"
 	if len(sig) < len(begin)+len(end) || !bytes.HasPrefix(sig, []byte(begin)) || !bytes.HasSuffix(sig, []byte(end)) {
@@ -194,17 +196,27 @@ func canonicalSSHArmor(sig []byte) ([]byte, bool) {
 // 2^252 + 27742317777372353535851937790883648493.
 var ed25519Order, _ = new(big.Int).SetString("7237005577332262213973186563042994240857116359379907606001950938285454250989", 10)
 
-// canonicalScalar says whether an Ed25519 signature in the SSHSIG blob
-// has its S below the group order — the one value a signer writes, and
-// what RFC 8032 has a verifier reject otherwise. ssh-keygen does not:
-// it verifies S + L as the same signature (OpenSSH 10.0, measured), and
-// the commit's id covers the bytes, so S + L would be a second commit
-// id for one signed payload, as a re-wrapped armor would. The armor's
-// rule, for the scalar. A signature of another key type, or a blob this
-// cannot read, is ssh-keygen's to judge: RSA's is unique, and ECDSA —
-// whose (r, n−s) is a signer's own form as much as (r, s), with no
-// spelling to hold it to — is no longer a signer type (signers.go).
-func canonicalScalar(blob []byte) bool {
+// canonicalSignature says whether the SSHSIG blob is spelled the one way
+// ssh-keygen writes it, in the parts the signature does not cover and
+// ssh-keygen reads loosely; it returns why not, or "". The armor's rule
+// (canonicalSSHArmor), for the blob: the commit's id covers its bytes,
+// so each spelling ssh-keygen verifies alike is a second commit id for
+// one signed payload (OpenSSH 10.0, measured 2026-11-06 and -07):
+//   - an Ed25519 S at or above the group order L, which RFC 8032 has a
+//     verifier reject and ssh-keygen verifies as it does S;
+//   - a reserved field that is not empty: ssh-keygen signs and verifies
+//     over an empty one whatever the envelope holds;
+//   - an RSA signature shorter than the modulus, which ssh-keygen pads:
+//     one signature in 256 begins with a zero byte, and that byte
+//     stripped verifies.
+//
+// The envelope's version and key need no rule here: SignatureKey reads
+// version 1 only, and the key is matched byte for byte against the
+// signer list (Signers.PrincipalFor), so another encoding of it is
+// unlisted. A blob this cannot read, or a signature of another key
+// type, is ssh-keygen's to judge; ECDSA, whose (r, n−s) is a signer's
+// own form as much as (r, s), is no longer a signer type (signers.go).
+func canonicalSignature(blob []byte) string {
 	var sig struct {
 		Version   uint32
 		PublicKey []byte
@@ -214,27 +226,48 @@ func canonicalScalar(blob []byte) bool {
 		Signature []byte
 	}
 	if err := ssh.Unmarshal(bytes.TrimPrefix(blob, []byte("SSHSIG")), &sig); err != nil {
-		return true
+		return ""
+	}
+	if sig.Reserved != "" {
+		return "the SSH signature's reserved field is not empty, where ssh-keygen writes it empty: the box reads one spelling of a signature, since the commit's id covers its bytes and ssh-keygen verifies over an empty field whatever the envelope holds"
 	}
 	var inner struct {
 		Format string
 		Blob   []byte
 		Rest   []byte `ssh:"rest"` // an sk- signature's flags and counter, which its Blob signs over (DESIGN-box.md, step 12)
 	}
-	if err := ssh.Unmarshal(sig.Signature, &inner); err != nil || len(inner.Blob) != 64 {
-		return true
+	if err := ssh.Unmarshal(sig.Signature, &inner); err != nil {
+		return ""
 	}
 	switch inner.Format {
 	case "ssh-ed25519", "sk-ssh-ed25519@openssh.com":
-	default:
-		return true
+		if len(inner.Blob) != 64 {
+			return ""
+		}
+		// S is the second half, little-endian.
+		s := slices.Clone(inner.Blob[32:])
+		slices.Reverse(s)
+		if new(big.Int).SetBytes(s).Cmp(ed25519Order) >= 0 {
+			return "the Ed25519 signature's S is not below the group order, where every signer writes it: the box reads one spelling of a signature, since the commit's id covers its bytes and ssh-keygen verifies S and S + L alike"
+		}
+	case "rsa-sha2-512", "rsa-sha2-256", "ssh-rsa":
+		key, err := ssh.ParsePublicKey(sig.PublicKey)
+		if err != nil {
+			return ""
+		}
+		ck, ok := key.(ssh.CryptoPublicKey)
+		if !ok {
+			return ""
+		}
+		rk, ok := ck.CryptoPublicKey().(*rsa.PublicKey)
+		if !ok {
+			return ""
+		}
+		if len(inner.Blob) != rk.Size() {
+			return "the RSA signature is not the length of the key's modulus, where ssh-keygen writes it: the box reads one spelling of a signature, since the commit's id covers its bytes and ssh-keygen pads a shorter one and verifies it alike"
+		}
 	}
-	// S is the second half, little-endian.
-	s := make([]byte, 32)
-	for i, b := range inner.Blob[32:] {
-		s[31-i] = b
-	}
-	return new(big.Int).SetBytes(s).Cmp(ed25519Order) < 0
+	return ""
 }
 
 // ArmorSSH is the one armor of blob the box reads (canonicalSSHArmor):

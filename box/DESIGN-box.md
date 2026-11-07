@@ -375,17 +375,24 @@ cross-references throughout.
     fail to descend from until the console. The header's place is held
     the same way: git appends `gpgsig` as the last header
     (`sign_with_header`), and the payload is the same wherever the
-    header sits, so one after it refuses too. And so is an Ed25519
-    signature's scalar (`canonicalScalar`): RFC 8032 has a verifier
-    reject an S at or above the group order L, but ssh-keygen verifies
-    S + L as the same signature (OpenSSH 10.0, measured 2026-11-06), and
-    no signer writes one, so one refuses as a bundle error. An ECDSA
-    signature has no such spelling — (r, n−s) is a signer's own form as
-    much as (r, s), written half the time, and ssh-keygen takes both —
-    so ECDSA keys are not signer types ("The shape"): the box's own key
-    list is the one place the rule can hold, and `motel validate` on
-    the new binary names an installed list that still carries one
-    (docs/upgrading.md). An RSA signature is unique to its payload. An
+    header sits, so one after it refuses too. And so is the blob in
+    the parts the signature does not cover and ssh-keygen reads
+    loosely (`canonicalSignature`; OpenSSH 10.0, measured 2026-11-06
+    and -07): an Ed25519 S at or above the group order L, which RFC
+    8032 has a verifier reject and ssh-keygen verifies as it does S; a
+    reserved field that is not empty, over which ssh-keygen signs and
+    verifies as if empty; an RSA signature shorter than the modulus,
+    which ssh-keygen pads — one signature in 256 begins with a zero
+    byte, and that byte stripped verifies. No signer writes any of
+    these, so each refuses as a bundle error. The envelope's version
+    and key need no rule: the box reads version 1 only, and matches
+    the key byte for byte against its list, so another encoding of it
+    is unlisted. An ECDSA signature has no such spelling — (r, n−s) is
+    a signer's own form as much as (r, s), written half the time, and
+    ssh-keygen takes both — so ECDSA keys are not signer types ("The
+    shape"): the box's own key list is the one place the rule can
+    hold, and the new binary refuses an installed list that still
+    carries one, at `validate` and at start (docs/upgrading.md). An
     `sk-ssh-ed25519@openssh.com` signature carries the security key's
     flags and counter beside its Ed25519 bytes, but under them: the key
     signs SHA256(application) ‖ flags ‖ counter ‖ SHA256(message), so
@@ -2610,13 +2617,19 @@ Dated one-liners; the full text of each is in git.
   other spelling or place refuses as a bundle error (scored 4×5×3; the
   place, Copilot on #407). Copilot's second round found the signature
   itself has twins ssh-keygen verifies alike: an Ed25519 S + L, which no
-  signer writes, refuses the same way (`canonicalScalar`); an ECDSA
+  signer writes, refuses the same way (`canonicalSignature`); an ECDSA
   (r, n−s), which a signer writes half the time, has no spelling to
   hold it to, so the owner dropped the ECDSA key types (size 1, risk 2;
-  one-way and wide: a box whose installed list still carries one fails
-  the walk after the upgrade, which `motel validate` on the new binary
-  names first, so docs/upgrading.md says to rotate the signer before
-  upgrading). The fixture set's second signer, bob, is RSA from here.
+  one-way and wide: a box whose installed list still carries one does
+  not start after the upgrade, since the install restarts motel onto a
+  binary that refuses the line by name, so docs/upgrading.md says to
+  rotate the signer before upgrading). The fixture set's second signer,
+  bob, is RSA from here. A self-review measured the rest of the
+  envelope through the box's own Verifier: the version and the key's
+  encoding are already held (the box reads version 1 and matches the
+  key byte for byte); a reserved field that is not empty, and an RSA
+  signature a byte short, verify alike and are refused the same way
+  (each 4×5×3).
   Copilot's fourth round asked after the sk signature's counter: it is
   under the signature (measured 2026-11-07), so only the key varies it
   and it is no twin — not a failure, not scored; step 12 says so.

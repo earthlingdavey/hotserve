@@ -337,6 +337,10 @@ func checkBackups(cmd, file, adapter string) (warning string, err error) {
 // in the liveswap block: a test rig whose runner drives the admin API
 // over the network) is let through, and one Caddy cannot read is
 // Caddy's to refuse.
+// adminRestart ends each refusal of checkAdmin: a new admin line takes
+// effect at a restart, not a reload.
+const adminRestart = "then `systemctl restart motel` once: a reload asks the admin API where the new file puts it, and the running motel answers where the old one did"
+
 func checkAdmin(cfg []byte) error {
 	var c struct {
 		Admin *struct {
@@ -382,13 +386,13 @@ func checkAdmin(cfg []byte) error {
 			// directory of whatever runs it, which this check cannot
 			// see, and a unit's WorkingDirectory can put under the
 			// liveswap root.
-			return fmt.Errorf("the admin API listens on %s, a unix socket at a relative path, which Caddy opens against the working directory of whatever runs it — one this check cannot see, and one under the liveswap root puts the socket in an app's view; name the socket's whole path (`admin unix//run/motel/admin.sock`, as packaging/Caddyfile has it), then `systemctl restart motel` once: a reload asks the admin API where the new file puts it, and the running motel answers where the old one did", listen)
+			return fmt.Errorf("the admin API listens on %s, a unix socket at a relative path, which Caddy opens against the working directory of whatever runs it — one this check cannot see, and one under the liveswap root puts the socket in an app's view; name the socket's whole path (`admin unix//run/motel/admin.sock`, as packaging/Caddyfile has it), %s", listen, adminRestart)
 		}
 		why := liveswap.AdminSocketInView(repl.ReplaceKnown(c.Apps.Liveswap.Root, ""), path)
 		if why == "" {
 			return nil
 		}
-		return fmt.Errorf("the admin API listens on %s, which an app this config runs can reach: %s; one that reaches the admin API reconfigures the whole server — put the socket where no app's view holds it (`admin unix//run/motel/admin.sock`, as packaging/Caddyfile has it), then `systemctl restart motel` once: a reload asks the admin API where the new file puts it, and the running motel answers where the old one did", listen, why)
+		return fmt.Errorf("the admin API listens on %s, which an app this config runs can reach: %s; one that reaches the admin API reconfigures the whole server — put the socket where no app's view holds it (`admin unix//run/motel/admin.sock`, as packaging/Caddyfile has it), %s", listen, why, adminRestart)
 	}
 	where := listen
 	if strings.HasPrefix(listen, "unix") && strings.Contains(listen, "/@") {
@@ -397,7 +401,7 @@ func checkAdmin(cfg []byte) error {
 	if implied {
 		where += " (Caddy's default: the config names no admin listener; a CADDY_ADMIN in this environment is not read here)"
 	}
-	return fmt.Errorf("the admin API listens on %s, which every app this config runs can reach: apps share the box's network namespace, and one that reaches the admin API reconfigures the whole server — put `admin unix//run/motel/admin.sock` in the global block (packaging/Caddyfile has it), or `admin off`, then `systemctl restart motel` once: a reload asks the admin API where the new file puts it, and the running motel answers where the old one did", where)
+	return fmt.Errorf("the admin API listens on %s, which every app this config runs can reach: apps share the box's network namespace, and one that reaches the admin API reconfigures the whole server — put `admin unix//run/motel/admin.sock` in the global block (packaging/Caddyfile has it), or `admin off`, %s", where, adminRestart)
 }
 
 // sameFile says whether a and b are one Caddyfile: the same path, or the
