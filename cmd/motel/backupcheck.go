@@ -89,9 +89,12 @@ func commandFlags(name string, args []string) (*pflag.FlagSet, bool) {
 // two rules, each on its own, and joins what they refuse: neither
 // rule's early returns can drop the other's.
 func checkConfig(cmd string, args []string) (warning string, err error) {
-	cfg, file, adapter, ok := loadConfig(cmd, args)
-	if !ok {
+	cfg, file, adapter, err := loadConfig(cmd, args)
+	if errors.Is(err, errCaddysToSay) {
 		return "", nil
+	}
+	if err != nil {
+		return "", err
 	}
 	adminErr := checkAdmin(cfg)
 	warning, err = checkBackups(cmd, file, adapter)
@@ -104,27 +107,34 @@ func checkConfig(cmd string, args []string) (warning string, err error) {
 	return warning, errors.New(adminErr.Error() + "; and " + err.Error())
 }
 
+// errCaddysToSay is loadConfig's answer for a config that does not load:
+// the gate says nothing, and Caddy's own command says it next, in its
+// own words.
+var errCaddysToSay = errors.New("left to Caddy")
+
 // loadConfig loads the config the command's flags name with Caddy's
 // own LoadConfig — its default Caddyfile, its rule for what is one, its
-// adapt — and says whether it did. A config that does not load says
-// nothing here: Caddy's own command says it next, in its own words. So
-// does one that is not a file: stdin or a pipe is Caddy's to read,
-// once, and a pipe nobody writes to would never answer.
+// adapt. A config that does not load is errCaddysToSay. One that is not
+// a regular file — stdin, a pipe — is refused by name: it is read once,
+// and that read is Caddy's (read here first, Caddy would be given
+// nothing, and a pipe nobody writes to would never answer), so the gate
+// cannot see whether it runs apps with the admin API on TCP; silence
+// here would let that config through (Copilot's fifth round on #407).
 //
 // Each `--envfile` is loaded first, as Caddy's own command loads it
 // before it adapts (loadEnvFile): a {$NAME} set only there can be the
 // admin listener, or change what the Caddyfile imports, and the config
 // judged has to be the one Caddy runs. An envfile Caddy would refuse
 // is left to Caddy to refuse.
-func loadConfig(cmd string, args []string) (cfg []byte, file, adapter string, ok bool) {
+func loadConfig(cmd string, args []string) (cfg []byte, file, adapter string, err error) {
 	fs, found := commandFlags(cmd, args)
 	if !found {
-		return nil, "", "", false
+		return nil, "", "", errCaddysToSay
 	}
 	if envfiles, err := fs.GetStringSlice("envfile"); err == nil {
 		for _, envfile := range envfiles {
 			if err := loadEnvFile(envfile); err != nil {
-				return nil, "", "", false
+				return nil, "", "", errCaddysToSay
 			}
 		}
 	}
@@ -135,14 +145,18 @@ func loadConfig(cmd string, args []string) (cfg []byte, file, adapter string, ok
 		probe = "Caddyfile" // what LoadConfig reads with none
 	}
 	if st, err := os.Stat(probe); file == "-" || err == nil && !st.Mode().IsRegular() { //nolint:gosec // the config the command was given, looked at before Caddy reads it
-		return nil, "", "", false
+		where := probe
+		if file == "-" {
+			where = "stdin"
+		}
+		return nil, "", "", fmt.Errorf("the config is %s, not a regular file, which this check cannot read before Caddy reads it once — so it cannot see whether the config runs apps with the admin API on TCP, which every app could then reconfigure the server through; write the config to a file and name that", where)
 	}
 	liveswap.ClearBackupSources()
-	cfg, file, adapter, err := caddycmd.LoadConfig(file, adapter)
+	cfg, file, adapter, err = caddycmd.LoadConfig(file, adapter)
 	if err != nil {
-		return nil, "", "", false
+		return nil, "", "", errCaddysToSay
 	}
-	return cfg, file, adapter, true
+	return cfg, file, adapter, nil
 }
 
 // loadEnvFile puts an `--envfile`'s variables in the environment as

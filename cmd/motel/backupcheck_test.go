@@ -354,21 +354,31 @@ func TestOnlyValidateAndReloadAreStopped(t *testing.T) {
 
 // A config that is not a regular file — stdin, a pipe — is Caddy's to
 // read, once: read here first, Caddy would be given nothing, and a pipe
-// with no writer would never answer.
-func TestAConfigThatIsNotAFileIsLeftToCaddy(t *testing.T) {
+// with no writer would never answer. So the gate cannot see whether it
+// runs apps with the admin API on TCP, and refuses it by name rather
+// than let it through unseen.
+func TestAConfigThatIsNotAFileIsRefusedUnread(t *testing.T) {
 	fifo := filepath.Join(t.TempDir(), "Caddyfile")
 	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { _, err := checkConfig("validate", []string{"--config", fifo}); done <- err }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+	for name, args := range map[string][]string{
+		"a pipe": {"--config", fifo},
+		"stdin":  {"--config", "-"},
+	} {
+		done := make(chan error, 1)
+		go func() { _, err := checkConfig("validate", args); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "not a regular file, which this check cannot read before Caddy reads it once") {
+				t.Errorf("%s: %v, want the config refused unread", name, err)
+			}
+			if name == "stdin" && !strings.Contains(err.Error(), "the config is stdin") {
+				t.Errorf("stdin: %v, want it named", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: the check opened a pipe nobody writes to", name)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the check opened a pipe nobody writes to")
 	}
 }
 

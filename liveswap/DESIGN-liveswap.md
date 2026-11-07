@@ -1099,7 +1099,11 @@ Dated one-liners; the full text of each is in git.
   view every sandbox holds read-only (`AdminSocketInView`, 5×5×5), and
   named whole, since a relative path (`unix/admin.sock`) is Caddy's
   working directory's to place, which the gate cannot see (Copilot's
-  fourth round, 5×5×5);
+  fourth round, 5×5×5); a config that is not a regular file (stdin, a
+  pipe), which the gate had left to Caddy unread, is refused at
+  `validate` and `reload` and said at `run`, since the gate cannot see
+  whether it runs apps with the admin API on TCP (Copilot's fifth
+  round, 5×5×5);
   recovery's sweep of `tmp/` asks `linkAt` first, as GC does; a
   percent-encoded URL password on a later authority is registered
   decoded too.
