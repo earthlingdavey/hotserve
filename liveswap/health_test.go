@@ -383,10 +383,12 @@ func TestProberProcessDeathKeepsLastProbe(t *testing.T) {
 	}
 }
 
-// A failing probe's body is kept only up to probeBodyExcerpt bytes:
-// the excerpt is a diagnosis, not a page.
+// A failing probe's body is read only up to probeBodyRead bytes: the
+// excerpt a deploy's detail keeps is a diagnosis, not a page, and is cut
+// to probeBodyExcerpt once the known values are replaced
+// (TestFailureDetailCutsAfterTheKnownValues).
 func TestProbeOnceKeepsABoundedBodyExcerpt(t *testing.T) {
-	big := strings.Repeat("x", probeBodyExcerpt*3)
+	big := strings.Repeat("x", probeBodyRead*3)
 	sock := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(big))
@@ -397,7 +399,7 @@ func TestProbeOnceKeepsABoundedBodyExcerpt(t *testing.T) {
 	if !errors.As(err, &pe) || pe.status != http.StatusInternalServerError {
 		t.Fatalf("want a probe error with the status, got %v", err)
 	}
-	if len(pe.body) != probeBodyExcerpt || pe.body != big[:probeBodyExcerpt] {
-		t.Fatalf("body excerpt is %d bytes, want the first %d", len(pe.body), probeBodyExcerpt)
+	if len(pe.body) != probeBodyRead || pe.body != big[:probeBodyRead] {
+		t.Fatalf("body read is %d bytes, want the first %d", len(pe.body), probeBodyRead)
 	}
 }

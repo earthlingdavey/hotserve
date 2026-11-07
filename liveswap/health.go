@@ -150,15 +150,24 @@ func (p *httpProber) probeOnce(ctx context.Context, sock *socketRef, path string
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// The first bytes of the body are the diagnosis more often than
 		// the status is ("Invalid HTTP_HOST header", "no such table"),
-		// and a redirect's target says where the app wanted to go.
-		excerpt, _ := io.ReadAll(io.LimitReader(resp.Body, probeBodyExcerpt))
-		return &probeError{status: resp.StatusCode, location: resp.Header.Get("Location"), body: string(excerpt)}
+		// and a redirect's target says where the app wanted to go. More
+		// is read than is kept: the excerpt is cut after the known
+		// values are replaced (failureDetail), so a cut never leaves a
+		// fragment of one.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, probeBodyRead))
+		return &probeError{status: resp.StatusCode, location: resp.Header.Get("Location"), body: string(body)}
 	}
 	return nil
 }
 
-// probeBodyExcerpt is how much of a failing probe's body is kept.
-const probeBodyExcerpt = 512
+// probeBodyExcerpt is how much of a failing probe's body is kept in a
+// deploy's detail; probeBodyRead is how much is read for it, so that a
+// known value straddling the excerpt's end is whole when the filter
+// sees it.
+const (
+	probeBodyExcerpt = 512
+	probeBodyRead    = 4096
+)
 
 // errProcessExited is the health gate's verdict when the process died
 // before it was healthy; the deploy reads the runner's exit for it.

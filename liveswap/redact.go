@@ -45,13 +45,22 @@ import (
 //     PEM private keys, password=… assignments).
 //  4. Entropy: a token of entropyMinLen or more characters from the
 //     base64 or hex alphabet, mixed enough to look generated and with
-//     Shannon entropy above the class's threshold, replaced with
-//     [masked, N chars]. Never a fingerprint: a hash of a secret is a
-//     small leak of it.
+//     Shannon entropy above the class's threshold — a bar that follows
+//     the token's length, since a short one cannot reach a fixed bar
+//     (looksGenerated) — replaced with [masked, N chars]. Never a
+//     fingerprint: a hash of a secret is a small leak of it. An
+//     assignment is judged by its parts (maskGenerated).
+//
+// Layer 1 also runs early, as a failed deploy's detail is built
+// (failureDetail, app.go), before the journal tail and the probe body
+// are cut to their caps: a cut inside a known value would leave a
+// fragment this layer cannot match and no heuristic can see.
 //
 // Best effort past layer 1, and documented as such in
 // DESIGN-threat-model.md: an encoding not in the list, a value under
-// secretMinLen, a secret split across lines, all pass.
+// secretMinLen, a secret split across lines, and a short generated
+// token the length-aware bar still misses (about half at 20 to 22
+// characters), all pass.
 //
 // Four rules hold across the layers and every writer of a body, and
 // the code is judged against them, not the other way round:
@@ -517,15 +526,26 @@ func (r *Redactor) heuristics(s string) string {
 		}
 		return m
 	})
-	return entropyTokenRe.ReplaceAllStringFunc(s, func(tok string) string {
-		if r != nil && r.safeTokens[tok] {
-			return tok
-		}
-		if looksGenerated(tok) {
-			return "[masked, " + strconv.Itoa(len(tok)) + " chars]"
-		}
+	return entropyTokenRe.ReplaceAllStringFunc(s, r.maskGenerated)
+}
+
+// maskGenerated is layer 4 over one token. An assignment — an `=` with
+// more after it, where base64 pads only at its end — is judged by its
+// parts: `RandomizedDelaySec=40s` is a setting a reader needs, and
+// `BUILD_ID=<secret>` keeps its key and masks its value (a key the
+// shape rules know, `API_KEY=`, is theirs first); a value short of
+// entropyMinLen is not carried over the bar by its key's letters.
+func (r *Redactor) maskGenerated(tok string) string {
+	if r != nil && r.safeTokens[tok] {
 		return tok
-	})
+	}
+	if i := strings.IndexByte(tok, '='); i > 0 && i < len(tok)-1 && tok[i+1] != '=' {
+		return r.maskGenerated(tok[:i]) + "=" + r.maskGenerated(tok[i+1:])
+	}
+	if len(tok) >= entropyMinLen && looksGenerated(tok) {
+		return "[masked, " + strconv.Itoa(len(tok)) + " chars]"
+	}
+	return tok
 }
 
 // redactJSON filters a marshalled JSON body and, when a known value
@@ -701,8 +721,25 @@ func looksGenerated(tok string) bool {
 	if !other { // hex alphabet only
 		return h >= entropyHex
 	}
-	return upper && lower && h >= entropyBase64
+	// A string's entropy over its own characters is at most log2(len):
+	// 4.32 bits at 20 characters, 4.46 at 22, so a fixed bar of 4.5 is
+	// out of a short token's reach however random it is. The bar
+	// follows the length, entropySlack under that ceiling, up to
+	// entropyBase64. Measured 2026-11-07 on random url-safe tokens
+	// against the mixed-case tokens in this repository's own text
+	// (DESIGN-liveswap.md, "Accepted residuals"): this masks 55% of
+	// random 20- and 22-character tokens and 41% of 24, where the
+	// fixed bar masked none, and one non-secret of 148 (an e-mail's
+	// local part); a bar 0.9·log2(len) would mask 80% of each length
+	// and nine non-secrets, among them identifiers with a digit
+	// (`loadEd25519PrivateKey`) and unit settings.
+	bar := math.Min(entropyBase64, math.Log2(float64(len(tok)))-entropySlack)
+	return upper && lower && h >= bar
 }
+
+// entropySlack is how far under log2(len) the base64 bar sits for a
+// token too short to reach entropyBase64 (looksGenerated).
+const entropySlack = 0.3
 
 func shannon(s string) float64 {
 	var counts [256]int

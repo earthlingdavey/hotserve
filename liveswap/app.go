@@ -191,6 +191,12 @@ type deployResult struct {
 	// lines it wrote. Nil for a success, and for a failure before a
 	// launch (nothing of the app's ran).
 	Detail *deployDetail `json:"detail,omitempty"`
+	// RedactedEnv is the env keys whose values the detail's early
+	// replacement found (failureDetail): the response filter reports
+	// the keys it finds under this same name, and merges these into
+	// them (withField), since by the time it runs the values are
+	// markers already.
+	RedactedEnv []string `json:"redacted_env,omitempty"`
 }
 
 type phaseTiming struct {
@@ -211,7 +217,9 @@ var (
 )
 
 // deployDetail is the app's side of a failed deploy. Every string in
-// it passes the response filter before it is written (redact.go).
+// it passes the response filter before it is written (redact.go), and
+// the known values are replaced as it is built, before the tail and
+// body caps cut, so a cap never leaves a fragment of one.
 type deployDetail struct {
 	// Exit is how the process ended, from the runner: "exit status 3",
 	// "killed by signal 9 (killed)". The pre_start's when that failed,
@@ -231,6 +239,9 @@ type deployDetail struct {
 	LogTail          []string `json:"log_tail,omitempty"`
 	LogTailTruncated bool     `json:"log_tail_truncated,omitempty"`
 	LogTailError     string   `json:"log_tail_error,omitempty"`
+	// redactedEnv is the keys whose values the early replacement found,
+	// carried to deployResult.RedactedEnv.
+	redactedEnv []string
 }
 
 type probeDetail struct {
@@ -602,6 +613,20 @@ func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, a
 	d := &deployDetail{}
 	var ee *exitError
 	var pe *probeError
+	// The app's own bytes — the probe's body, the journal's lines — are
+	// held to the known values here, before any cap cuts them: a cap
+	// that fell inside a value would leave a fragment the response
+	// filter's first layer cannot match, and no heuristic masks a
+	// fragment under entropyMinLen (redact.go). The filter runs whole
+	// over the finished body as always; this is its first layer, early.
+	// An env_file the filter cannot read leaves those bytes out, as
+	// the response would be withheld for the same reason.
+	known := ma.redactorFor(statusSnapshot{})
+	seen := map[string]bool{}
+	withBody := spec.deployLogLines > 0
+	if known.withhold != "" {
+		d.LogTailError, withBody = known.withhold, false
+	}
 	// With the exit, the pid of the process that failed — the pre_start's
 	// as the manager recorded it, or the app's: the journal finds that
 	// process's lines by it when journald could not tell their unit
@@ -617,11 +642,11 @@ func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, a
 		d.Probe = &probeDetail{Status: pe.status, Location: pe.location}
 		// The body is the app's output as much as the journal is:
 		// deploy_log_lines 0 keeps both on the box.
-		if spec.deployLogLines > 0 {
-			d.Probe.Body = pe.body
+		if withBody {
+			d.Probe.Body = excerpt(known.replaceKnown(pe.body, seen), probeBodyExcerpt)
 		}
 	}
-	if spec.deployLogLines > 0 && c.journal != nil {
+	if withBody && c.journal != nil {
 		of := tailOf{pid: pid, ident: syslogIdentifier(spec.name)}
 		for _, oneshot := range []bool{true, false} {
 			if u, err := unitName(l.startSpec(spec, spec.command), oneshot); err == nil {
@@ -651,11 +676,17 @@ func (ma *managedApp) failureDetail(c collaborators, spec *appSpec, err error, a
 			c.clock.Sleep(200 * time.Millisecond)
 		}
 		if d.LogTailError == "" {
+			for i, line := range lines {
+				lines[i] = known.replaceKnown(line, seen)
+			}
 			d.LogTail, d.LogTailTruncated = capTail(lines, spec.deployLogLines, deployLogMaxBytes)
 		}
 	}
 	if d.Exit == "" && d.Probe == nil && d.LogTail == nil && !d.LogTailTruncated && d.LogTailError == "" {
 		return nil
+	}
+	if len(seen) > 0 {
+		d.redactedEnv = reportedKeys(seen)
 	}
 	return d
 }
@@ -754,6 +785,9 @@ func (ma *managedApp) deployLocked(ctx context.Context, req deployRequest, c col
 			result.Status = "failed"
 			result.Error = err.Error()
 			result.Detail = detail
+			if detail != nil {
+				result.RedactedEnv = detail.redactedEnv
+			}
 			// The phase reached when it failed — none when it failed
 			// before the first (a rollback whose env_file would not
 			// read): "idle" is the app's state, not a deploy's phase.

@@ -256,3 +256,14 @@ func capTail(lines []string, maxLines, maxBytes int) ([]string, bool) {
 	}
 	return lines, truncated
 }
+
+// excerpt is the first n bytes of s, cut on a rune boundary.
+func excerpt(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}

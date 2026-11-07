@@ -1445,7 +1445,10 @@ What liveswap does for you:
   userinfo and query strings, provider key prefixes, PEM blocks,
   `…PASSWORD=`-style assignments) are replaced by name, and finally
   any 20+-character run that looks generated — base64 or hex alphabet,
-  mixed, high entropy — becomes `[masked, N chars]`. The versions the
+  mixed, high entropy for its length — becomes `[masked, N chars]`
+  (an assignment keeps its key: `BUILD_ID=[masked, 24 chars]`). The
+  `env_file` values are replaced before the tail and the probe's body
+  are cut to their caps, so a cut never leaves a fragment of one. The versions the
   status names and the app's own paths are exempt from the heuristics,
   so a git SHA used as a version survives — from the heuristics only:
   one equal to an `env_file` value is redacted like the value. Two

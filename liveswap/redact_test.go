@@ -378,6 +378,15 @@ func TestRedactorEntropy(t *testing.T) {
 		{"deploy subject", "repo:smallhoursorg/example:ref:refs/heads/main", false},
 		{"commit version", "0a1b2c3d4e5f", false},
 		{"lowercase plus digits only", "abcdefghijklmnopqrst1234567890", false},
+		// The bar follows the length: a 20- or 22-character token
+		// (secrets.token_urlsafe(16) is 22) cannot reach 4.5 bits a
+		// character, and was never masked; an identifier with a digit
+		// and a unit setting of the same length stay readable.
+		{"22-character url-safe token", "k3J9xQ2mZ8pL0vT7wR4nY6", true}, // gitleaks:allow — made up for this test
+		{"20-character url-safe token", "k3J9xQ2mZ8pL0vT7wR4n", true},   // gitleaks:allow — made up for this test
+		{"identifier with a digit", "loadEd25519PrivateKey", false},
+		{"unit setting", "RandomizedDelaySec=40s", false},
+		{"error name with a digit", "Sha256DigestMismatchAt0", false},
 	} {
 		out, _ := (*Redactor)(nil).Redact("x " + tc.in + " y")
 		if masked := strings.Contains(out, "[masked, "); masked != tc.masked {
@@ -385,6 +394,24 @@ func TestRedactorEntropy(t *testing.T) {
 		}
 		if !tc.masked && !strings.Contains(out, tc.in) {
 			t.Errorf("%s: changed: %q", tc.name, out)
+		}
+	}
+}
+
+// An assignment is judged by its parts: the key stays readable and the
+// value is masked on its own, and a short value is not carried over the
+// bar by its key's letters.
+func TestRedactorEntropyJudgesAnAssignmentByItsParts(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		// A key the shape rules know (`API_KEY=`) is theirs first; one
+		// they do not is layer 4's, by its parts.
+		{"a secret assigned", "BUILD_ID=zK9dQ2mX8pL0vT7wR4nY6bH1", "BUILD_ID=[masked, 24 chars]"},
+		{"a short value", "SOME_SETTING_NAME=aB3dE5fG7h", "SOME_SETTING_NAME=aB3dE5fG7h"},
+		{"base64 padding is no assignment", "k3J9xQ2mZ8pL0vT7wR4nY6bH1cD5fG==", "[masked, 32 chars]"},
+		{"a dotted version's assignment", "APP_VERSION=2026.11.07-rc1", "APP_VERSION=2026.11.07-rc1"},
+	} {
+		if got, _ := (*Redactor)(nil).Redact(tc.in); got != tc.want {
+			t.Errorf("%s:\n got %q\nwant %q", tc.name, got, tc.want)
 		}
 	}
 }

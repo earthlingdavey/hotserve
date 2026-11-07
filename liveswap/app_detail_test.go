@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +192,58 @@ func TestFailureDetailProbe(t *testing.T) {
 	}
 	if ld.Detail.LogTail != nil || ld.Detail.LogTailError != "" {
 		t.Fatalf("an empty journal is no tail and no error: %+v", ld.Detail)
+	}
+}
+
+// The known values are replaced before the caps cut: a probe body whose
+// secret straddles the excerpt's end, and a journal line whose secret
+// straddles the byte cap's cut, carry the marker, never a fragment the
+// response filter could not match.
+func TestFailureDetailCutsAfterTheKnownValues(t *testing.T) {
+	rig := newTestRig(t)
+	rig.spec.deployLogLines = 40
+	const secret = "k3J9xQ2mZ8pL0vT7wR4nY6bH1cD5fGhJ7kLmN9pQ" // gitleaks:allow
+	envFile := filepath.Join(t.TempDir(), "app.env")
+	must(t, os.WriteFile(envFile, []byte("API_TOKEN="+secret+"\n"), 0o600))
+	rig.spec.envFile = envFile
+	// The secret begins 20 bytes before the excerpt's end.
+	body := strings.Repeat("x", probeBodyExcerpt-20) + secret + strings.Repeat("y", 200)
+	rig.prober.err = fmt.Errorf("not healthy within deadline 5m: %w", &probeError{status: 500, body: body})
+	// One line over the byte cap, its secret 16 bytes before the cut.
+	line := strings.Repeat("a", 100) + secret + strings.Repeat("b", deployLogMaxBytes-20)
+	rig.ma.journal = &fakeJournal{lines: []string{line}}
+
+	if err := deployOnceV1(t, rig); err == nil {
+		t.Fatal("deploy should have failed the health gate")
+	}
+	d := rig.ma.status().LastDeploy.Detail
+	if d == nil || d.Probe == nil || len(d.Probe.Body) > probeBodyExcerpt || !strings.Contains(d.Probe.Body, "[redacted:API_TOKEN]") {
+		t.Fatalf("probe body = %q, want the marker within %d bytes", d.Probe.Body, probeBodyExcerpt)
+	}
+	if len(d.LogTail) != 1 || !d.LogTailTruncated || !strings.HasPrefix(d.LogTail[0], "…") {
+		t.Fatalf("tail = %v (truncated %v), want the one clipped line", d.LogTail, d.LogTailTruncated)
+	}
+	for i := 0; i+8 <= len(secret); i++ {
+		if frag := secret[i : i+8]; strings.Contains(d.Probe.Body, frag) || strings.Contains(d.LogTail[0], frag) {
+			t.Fatalf("a fragment of the secret, %q, survived the cut: body %q, tail %q", frag, d.Probe.Body, d.LogTail[0])
+		}
+	}
+}
+
+// An env_file the filter cannot read when the detail is built — one
+// that went unreadable after the deploy read it — leaves the app's
+// bytes out of the detail, as the response would be withheld for the
+// same reason; the exit and the probe's status stay, and the reason
+// is said where the tail would be.
+func TestFailureDetailWithholdsTheBodyWithoutTheEnvFile(t *testing.T) {
+	rig := newTestRig(t)
+	rig.spec.deployLogLines = 40
+	rig.spec.envFile = filepath.Join(t.TempDir(), "gone.env")
+	rig.ma.journal = &fakeJournal{lines: []string{"never read"}}
+	err := fmt.Errorf("not healthy within deadline 5m: %w", &probeError{status: 500, body: "secret things"})
+	d := rig.ma.failureDetail(rig.ma.snapshot(), rig.spec, err, "exit status 3", 0, launch{}, time.Now())
+	if d == nil || d.Probe == nil || d.Probe.Status != 500 || d.Probe.Body != "" || d.Exit != "exit status 3" || d.LogTail != nil || !strings.Contains(d.LogTailError, "env_file could not be read") {
+		t.Fatalf("detail = %+v, want the status and exit without the app's bytes, and the reason", d)
 	}
 }
 
